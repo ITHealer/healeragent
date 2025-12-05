@@ -1,0 +1,7 @@
+[
+  {
+    "display_name": "gpt-4.1-nano",
+    "model_name": "gpt-4.1-nano",
+    "provider": "openai"
+  }
+]

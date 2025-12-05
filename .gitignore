@@ -1,0 +1,111 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.python-version
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+/data/
+/models/
+/logs/
+*.log
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Qdrant specific
+stock_qdrant_data
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+cache
+test.py
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+docker-compose-prod.yml
+auth_config_real.yaml
+database_config_real.yaml
+rabbitmq_config_real.yaml
+
+image.png
+
+.ruff_cache/
+data_cache/
+eval_results/
+logs.txt
+Dockerfile.dev
+uv.lock
+poetry.lock
+**/temp/
+temp/
+chroma.sqlite3
+news_agent_logs/
+news_crawl_logs/
+hf_cache/
+*.sqlite3
+*.db
+chroma_db_data/src/tradingagents/chromadb_data/
+chromadb_data/
+cookies/cookies.txt
+
+# SSL certificates
+*.pem
+*.key
+*.crt
