@@ -271,12 +271,38 @@ class GetIncomeStatementTool(BaseTool):
         
         # Get latest period
         latest = formatted_periods[0] if formatted_periods else {}
+        previous = formatted_periods[1] if len(formatted_periods) > 1 else {}
         
+        # Calculate approximate growth if not provided
+        revenue_growth = 0.0
+        if latest.get("revenue") and previous.get("revenue"):
+            try:
+                rev_now = float(latest["revenue"])
+                rev_prev = float(previous["revenue"])
+                if rev_prev != 0:
+                    revenue_growth = ((rev_now - rev_prev) / abs(rev_prev)) * 100
+            except (ValueError, TypeError):
+                pass
+
+        # ✅ MATCH SCHEMA STRUCTURE EXACTLY
         return {
             "symbol": symbol,
-            "period_type": period,
-            "periods": formatted_periods,
-            "latest_period": latest,
+            "period": period, # Matches schema key "period"
+            
+            # Key metrics at root level (from latest period)
+            "revenue": latest.get("revenue", 0),
+            "revenue_growth": round(revenue_growth, 2),
+            "net_income": latest.get("net_income", 0),
+            "eps": latest.get("eps", 0.0),
+            
+            "profit_margins": {
+                "gross": latest.get("gross_profit_ratio", 0),
+                "operating": latest.get("operating_income_ratio", 0),
+                "net": latest.get("net_income_ratio", 0)
+            },
+            
+            # Full history
+            "statements": formatted_periods, # Matches schema key "statements"
             "period_count": len(formatted_periods),
             "timestamp": datetime.now().isoformat()
         }

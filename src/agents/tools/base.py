@@ -468,114 +468,110 @@ async def execute_tools_sequential(
 def create_success_output(
     tool_name: str,
     data: Dict[str, Any],
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    formatted_context: Optional[str] = None,
+    symbols: Optional[List[str]] = None
 ) -> ToolOutput:
-    """Helper to create success output"""
+    """
+    Helper to create success output
+    
+    Args:
+        tool_name: Name of the tool
+        data: Tool output data
+        metadata: Optional additional metadata
+        formatted_context: Optional human-readable context for LLM
+        symbols: Optional list of symbols processed
+        
+    Returns:
+        ToolOutput with status="success"
+    """
+    meta = metadata or {}
+    
+    # Add symbols to metadata if provided
+    if symbols:
+        meta["symbols"] = symbols
+    
     return ToolOutput(
         tool_name=tool_name,
         status="success",
         data=data,
-        metadata=metadata or {}
+        formatted_context=formatted_context,
+        metadata=meta
     )
 
 
 def create_error_output(
     tool_name: str,
-    error: str,
+    error: Optional[str] = None,
+    error_message: Optional[str] = None,  # Alias for error
+    error_type: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None
 ) -> ToolOutput:
-    """Helper to create error output"""
+    """
+    Helper to create error output
+    
+    Args:
+        tool_name: Name of the tool
+        error: Error message (primary parameter)
+        error_message: Alias for error (for backward compatibility)
+        error_type: Type of error (validation_error, execution_error, etc.)
+        metadata: Optional additional metadata
+        
+    Returns:
+        ToolOutput with status="error"
+    """
+    # Use error_message as fallback if error not provided
+    actual_error = error or error_message or "Unknown error"
+    
+    meta = metadata or {}
+    
+    # Add error_type to metadata if provided
+    if error_type:
+        meta["error_type"] = error_type
+    
     return ToolOutput(
         tool_name=tool_name,
         status="error",
-        error=error,
-        metadata=metadata or {}
+        error=actual_error,
+        metadata=meta
     )
 
 
 def create_partial_output(
     tool_name: str,
     data: Dict[str, Any],
-    missing_fields: List[str],
-    metadata: Optional[Dict[str, Any]] = None
+    missing_fields: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    formatted_context: Optional[str] = None,
+    symbols: Optional[List[str]] = None
 ) -> ToolOutput:
-    """Helper to create partial success output"""
+    """
+    Helper to create partial success output
+    
+    Used when tool returns some data but not all expected fields.
+    
+    Args:
+        tool_name: Name of the tool
+        data: Partial data returned
+        missing_fields: List of fields that are missing
+        metadata: Optional additional metadata
+        formatted_context: Optional human-readable context for LLM
+        symbols: Optional list of symbols processed
+        
+    Returns:
+        ToolOutput with status="partial"
+    """
     meta = metadata or {}
-    meta["missing_fields"] = missing_fields
+    
+    if missing_fields:
+        meta["missing_fields"] = missing_fields
+    if symbols:
+        meta["symbols"] = symbols
     
     return ToolOutput(
         tool_name=tool_name,
         status="partial",
         data=data,
+        formatted_context=formatted_context,
         metadata=meta
     )
-
-
-# ============================================================================
-# Example Usage
-# ============================================================================
-
-if __name__ == "__main__":
-    # Example: Simple atomic tool
-    class ExampleTool(BaseTool):
-        def __init__(self):
-            super().__init__()
-            self.schema = ToolSchema(
-                name="exampleTool",
-                category="example",
-                description="Example atomic tool demonstrating the interface",
-                capabilities=[
-                    "Process symbol",
-                    "Return formatted message"
-                ],
-                limitations=[
-                    "❌ Does not fetch real data",
-                    "❌ For demo purposes only"
-                ],
-                parameters=[
-                    ToolParameter(
-                        name="symbol",
-                        type="string",
-                        description="Stock symbol",
-                        required=True,
-                        pattern="^[A-Z]{1,7}$",
-                        examples=["AAPL", "NVDA", "BTCUSD"]
-                    )
-                ],
-                returns={
-                    "message": "string",
-                    "symbol": "string",
-                    "processed_at": "string"
-                }
-            )
-        
-        async def execute(self, symbol: str) -> ToolOutput:
-            return create_success_output(
-                tool_name=self.schema.name,
-                data={
-                    "message": f"Successfully processed {symbol}",
-                    "symbol": symbol,
-                    "processed_at": datetime.now().isoformat()
-                }
-            )
-    
-    # Test
-    async def test():
-        tool = ExampleTool()
-        
-        # Test 1: Valid input
-        print("Test 1: Valid input")
-        result = await tool.safe_execute(symbol="AAPL")
-        print(json.dumps(result.model_dump(), indent=2))
-        
-        # Test 2: Invalid input (should fail validation)
-        print("\nTest 2: Invalid input")
-        result = await tool.safe_execute(symbol="invalid")
-        print(json.dumps(result.model_dump(), indent=2))
-        
-        # Test 3: Missing required param
-        print("\nTest 3: Missing required param")
-        result = await tool.safe_execute()
-        print(json.dumps(result.model_dump(), indent=2))
-    
-    asyncio.run(test())

@@ -194,7 +194,23 @@ class DetectChartPatternsTool(BaseTool):
             
             # Format to schema
             formatted_data = self._format_pattern_data(pattern_results, symbol_upper)
-            
+
+            if not formatted_data.get("pattern_count"):
+                formatted_data["pattern_count"] = 0
+
+            if not formatted_data.get("confidence_scores"):
+                formatted_data["confidence_scores"] = []
+
+            if not formatted_data.get("price_targets"):
+                formatted_data["price_targets"] = {}
+
+            # Handle empty patterns case
+            if formatted_data["pattern_count"] == 0:
+                formatted_data["patterns_detected"] = []
+                formatted_data["confidence_scores"] = []
+                formatted_data["price_targets"] = {}
+                formatted_data["message"] = "No chart patterns detected in current timeframe"
+                        
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
@@ -216,19 +232,71 @@ class DetectChartPatternsTool(BaseTool):
                 error=f"Pattern detection failed: {str(e)}"
             )
     
-    def _format_pattern_data(self, raw_data: Dict, symbol: str) -> Dict[str, Any]:
-        """
-        Format raw handler output to tool schema
+    # def _format_pattern_data(self, raw_data: Dict, symbol: str) -> Dict[str, Any]:
+    #     """
+    #     Format raw handler output to tool schema
         
-        Args:
-            raw_data: Output from PatternRecognitionHandler
-            symbol: Stock symbol
+    #     Args:
+    #         raw_data: Output from PatternRecognitionHandler
+    #         symbol: Stock symbol
             
-        Returns:
-            Formatted data matching schema
-        """
-        # Extract patterns
+    #     Returns:
+    #         Formatted data matching schema
+    #     """
+    #     # Extract patterns
+    #     patterns_detected = raw_data.get("patterns", [])
+        
+    #     # Separate bullish/bearish
+    #     bullish_patterns = []
+    #     bearish_patterns = []
+        
+    #     for pattern in patterns_detected:
+    #         pattern_type = pattern.get("type", "").lower()
+    #         if any(keyword in pattern_type for keyword in ["bullish", "inverse head", "double bottom"]):
+    #             bullish_patterns.append(pattern)
+    #         elif any(keyword in pattern_type for keyword in ["bearish", "head and shoulders", "double top"]):
+    #             bearish_patterns.append(pattern)
+        
+    #     # Find highest confidence pattern
+    #     highest_confidence = None
+    #     if patterns_detected:
+    #         highest_confidence = max(
+    #             patterns_detected,
+    #             key=lambda p: p.get("confidence", 0)
+    #         )
+        
+    #     return {
+    #         "symbol": symbol,
+    #         "patterns_detected": patterns_detected,
+    #         "total_patterns": len(patterns_detected),
+    #         "bullish_patterns": bullish_patterns,
+    #         "bearish_patterns": bearish_patterns,
+    #         "highest_confidence_pattern": highest_confidence,
+    #         "summary": raw_data.get("summary", "Pattern analysis completed"),
+    #         "timestamp": datetime.now().isoformat()
+    #     }
+
+
+    def _format_pattern_data(self, raw_data: Dict, symbol: str) -> Dict[str, Any]:
+        """Format with ALL required fields"""
         patterns_detected = raw_data.get("patterns", [])
+        
+        # ✅ Calculate pattern_count
+        pattern_count = len(patterns_detected)
+        
+        # ✅ Extract confidence_scores
+        confidence_scores = [
+            p.get("confidence", 0.0) 
+            for p in patterns_detected
+        ]
+        
+        # ✅ Extract price_targets
+        price_targets = {}
+        for pattern in patterns_detected:
+            pattern_name = pattern.get("type", "unknown")
+            target = pattern.get("price_target")
+            if target:
+                price_targets[pattern_name] = target
         
         # Separate bullish/bearish
         bullish_patterns = []
@@ -249,17 +317,19 @@ class DetectChartPatternsTool(BaseTool):
                 key=lambda p: p.get("confidence", 0)
             )
         
+        # ✅ Return ALL required fields
         return {
             "symbol": symbol,
             "patterns_detected": patterns_detected,
-            "total_patterns": len(patterns_detected),
+            "pattern_count": pattern_count,           # ← Required
+            "confidence_scores": confidence_scores,    # ← Required
+            "price_targets": price_targets,            # ← Required
             "bullish_patterns": bullish_patterns,
             "bearish_patterns": bearish_patterns,
             "highest_confidence_pattern": highest_confidence,
             "summary": raw_data.get("summary", "Pattern analysis completed"),
             "timestamp": datetime.now().isoformat()
         }
-
 
 # ============================================================================
 # Standalone Testing

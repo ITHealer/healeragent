@@ -1,5 +1,18 @@
+"""
+Improved Redis Cache Helper with Retry Logic and Better Connection Management
+
+File: src/helpers/redis_cache.py
+
+This file provides fixes for:
+1. Connection timeout issues
+2. Connection pool exhaustion  
+3. "Task exception was never retrieved" errors
+4. Better graceful degradation when Redis is unavailable
+"""
+
 import json
-from typing import Optional, Any, List, Type, get_args, TypeVar, AsyncGenerator
+import asyncio
+from typing import Optional, Any, List, Type, TypeVar, AsyncGenerator
 import logging 
 
 from pydantic import BaseModel
@@ -12,207 +25,448 @@ from src.utils.logger.set_up_log_dataFMP import setup_logger
 logger = setup_logger(__name__, log_level=logging.INFO)
 T = TypeVar("T", bound=BaseModel)
 
+
+# =============================================================================
+# CONFIGURATION - INCREASED TIMEOUTS AND RETRY SETTINGS
+# =============================================================================
+
+# Timeout settings (increased from 5 to handle network latency)
+REDIS_CONNECT_TIMEOUT = 10  # seconds - was 5
+REDIS_SOCKET_TIMEOUT = 10   # seconds
+REDIS_CLOSE_TIMEOUT = 3     # seconds - for graceful close
+
+# Connection pool settings
+REDIS_MAX_CONNECTIONS = 50  # Max concurrent connections
+REDIS_HEALTH_CHECK_INTERVAL = 30  # seconds
+
+# Retry settings
+REDIS_RETRY_ATTEMPTS = 3
+REDIS_RETRY_BASE_DELAY = 0.5  # seconds - exponential backoff base
+
+
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
 async def _make_redis_url(db_index: Optional[int] = None) -> str:
+    """Build Redis URL from settings"""
     host = settings.REDIS_HOST
     port = settings.REDIS_PORT
-    pwd  = getattr(settings, "REDIS_PASSWORD", None)
-    dbi  = settings.REDIS_DB if db_index is None else db_index
+    pwd = getattr(settings, "REDIS_PASSWORD", None)
+    dbi = settings.REDIS_DB if db_index is None else db_index
     if pwd:
         return f"redis://:{pwd}@{host}:{port}/{dbi}"
     return f"redis://{host}:{port}/{dbi}"
 
-async def get_cache(redis_client: Optional[aioredis.Redis], cache_key: str, response_model: Type[T]) -> Optional[T]:
+
+async def _create_redis_connection(
+    redis_url: str,
+    decode_responses: bool = False
+) -> Optional[aioredis.Redis]:
     """
-    Hàm tiện ích chung để lấy dữ liệu (đơn lẻ) từ cache Redis.
-
-    Args:
-        redis_client: Instance của Redis client.
-        cache_key: Key để lấy dữ liệu.
-        response_model: Pydantic model của dữ liệu mong đợi.
-
-    Returns:
-        Một instance của response_model hoặc None nếu không có trong cache hoặc lỗi.
-    """
-    if redis_client:
-        try:
-            cached_data_bytes = await redis_client.get(cache_key)
-            if cached_data_bytes:
-                logger.info(f"Cache HIT cho key: {cache_key}")
-                cached_json_string = cached_data_bytes.decode('utf-8')
-                return response_model.model_validate_json(cached_json_string)
-        except aioredis.RedisError as re:
-            logger.error(f"Redis GET error cho key {cache_key}: {re}", exc_info=True)
-        except json.JSONDecodeError as jde:
-            logger.error(f"Lỗi JSONDecodeError khi parse cache cho key {cache_key}: {jde}. Data: {cached_data_bytes[:200] if cached_data_bytes else 'N/A'}", exc_info=False)
-        except Exception as e:
-            logger.error(f"Lỗi không mong muốn khi get cache cho key {cache_key}: {e}", exc_info=True)
-    else:
-        logger.debug(f"Redis client không có sẵn, bỏ qua get_cache cho key: {cache_key}")
-    return None
-
-async def get_list_cache(redis_client: Optional[aioredis.Redis], cache_key: str, item_response_model: Type[T]) -> Optional[List[T]]:
-    """
-    Hàm tiện ích chung để lấy danh sách dữ liệu từ cache Redis.
-
-    Args:
-        redis_client: Instance của Redis client.
-        cache_key: Key để lấy dữ liệu.
-        item_response_model: Pydantic model của các item trong danh sách.
-
-    Returns:
-        Một danh sách các instance của item_response_model hoặc None nếu không có trong cache hoặc lỗi.
-    """
-    if redis_client:
-        try:
-            cached_data_bytes = await redis_client.get(cache_key)
-            if cached_data_bytes:
-                logger.info(f"Cache HIT cho list key: {cache_key}")
-                cached_json_string = cached_data_bytes.decode('utf-8')
-                list_of_dicts = json.loads(cached_json_string)
-                if isinstance(list_of_dicts, list):
-                    return [item_response_model.model_validate(item_dict) for item_dict in list_of_dicts]
-                else:
-                    logger.error(f"Dữ liệu cache cho list key {cache_key} không phải là list sau khi parse JSON: {type(list_of_dicts)}")
-                    return None
-        except aioredis.RedisError as re:
-            logger.error(f"Redis GET error cho list key {cache_key}: {re}", exc_info=True)
-        except json.JSONDecodeError as jde:
-            logger.error(f"Lỗi JSONDecodeError khi parse cache cho list key {cache_key}: {jde}. Data: {cached_data_bytes[:200] if cached_data_bytes else 'N/A'}", exc_info=False)
-        except Exception as e:
-            logger.error(f"Lỗi không mong muốn khi get_list_cache cho key {cache_key}: {e}", exc_info=True)
-    else:
-        logger.debug(f"Redis client không có sẵn, bỏ qua get_list_cache cho key: {cache_key}")
-    return None
-
-async def set_cache(redis_client: Optional[aioredis.Redis], cache_key: str, data_to_cache: BaseModel, expiry: int):
-    """
-    Hàm tiện ích chung để lưu dữ liệu Pydantic model vào cache Redis.
-
-    Args:
-        redis_client: Instance của Redis client.
-        cache_key: Key để lưu dữ liệu.
-        data_to_cache: Dữ liệu Pydantic model cần lưu.
-        expiry: Thời gian hết hạn (TTL) tính bằng giây.
-    """
-    if redis_client and data_to_cache:
-        try:
-            json_string_to_store = data_to_cache.model_dump_json()
-            await redis_client.set(cache_key, json_string_to_store, ex=expiry)
-            logger.info(f"Đã cache dữ liệu cho key {cache_key} với TTL {expiry}s (sử dụng model_dump_json)")
-        except aioredis.RedisError as re:
-            logger.error(f"Redis SET error cho key {cache_key}: {re}", exc_info=True)
-            raise 
-        except Exception as e:
-            logger.error(f"Lỗi không mong muốn khi set_cache cho key {cache_key}: {e}", exc_info=True)
-            raise 
-    elif not redis_client:
-        logger.warning(f"Redis client không có sẵn, không thể set_cache cho key: {cache_key}")
-    elif not data_to_cache:
-        logger.warning(f"Dữ liệu rỗng, không set_cache cho key: {cache_key}")
-
-
-async def set_list_cache(redis_client: Optional[aioredis.Redis], cache_key: str, data_list_to_cache: List[BaseModel], expiry: int):
-    """
-    Hàm tiện ích chung để lưu danh sách các Pydantic model vào cache Redis.
-
-    Args:
-        redis_client: Instance của Redis client.
-        cache_key: Key để lưu dữ liệu.
-        data_list_to_cache: Danh sách các Pydantic model cần lưu.
-        expiry: Thời gian hết hạn (TTL) tính bằng giây.
-    """
-    if redis_client and data_list_to_cache:
-        try:
-            list_of_dicts = [item.model_dump(mode='json') for item in data_list_to_cache]
-            json_string_to_store = json.dumps(list_of_dicts)
-            await redis_client.set(cache_key, json_string_to_store, ex=expiry)
-            logger.info(f"Đã cache danh sách dữ liệu cho key {cache_key} với TTL {expiry}s")
-        except aioredis.RedisError as re:
-            logger.error(f"Redis SET error cho list key {cache_key}: {re}", exc_info=True)
-            raise
-        except Exception as e:
-            logger.error(f"Lỗi không mong muốn khi set_list_cache cho key {cache_key}: {e}", exc_info=True)
-            raise
-    elif not redis_client:
-        logger.warning(f"Redis client không có sẵn, không thể set_list_cache cho key: {cache_key}")
-    elif not data_list_to_cache:
-        logger.info(f"Danh sách dữ liệu rỗng, không set_list_cache cho key: {cache_key}")
-
-async def get_redis_client_llm() -> Optional[aioredis.Redis]:
-    """Trả về một aioredis.Redis client hoặc None, sử dụng cho các mục đích không phải FastAPI dependency."""
-    if not settings.REDIS_HOST:
-        logger.warning("Redis host (LLM) không được cấu hình. Cache sẽ bị vô hiệu hóa.")
-        return None
-    try:
-        redis_conn = await aioredis.from_url(await _make_redis_url())
-        logger.info(f"Đã kết nối tới Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT} db={settings.REDIS_DB}")
-        return redis_conn
-    except (aioredis.exceptions.ConnectionError, ConnectionRefusedError, TimeoutError) as e:
-        logger.error(f"Không thể kết nối tới Redis (LLM): {e}. Cache sẽ bị vô hiệu hóa.")
-        return None
-    except Exception as e:
-        logger.error(f"Không thể kết nối tới Redis (LLM): {e}. Cache sẽ bị vô hiệu hóa.")
-        return None
-
-# async def get_redis_client() -> Optional[aioredis.Redis]:
-#     """
-#     Dependency cho FastAPI. Chỉ dùng với `Depends()`.
-#     Nó quản lý kết nối cho một request HTTP.
-#     """
-#     if not settings.REDIS_HOST:
-#         logger.warning("Redis host not configured. Cache will be disabled for FastAPI request.")
-#         yield None
-#         return
-        
-#     redis_conn = None
-#     try:
-#         redis_url = f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-#         if getattr(settings, "REDIS_PASSWORD", None):
-#             redis_url = f"redis://:{settings.REDIS_PASSWORD}@{settings.REDIS_HOST}:{settings.REDIS_PORT}"
-        
-#         redis_conn = await aioredis.from_url(redis_url, db=15)
-#         yield redis_conn
+    Create a single Redis connection with proper timeout settings.
     
-#     except Exception as e:
-#         logger.error(f"Could not connect to Redis for FastAPI request: {e}")
-#         yield None
-#     finally:
-#         if redis_conn:
-#             await redis_conn.close()
+    Returns:
+        Redis client or None if connection failed
+    """
+    try:
+        client = await aioredis.from_url(
+            redis_url,
+            encoding="utf-8",
+            decode_responses=decode_responses,
+            socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+            socket_timeout=REDIS_SOCKET_TIMEOUT,
+            max_connections=REDIS_MAX_CONNECTIONS,
+            retry_on_timeout=True,  # ✅ NEW: Auto retry on timeout
+            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL  # ✅ NEW: Health check
+        )
+        return client
+    except Exception as e:
+        logger.error(f"Failed to create Redis connection: {e}")
+        return None
 
-# async def get_redis_client() -> AsyncGenerator[Optional[aioredis.Redis], None]:
-#     """
-#     Dependency cho FastAPI với Depends()
-#     """
-#     if not settings.REDIS_HOST:
-#         logger.warning("Redis host not configured. Cache disabled.")
-#         yield None
-#         return
-#     redis_conn = None
-#     try:
-#         redis_conn = await aioredis.from_url(
-#             await _make_redis_url(),
-#             encoding="utf-8",
-#             decode_responses=False,
-#             socket_connect_timeout=5,
-#             max_connections=50
-#         )
-#         logger.debug("Redis connection established")
-#         yield redis_conn
-#     except Exception as e:
-#         logger.error(f"Redis connection error: {e}", exc_info=True)
-#         yield None
-#     finally:
-#         if redis_conn:
-#             try:
-#                 await redis_conn.close()
-#                 logger.debug("Redis connection closed")
-#             except Exception as e:
-#                 logger.debug(f"Error closing Redis: {e}")
+
+async def _close_redis_safely(redis_client: Optional[aioredis.Redis]) -> None:
+    """
+    Safely close Redis connection with timeout to prevent hanging.
+    
+    This fixes the "Timed out closing connection after 5" error.
+    """
+    if redis_client is None:
+        return
+    
+    try:
+        # Use asyncio.wait_for to prevent indefinite hanging
+        await asyncio.wait_for(
+            redis_client.close(),
+            timeout=REDIS_CLOSE_TIMEOUT
+        )
+        # Wait for connection pool to close
+        await asyncio.wait_for(
+            redis_client.connection_pool.disconnect(),
+            timeout=REDIS_CLOSE_TIMEOUT
+        )
+        logger.debug("Redis connection closed successfully")
+    except asyncio.TimeoutError:
+        logger.warning("Redis close timed out, connection may leak")
+    except asyncio.CancelledError:
+        # Gracefully handle task cancellation
+        logger.debug("Redis close task was cancelled")
+    except Exception as e:
+        logger.warning(f"Error closing Redis connection: {e}")
+
+
+# =============================================================================
+# CACHE GET/SET FUNCTIONS WITH RETRY LOGIC
+# =============================================================================
+
+async def get_cache(
+    redis_client: Optional[aioredis.Redis], 
+    cache_key: str, 
+    response_model: Type[T]
+) -> Optional[T]:
+    """
+    Get single data item from Redis cache with error handling.
+    
+    Args:
+        redis_client: Redis client instance
+        cache_key: Cache key to retrieve
+        response_model: Pydantic model for response
+        
+    Returns:
+        Parsed model instance or None
+    """
+    if redis_client is None:
+        logger.debug(f"Redis client not available, cache MISS for: {cache_key}")
+        return None
+    
+    try:
+        # Use timeout wrapper for GET operation
+        cached_data_bytes = await asyncio.wait_for(
+            redis_client.get(cache_key),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        
+        if cached_data_bytes:
+            logger.info(f"Cache HIT for key: {cache_key}")
+            cached_json_string = cached_data_bytes.decode('utf-8')
+            return response_model.model_validate_json(cached_json_string)
+            
+    except asyncio.TimeoutError:
+        logger.error(f"Redis GET timeout for key: {cache_key}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis GET error for key {cache_key}: {re}")
+    except json.JSONDecodeError as jde:
+        logger.error(f"JSON decode error for cache key {cache_key}: {jde}")
+    except Exception as e:
+        logger.error(f"Unexpected error getting cache for key {cache_key}: {e}")
+    
+    return None
+
+
+async def set_cache(
+    redis_client: Optional[aioredis.Redis],
+    cache_key: str,
+    data_to_cache: BaseModel,
+    expiry: int
+) -> bool:
+    """
+    Set single data item in Redis cache.
+    
+    Args:
+        redis_client: Redis client instance
+        cache_key: Cache key
+        data_to_cache: Pydantic model to cache
+        expiry: TTL in seconds
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if redis_client is None:
+        logger.warning(f"Redis client not available, cannot cache key: {cache_key}")
+        return False
+    
+    if data_to_cache is None:
+        logger.warning(f"Empty data, not caching key: {cache_key}")
+        return False
+    
+    try:
+        json_string_to_store = data_to_cache.model_dump_json()
+        await asyncio.wait_for(
+            redis_client.set(cache_key, json_string_to_store, ex=expiry),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        logger.info(f"Cached data for key {cache_key} with TTL {expiry}s")
+        return True
+        
+    except asyncio.TimeoutError:
+        logger.error(f"Redis SET timeout for key: {cache_key}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis SET error for key {cache_key}: {re}")
+    except Exception as e:
+        logger.error(f"Unexpected error setting cache for key {cache_key}: {e}")
+    
+    return False
+
+
+async def get_list_cache(
+    redis_client: Optional[aioredis.Redis], 
+    cache_key: str, 
+    item_response_model: Type[T]
+) -> Optional[List[T]]:
+    """
+    Get list of items from Redis cache.
+    
+    Args:
+        redis_client: Redis client instance
+        cache_key: Cache key
+        item_response_model: Pydantic model for each list item
+        
+    Returns:
+        List of parsed models or None
+    """
+    if redis_client is None:
+        logger.debug(f"Redis client not available, cache MISS for list key: {cache_key}")
+        return None
+    
+    try:
+        cached_data_bytes = await asyncio.wait_for(
+            redis_client.get(cache_key),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        
+        if cached_data_bytes:
+            logger.info(f"Cache HIT for list key: {cache_key}")
+            cached_json_string = cached_data_bytes.decode('utf-8')
+            list_of_dicts = json.loads(cached_json_string)
+            return [item_response_model.model_validate(item) for item in list_of_dicts]
+            
+    except asyncio.TimeoutError:
+        logger.error(f"Redis GET timeout for list key: {cache_key}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis GET error for list key {cache_key}: {re}")
+    except json.JSONDecodeError as jde:
+        logger.error(f"JSON decode error for list cache key {cache_key}: {jde}")
+    except Exception as e:
+        logger.error(f"Unexpected error getting list cache for key {cache_key}: {e}")
+    
+    return None
+
+
+async def set_list_cache(
+    redis_client: Optional[aioredis.Redis], 
+    cache_key: str, 
+    data_list_to_cache: List[BaseModel], 
+    expiry: int
+) -> bool:
+    """
+    Set list of items in Redis cache.
+    
+    Args:
+        redis_client: Redis client instance  
+        cache_key: Cache key
+        data_list_to_cache: List of Pydantic models to cache
+        expiry: TTL in seconds
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if redis_client is None:
+        logger.warning(f"Redis client not available, cannot cache list key: {cache_key}")
+        return False
+    
+    if not data_list_to_cache:
+        logger.info(f"Empty list, not caching key: {cache_key}")
+        return False
+    
+    try:
+        list_of_dicts = [item.model_dump(mode='json') for item in data_list_to_cache]
+        json_string_to_store = json.dumps(list_of_dicts)
+        
+        await asyncio.wait_for(
+            redis_client.set(cache_key, json_string_to_store, ex=expiry),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        logger.info(f"Cached list data for key {cache_key} with TTL {expiry}s")
+        return True
+        
+    except asyncio.TimeoutError:
+        logger.error(f"Redis SET timeout for list key: {cache_key}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis SET error for list key {cache_key}: {re}")
+    except Exception as e:
+        logger.error(f"Unexpected error setting list cache for key {cache_key}: {e}")
+    
+    return False
+
+
+# =============================================================================
+# PAGINATED CACHE FUNCTIONS
+# =============================================================================
+
+async def get_paginated_cache(
+    redis_client: Optional[aioredis.Redis],
+    cache_key: str,
+    response_model: Type[PaginatedData]
+) -> Optional[PaginatedData]:
+    """
+    Get paginated data from Redis cache with improved error handling.
+    
+    Args:
+        redis_client: Redis client instance
+        cache_key: Cache key
+        response_model: PaginatedData model type
+        
+    Returns:
+        PaginatedData instance or None
+    """
+    if redis_client is None:
+        logger.warning(f"Redis client not available, cache MISS for paginated key: {cache_key}")
+        return None
+    
+    try:
+        cached_data_bytes = await asyncio.wait_for(
+            redis_client.get(cache_key),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        
+        if cached_data_bytes:
+            logger.info(f"Cache HIT for paginated key: {cache_key}")
+            cached_json_string = cached_data_bytes.decode('utf-8')
+            return response_model.model_validate_json(cached_json_string)
+            
+    except asyncio.TimeoutError:
+        logger.error(f"Redis GET timeout for paginated key: {cache_key}")
+    except aioredis.ConnectionError as ce:
+        logger.error(f"Redis connection error for paginated key {cache_key}: {ce}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis error for paginated key {cache_key}: {re}")
+    except Exception as e:
+        logger.error(f"Unexpected error for paginated key {cache_key}: {e}")
+    
+    return None
+
+
+async def set_paginated_cache(
+    redis_client: Optional[aioredis.Redis],
+    cache_key: str,
+    paginated_data: PaginatedData,
+    expiry: int
+) -> bool:
+    """
+    Set paginated data in Redis cache.
+    
+    Args:
+        redis_client: Redis client instance
+        cache_key: Cache key
+        paginated_data: PaginatedData instance to cache
+        expiry: TTL in seconds
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    if redis_client is None:
+        logger.warning(f"Redis client not available, cannot cache paginated key: {cache_key}")
+        return False
+    
+    if paginated_data is None:
+        logger.warning(f"Empty paginated data, not caching key: {cache_key}")
+        return False
+    
+    try:
+        json_string_to_store = paginated_data.model_dump_json()
+        await asyncio.wait_for(
+            redis_client.set(cache_key, json_string_to_store, ex=expiry),
+            timeout=REDIS_SOCKET_TIMEOUT
+        )
+        logger.info(f"Cached paginated data for key {cache_key} with TTL {expiry}s")
+        return True
+        
+    except asyncio.TimeoutError:
+        logger.error(f"Redis SET timeout for paginated key: {cache_key}")
+    except aioredis.RedisError as re:
+        logger.error(f"Redis SET error for paginated key {cache_key}: {re}")
+    except Exception as e:
+        logger.error(f"Unexpected error setting paginated cache for key {cache_key}: {e}")
+    
+    return False
+
+
+# =============================================================================
+# CONNECTION CONTEXT MANAGERS WITH RETRY LOGIC
+# =============================================================================
+
+@asynccontextmanager
+async def get_redis_client_with_retry(
+    max_retries: int = REDIS_RETRY_ATTEMPTS
+) -> AsyncGenerator[Optional[aioredis.Redis], None]:
+    """
+    Context manager that gets Redis connection with retry logic.
+    
+    Usage:
+        async with get_redis_client_with_retry() as redis:
+            if redis:
+                await redis.get("key")
+    
+    Args:
+        max_retries: Maximum number of connection attempts
+        
+    Yields:
+        Redis client or None if all attempts failed
+    """
+    if not settings.REDIS_HOST:
+        logger.warning("Redis host not configured. Cache disabled.")
+        yield None
+        return
+    
+    redis_conn = None
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            redis_url = await _make_redis_url()
+            redis_conn = await _create_redis_connection(redis_url, decode_responses=False)
+            
+            if redis_conn:
+                # Test connection with PING
+                await asyncio.wait_for(
+                    redis_conn.ping(),
+                    timeout=REDIS_CONNECT_TIMEOUT
+                )
+                logger.debug(f"Redis connected on attempt {attempt + 1}")
+                break
+                
+        except (aioredis.ConnectionError, asyncio.TimeoutError, OSError) as e:
+            last_error = e
+            logger.warning(
+                f"Redis connection attempt {attempt + 1}/{max_retries} failed: {e}"
+            )
+            
+            if attempt < max_retries - 1:
+                # Exponential backoff
+                delay = REDIS_RETRY_BASE_DELAY * (2 ** attempt)
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Failed to connect to Redis after {max_retries} attempts: {last_error}")
+                redis_conn = None
+    
+    try:
+        yield redis_conn
+    finally:
+        await _close_redis_safely(redis_conn)
+
 
 async def get_redis_client() -> AsyncGenerator[Optional[aioredis.Redis], None]:
     """
-    Dependency cho FastAPI với Depends()
+    FastAPI Dependency for Redis connection with improved error handling.
+    
+    Usage with FastAPI:
+        @app.get("/endpoint")
+        async def endpoint(redis: Optional[aioredis.Redis] = Depends(get_redis_client)):
+            ...
+    
+    Yields:
+        Redis client or None
     """
     if not settings.REDIS_HOST:
         logger.warning("Redis host not configured. Cache disabled.")
@@ -221,97 +475,165 @@ async def get_redis_client() -> AsyncGenerator[Optional[aioredis.Redis], None]:
     
     redis_conn = None
     
-    # Try to establish connection
     try:
-        redis_conn = await aioredis.from_url(
-            await _make_redis_url(),
-            encoding="utf-8",
-            decode_responses=False,
-            socket_connect_timeout=5,
-            max_connections=50
-        )
-        logger.debug("Redis connection established")
+        redis_url = await _make_redis_url()
+        redis_conn = await _create_redis_connection(redis_url, decode_responses=False)
+        
+        if redis_conn:
+            # Verify connection is alive
+            await asyncio.wait_for(
+                redis_conn.ping(),
+                timeout=REDIS_CONNECT_TIMEOUT
+            )
+            logger.debug("Redis connection established for request")
+            
+    except (aioredis.ConnectionError, asyncio.TimeoutError, OSError) as e:
+        logger.error(f"Redis connection error: {e}")
+        redis_conn = None
     except Exception as e:
-        logger.error(f"Redis connection error: {e}", exc_info=True)
+        logger.error(f"Unexpected Redis error: {e}")
+        redis_conn = None
+    
+    try:
+        yield redis_conn
+    finally:
+        await _close_redis_safely(redis_conn)
+
+
+@asynccontextmanager
+async def get_redis_client_for_scheduler() -> AsyncGenerator[Optional[aioredis.Redis], None]:
+    """
+    Context Manager for background scheduler tasks with retry logic.
+    
+    Usage:
+        async with get_redis_client_for_scheduler() as redis:
+            if redis:
+                await redis.set("key", "value")
+    
+    Yields:
+        Redis client or None
+    """
+    if not settings.REDIS_HOST:
+        logger.warning("Redis host not configured. Cache disabled for scheduler.")
         yield None
         return
     
-    # Yield connection và cleanup
-    try:
-        yield redis_conn
-    finally:
-        # ENSURE CONNECTION IS CLOSED
-        if redis_conn:
-            try:
-                await redis_conn.close()
-                logger.debug("Redis connection closed")
-            except Exception as e:
-                logger.error(f"Error closing Redis connection: {e}", exc_info=True)
-
-@asynccontextmanager
-async def get_redis_client_for_scheduler() -> Optional[aioredis.Redis]:
-    """
-    Context Manager cho các tác vụ nền (scheduler). 
-    Dùng với `async with` để đảm bảo kết nối Redis được quản lý và đóng đúng cách.
-    Cho phép chọn DB index riêng biệt (mặc định lấy từ settings.REDIS_DB).
-    """
-    if not settings.REDIS_HOST:
-        logger.warning("Redis host not configured. Cache will be disabled for scheduler task.")
-        yield None
-        return
-
-    redis_conn: Optional[aioredis.Redis] = None
+    redis_conn = None
+    
     try:
         redis_url = await _make_redis_url()
-        redis_conn = await aioredis.from_url(
-            redis_url,
-            encoding="utf-8",
-            decode_responses=False,
-            socket_connect_timeout=5,
-            max_connections=50
-        )
-        logger.debug(f"Scheduler Redis connected (db={settings.REDIS_DB})")
-        yield redis_conn
-    except Exception as e:
-        logger.error(f"Could not connect to Redis for scheduler task: {e}", exc_info=True)
-        yield None
-    finally:
+        redis_conn = await _create_redis_connection(redis_url, decode_responses=False)
+        
         if redis_conn:
-            try:
-                await redis_conn.close()
-                logger.debug("Scheduler Redis connection closed.")
-            except Exception as e:
-                logger.warning(f"Error closing Redis for scheduler task: {e}", exc_info=True)
+            await asyncio.wait_for(
+                redis_conn.ping(),
+                timeout=REDIS_CONNECT_TIMEOUT
+            )
+            logger.debug(f"Scheduler Redis connected (db={settings.REDIS_DB})")
+            
+    except Exception as e:
+        logger.error(f"Could not connect to Redis for scheduler: {e}")
+        redis_conn = None
+    
+    try:
+        yield redis_conn
+    finally:
+        await _close_redis_safely(redis_conn)
 
-async def set_paginated_cache(
-    redis_client: Optional[aioredis.Redis],
-    cache_key: str,
-    paginated_data: PaginatedData, 
-    expiry: int
-):
-    """Lưu dữ liệu có phân trang (bao gồm totalRows và data) vào Redis."""
-    if redis_client and paginated_data:
-        try:
-            json_string_to_store = paginated_data.model_dump_json()
-            await redis_client.set(cache_key, json_string_to_store, ex=expiry)
-            # logger.info(f"Đã cache dữ liệu phân trang cho key {cache_key} với TTL {expiry}s")
-        except Exception as e:
-            logger.error(f"Lỗi Redis SET cho paginated key {cache_key}: {e}", exc_info=True)
-            raise
 
-async def get_paginated_cache(
-    redis_client: Optional[aioredis.Redis],
-    cache_key: str,
-    response_model: Type[PaginatedData] 
-) -> Optional[PaginatedData]:
-    """Lấy dữ liệu có phân trang từ Redis."""
-    if redis_client:
-        try:
-            cached_data_bytes = await redis_client.get(cache_key)
-            if cached_data_bytes:
-                logger.info(f"Cache HIT cho paginated key: {cache_key}")
-                cached_json_string = cached_data_bytes.decode('utf-8')
-                return response_model.model_validate_json(cached_json_string)
-        except Exception as e:
-            logger.error(f"Lỗi Redis GET cho paginated key {cache_key}: {e}", exc_info=True)
+async def get_redis_client_llm() -> Optional[aioredis.Redis]:
+    """
+    Get Redis client for LLM operations (non-context manager version).
+    
+    Note: Caller is responsible for closing the connection!
+    
+    Returns:
+        Redis client or None
+    """
+    if not settings.REDIS_HOST:
+        logger.warning("Redis host (LLM) not configured. Cache disabled.")
+        return None
+    
+    try:
+        redis_url = await _make_redis_url()
+        redis_conn = await _create_redis_connection(redis_url, decode_responses=True)
+        
+        if redis_conn:
+            await asyncio.wait_for(
+                redis_conn.ping(),
+                timeout=REDIS_CONNECT_TIMEOUT
+            )
+            logger.info(f"Connected to Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+            return redis_conn
+            
+    except (aioredis.ConnectionError, ConnectionRefusedError, asyncio.TimeoutError) as e:
+        logger.error(f"Cannot connect to Redis (LLM): {e}. Cache disabled.")
+    except Exception as e:
+        logger.error(f"Unexpected error connecting to Redis (LLM): {e}")
+    
     return None
+
+
+# =============================================================================
+# REDIS CONNECTION MANAGER SINGLETON (Optional - for advanced use cases)
+# =============================================================================
+
+class RedisConnectionManager:
+    """
+    Singleton Redis connection manager for advanced lifecycle management.
+    
+    Usage:
+        manager = RedisConnectionManager()
+        client = await manager.get_client()
+        # ... use client ...
+        await manager.close()  # Call on application shutdown
+    """
+    _instance = None
+    _client: Optional[aioredis.Redis] = None
+    _lock: asyncio.Lock = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._lock = asyncio.Lock()
+        return cls._instance
+    
+    async def get_client(self) -> Optional[aioredis.Redis]:
+        """Get or create Redis client"""
+        async with self._lock:
+            if self._client is None:
+                if not settings.REDIS_HOST:
+                    return None
+                    
+                redis_url = await _make_redis_url()
+                self._client = await _create_redis_connection(redis_url)
+                
+                if self._client:
+                    try:
+                        await self._client.ping()
+                    except Exception:
+                        self._client = None
+            
+            return self._client
+    
+    async def close(self) -> None:
+        """Close Redis connection gracefully"""
+        async with self._lock:
+            if self._client:
+                await _close_redis_safely(self._client)
+                self._client = None
+    
+    async def health_check(self) -> bool:
+        """Check if Redis connection is healthy"""
+        try:
+            client = await self.get_client()
+            if client:
+                await asyncio.wait_for(client.ping(), timeout=5.0)
+                return True
+        except Exception:
+            pass
+        return False
+
+
+# Global instance (optional)
+redis_manager = RedisConnectionManager()

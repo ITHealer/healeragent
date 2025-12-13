@@ -356,18 +356,57 @@ class GetSupportResistanceTool(BaseTool):
         nearest_resistance = resistance_levels[0] if resistance_levels else None
         nearest_support = support_levels[0] if support_levels else None
         
+        trading_range = {
+            "current_price": round(current_price, 2),
+            "nearest_support": nearest_support["price"] if nearest_support else None,
+            "nearest_resistance": nearest_resistance["price"] if nearest_resistance else None,
+            "range_width": 0.0,
+            "position_in_range_pct": 0.0
+        }
+
+        if nearest_support and nearest_resistance:
+            support_price = nearest_support["price"]
+            resistance_price = nearest_resistance["price"]
+            
+            # Calculate range width
+            range_width = resistance_price - support_price
+            trading_range["range_width"] = round(range_width, 2)
+            
+            # Calculate range percentage
+            range_pct = (range_width / support_price) * 100
+            trading_range["range_pct"] = round(range_pct, 2)
+            
+            # Calculate position in range (0% = at support, 100% = at resistance)
+            if range_width > 0:
+                position = ((current_price - support_price) / range_width) * 100
+                trading_range["position_in_range_pct"] = round(position, 2)
+
         return {
             "symbol": symbol,
             "current_price": round(current_price, 2),
             "pivot_points": pivot_points,
-            "resistance_levels": resistance_levels[:5],  # Top 5
-            "support_levels": support_levels[:5],  # Top 5
+            "resistance_levels": resistance_levels[:5],
+            "support_levels": support_levels[:5],
             "nearest_resistance": nearest_resistance,
             "nearest_support": nearest_support,
+            "trading_range": trading_range,  # ← Required field
             "key_moving_averages": ma_levels,
             "analysis_period": f"{len(historical_data)} days",
             "timestamp": datetime.now().isoformat()
         }
+
+        # return {
+        #     "symbol": symbol,
+        #     "current_price": round(current_price, 2),
+        #     "pivot_points": pivot_points,
+        #     "resistance_levels": resistance_levels[:5],  # Top 5
+        #     "support_levels": support_levels[:5],  # Top 5
+        #     "nearest_resistance": nearest_resistance,
+        #     "nearest_support": nearest_support,
+        #     "key_moving_averages": ma_levels,
+        #     "analysis_period": f"{len(historical_data)} days",
+        #     "timestamp": datetime.now().isoformat()
+        # }
     
     def _calculate_pivot_points(
         self,

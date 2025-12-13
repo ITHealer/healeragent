@@ -97,7 +97,7 @@ poetry.lock
 temp/
 chroma.sqlite3
 news_agent_logs/
-news_crawl_logs/
+news_crawl_logs/git 
 hf_cache/
 *.sqlite3
 *.db

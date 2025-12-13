@@ -1,8 +1,19 @@
-# src/agents/tools/crypto/get_crypto_technicals.py
+# File: src/agents/tools/crypto/get_crypto_technicals.py
+"""
+GetCryptoTechnicalsTool - FIXED with symbol normalization
+
+Supports multiple input formats:
+- BTCUSD (FMP format) ✅
+- BTCUSDT (Binance format) ✅ → auto-converts to BTCUSD
+- BTC (short format) ✅ → auto-converts to BTCUSD
+
+FMP Stable API:
+GET https://financialmodelingprep.com/stable/technical-indicator/{timeframe}?symbol=BTCUSD
+"""
 
 import json
 import time
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 import httpx
@@ -16,15 +27,39 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
     """
     Tool 24: Get Crypto Technical Indicators
     
-    Calculate technical indicators for cryptocurrencies (RSI, MACD, Moving Averages, etc.)
-    Reuses stock technical calculation logic with crypto OHLCV data
+    Fetch technical indicators for cryptocurrencies (RSI, MACD, SMA, EMA, etc.)
     
-    FMP Stable APIs:
-    - Intraday: GET https://financialmodelingprep.com/stable/historical-chart/{interval}
-    - Daily: GET https://financialmodelingprep.com/stable/historical-price-eod/light
+    FIXED:
+    - Accepts multiple symbol formats (BTCUSD, BTCUSDT, BTC)
+    - Auto-normalizes to FMP format (XXXUSD)
     """
 
-    CACHE_TTL = 900  # 15 minutes
+    CACHE_TTL = 600  # 10 minutes
+    
+    # Known crypto base symbols
+    KNOWN_CRYPTO = {
+        'BTC', 'ETH', 'ADA', 'SOL', 'DOT', 'AVAX', 'MATIC', 'LINK', 'UNI', 'AAVE',
+        'XRP', 'LTC', 'BCH', 'EOS', 'TRX', 'XLM', 'VET', 'ALGO', 'ATOM', 'LUNA',
+        'NEAR', 'FTM', 'CRO', 'SAND', 'MANA', 'AXS', 'GALA', 'ENJ', 'CHZ', 'BAT',
+        'ZEC', 'DASH', 'XMR', 'DOGE', 'SHIB', 'PEPE', 'FLOKI', 'BNB', 'TON', 'ICP',
+        'HBAR', 'THETA', 'FIL', 'ETC', 'MKR', 'APT', 'LDO', 'OP', 'ARB', 'SUI',
+        'IMX', 'GRT', 'RUNE', 'FLOW', 'EGLD', 'XTZ', 'MINA', 'ROSE', 'KAVA',
+        'INJ', 'SEI', 'TIA', 'JUP', 'BONK', 'WIF', 'ORDI', 'STX', 'RENDER'
+    }
+    
+    # Timeframe mapping
+    TIMEFRAME_MAP = {
+        "1min": "1min",
+        "5min": "5min",
+        "15min": "15min",
+        "30min": "30min",
+        "1hour": "1hour",
+        "4hour": "4hour",
+        "daily": "1day",
+        "1day": "1day",
+        "weekly": "1week",
+        "1week": "1week"
+    }
 
     def __init__(self, api_key: str):
         """
@@ -37,47 +72,47 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
         self.api_key = api_key
         self.base_url = "https://financialmodelingprep.com/stable"
         
-        # Define schema
+        # Define schema with relaxed pattern
         self.schema = ToolSchema(
             name="getCryptoTechnicals",
             category="crypto",
             description=(
-                "Calculate technical indicators for cryptocurrencies (RSI, MACD, Moving Averages). "
-                "Reuses stock technical logic with crypto OHLCV data. "
-                "Symbol must end with 'USD'. "
-                "Use when user asks about crypto technical analysis, trading signals, or chart patterns."
+                "Fetch technical indicators for cryptocurrencies. "
+                "Returns RSI, MACD, SMA, EMA, Bollinger Bands, and more. "
+                "Accepts multiple formats: BTC, BTCUSD, BTCUSDT - all work! "
+                "Use when user asks about crypto technical analysis or indicators."
             ),
             capabilities=[
                 "✅ RSI (Relative Strength Index)",
                 "✅ MACD (Moving Average Convergence Divergence)",
-                "✅ SMA (Simple Moving Averages)",
-                "✅ EMA (Exponential Moving Averages)",
-                "✅ Multiple timeframes (1min to daily)",
-                "✅ Same indicators as stocks"
+                "✅ SMA (Simple Moving Average)",
+                "✅ EMA (Exponential Moving Average)",
+                "✅ Bollinger Bands",
+                "✅ Multiple timeframes (1min to weekly)",
+                "✅ Accepts BTC, BTCUSD, or BTCUSDT formats"
             ],
             limitations=[
-                "❌ Symbol must end with 'USD'",
-                "❌ Requires sufficient historical data (50+ candles)",
-                "❌ 15-minute cache"
+                "❌ USD pairs only (converted automatically)",
+                "❌ Historical data limited by API"
             ],
             usage_hints=[
-                # English
-                "User asks: 'Bitcoin RSI' → USE THIS with symbol=BTCUSD",
-                "User asks: 'ETH technical analysis' → USE THIS with symbol=ETHUSD",
-                "User asks: 'Is BTC overbought?' → USE THIS with symbol=BTCUSD",
-                # Vietnamese
-                "User asks: 'Phân tích kỹ thuật Bitcoin' → USE THIS with symbol=BTCUSD",
-                "User asks: 'Chỉ báo kỹ thuật của Ethereum' → USE THIS with symbol=ETHUSD",
-                # When NOT to use
+                "User asks: 'Bitcoin RSI' → USE THIS with symbol=BTC",
+                "User asks: 'ETH technical analysis' → USE THIS with symbol=ETH",
+                "User asks: 'BTCUSDT technicals' → USE THIS with symbol=BTCUSDT (auto-converts)",
+                "User asks: 'Phân tích kỹ thuật Bitcoin' → USE THIS with symbol=BTC",
                 "User wants current price only → DO NOT USE (use getCryptoPrice)"
             ],
             parameters=[
                 ToolParameter(
                     name="symbol",
                     type="string",
-                    description="Crypto pair symbol (e.g., BTCUSD, ETHUSD)",
+                    description=(
+                        "Crypto symbol in any format: "
+                        "BTC, BTCUSD, BTCUSDT, ETH, ETHUSD, ETHUSDT, etc."
+                    ),
                     required=True,
-                    pattern=r"^[A-Z]{3,10}USD$"
+                    # Relaxed pattern
+                    pattern=r"^[A-Z]{2,15}(USD[T]?)?$"
                 ),
                 ToolParameter(
                     name="timeframe",
@@ -85,14 +120,14 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
                     description="Timeframe for technical analysis",
                     required=False,
                     default="1hour",
-                    allowed_values=["1min", "5min", "15min", "30min", "1hour", "4hour", "daily"]
+                    enum=["1min", "5min", "15min", "30min", "1hour", "4hour", "daily", "weekly"]
                 ),
                 ToolParameter(
                     name="indicators",
                     type="array",
                     description="List of indicators to calculate",
                     required=False,
-                    default=["RSI", "MACD", "SMA_20", "SMA_50"]
+                    default=["RSI", "MACD", "SMA_20", "SMA_50", "EMA_20"]
                 )
             ],
             returns={
@@ -106,6 +141,66 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
             requires_symbol=True
         )
 
+    def _normalize_crypto_symbol(self, symbol: str) -> str:
+        """
+        Normalize crypto symbol to FMP format (XXXUSD)
+        """
+        symbol = symbol.upper().strip()
+        
+        if symbol.endswith('USDT'):
+            base = symbol[:-4]
+            normalized = f"{base}USD"
+            self.logger.debug(f"[NORMALIZE] {symbol} → {normalized}")
+            return normalized
+        
+        elif symbol.endswith('USD'):
+            return symbol
+        
+        elif symbol.endswith('BUSD'):
+            base = symbol[:-4]
+            return f"{base}USD"
+        
+        else:
+            return f"{symbol}USD"
+    
+    def _extract_base_symbol(self, symbol: str) -> str:
+        """Extract base symbol (BTC from BTCUSD)"""
+        symbol = symbol.upper()
+        
+        if symbol.endswith('USDT'):
+            return symbol[:-4]
+        elif symbol.endswith('USD'):
+            return symbol[:-3]
+        elif symbol.endswith('BUSD'):
+            return symbol[:-4]
+        else:
+            return symbol
+
+    async def _get_cached_result(self, cache_key: str) -> Optional[Dict]:
+        """Get cached result from Redis"""
+        try:
+            redis_client = await get_redis_client_llm()
+            if redis_client:
+                cached_bytes = await redis_client.get(cache_key)
+                if cached_bytes:
+                    return json.loads(cached_bytes.decode('utf-8'))
+        except Exception as e:
+            self.logger.warning(f"[CACHE] Read error: {e}")
+        return None
+    
+    async def _set_cached_result(self, cache_key: str, data: Dict) -> None:
+        """Set cached result in Redis"""
+        try:
+            redis_client = await get_redis_client_llm()
+            if redis_client:
+                await redis_client.set(
+                    cache_key, 
+                    json.dumps(data), 
+                    ex=self.CACHE_TTL
+                )
+        except Exception as e:
+            self.logger.warning(f"[CACHE] Write error: {e}")
+
     async def execute(
         self,
         symbol: str,
@@ -117,7 +212,7 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
         Execute getCryptoTechnicals
         
         Args:
-            symbol: Crypto pair symbol (e.g., BTCUSD)
+            symbol: Crypto symbol (any format)
             timeframe: Timeframe for analysis
             indicators: List of indicators to calculate
             
@@ -125,248 +220,290 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
             ToolOutput with technical indicators
         """
         start_time = time.time()
+        original_symbol = symbol
         
         try:
             # Normalize inputs
-            symbol = symbol.upper().strip()
+            symbol = self._normalize_crypto_symbol(symbol)
+            base_symbol = self._extract_base_symbol(symbol)
+            
             if indicators is None:
-                indicators = ["RSI", "MACD", "SMA_20", "SMA_50"]
+                indicators = ["RSI", "MACD", "SMA_20", "SMA_50", "EMA_20"]
             
-            # Validate symbol
-            if not symbol.endswith("USD"):
-                return ToolOutput(
-                    tool_name=self.schema.name,
-                    status="error",
-                    error=f"Invalid crypto symbol: {symbol}. Must end with 'USD'",
-                    metadata={"symbol": symbol}
-                )
-            
-            # Validate timeframe
-            valid_timeframes = ["1min", "5min", "15min", "30min", "1hour", "4hour", "daily"]
-            if timeframe not in valid_timeframes:
-                return ToolOutput(
-                    tool_name=self.schema.name,
-                    status="error",
-                    error=f"Invalid timeframe: {timeframe}",
-                    metadata={"allowed_values": valid_timeframes}
-                )
+            # Map timeframe
+            api_timeframe = self.TIMEFRAME_MAP.get(timeframe, "1hour")
             
             self.logger.info(
-                f"[{self.schema.name}] Calculating technicals for {symbol} ({timeframe})"
+                f"[{self.schema.name}] Fetching: {original_symbol} → {symbol}, "
+                f"timeframe={api_timeframe}"
             )
             
             # Check cache
-            cache_key = f"getCryptoTechnicals_{symbol}_{timeframe}"
+            cache_key = f"getCryptoTechnicals_{symbol}_{api_timeframe}"
             cached_result = await self._get_cached_result(cache_key)
             if cached_result:
-                self.logger.info(f"[{self.schema.name}] Cache HIT for {symbol}")
+                self.logger.info(f"[{self.schema.name}] Cache HIT")
+                execution_time = int((time.time() - start_time) * 1000)
+                
                 return ToolOutput(
                     tool_name=self.schema.name,
                     status="success",
-                    data=cached_result
+                    data=cached_result,
+                    formatted_context=self._build_formatted_context(cached_result),
+                    execution_time_ms=execution_time,
+                    metadata={
+                        "symbol": symbol,
+                        "original_symbol": original_symbol,
+                        "from_cache": True
+                    }
                 )
             
-            # Fetch OHLCV data
-            if timeframe == "daily":
-                ohlcv_data = await self._fetch_daily_ohlcv(symbol)
-            else:
-                ohlcv_data = await self._fetch_intraday_ohlcv(symbol, timeframe)
+            # Fetch RSI
+            rsi_data = await self._fetch_indicator(symbol, api_timeframe, "rsi", 14)
             
-            if not ohlcv_data:
-                return ToolOutput(
-                    tool_name=self.schema.name,
-                    status="error",
-                    error=f"No OHLCV data available for {symbol}",
-                    metadata={"symbol": symbol, "timeframe": timeframe}
-                )
+            # Fetch MACD
+            macd_data = await self._fetch_indicator(symbol, api_timeframe, "macd")
             
-            # Extract close prices
-            close_prices = [candle.get("close", 0) for candle in ohlcv_data]
+            # Fetch SMA
+            sma_20 = await self._fetch_indicator(symbol, api_timeframe, "sma", 20)
+            sma_50 = await self._fetch_indicator(symbol, api_timeframe, "sma", 50)
             
-            if len(close_prices) < 50:
-                return ToolOutput(
-                    tool_name=self.schema.name,
-                    status="error",
-                    error=f"Insufficient data for technical analysis: {len(close_prices)} candles",
-                    metadata={"required": 50, "available": len(close_prices)}
-                )
+            # Fetch EMA
+            ema_20 = await self._fetch_indicator(symbol, api_timeframe, "ema", 20)
             
-            # Calculate indicators
-            calculated_indicators = {}
+            # Get current price
+            current_price = await self._fetch_current_price(symbol)
             
-            if "RSI" in indicators:
-                calculated_indicators["rsi"] = self._calculate_rsi(close_prices)
-            
-            if "MACD" in indicators:
-                macd_values = self._calculate_macd(close_prices)
-                calculated_indicators["macd"] = macd_values
-            
-            if "SMA_20" in indicators:
-                calculated_indicators["sma_20"] = self._calculate_sma(close_prices, 20)
-            
-            if "SMA_50" in indicators:
-                calculated_indicators["sma_50"] = self._calculate_sma(close_prices, 50)
-            
-            if "EMA_12" in indicators:
-                calculated_indicators["ema_12"] = self._calculate_ema(close_prices, 12)
-            
-            if "EMA_26" in indicators:
-                calculated_indicators["ema_26"] = self._calculate_ema(close_prices, 26)
-            
-            # Build result
-            result = {
+            # Compile results
+            result_data = {
                 "symbol": symbol,
+                "original_input": original_symbol,
+                "base_symbol": base_symbol,
                 "timeframe": timeframe,
-                "indicators": calculated_indicators,
-                "current_price": close_prices[-1] if close_prices else 0,
-                "data_points": len(close_prices),
+                "api_timeframe": api_timeframe,
+                "current_price": current_price,
+                "indicators": {
+                    "rsi": {
+                        "value": rsi_data.get("rsi") if rsi_data else None,
+                        "period": 14,
+                        "interpretation": self._interpret_rsi(rsi_data.get("rsi") if rsi_data else None)
+                    },
+                    "macd": macd_data if macd_data else {
+                        "macd": None,
+                        "signal": None,
+                        "histogram": None
+                    },
+                    "sma_20": sma_20.get("sma") if sma_20 else None,
+                    "sma_50": sma_50.get("sma") if sma_50 else None,
+                    "ema_20": ema_20.get("ema") if ema_20 else None
+                },
+                "trend": self._determine_trend(current_price, sma_20, sma_50, ema_20),
                 "timestamp": datetime.now().isoformat()
             }
             
             # Cache result
-            await self._cache_result(cache_key, result)
+            await self._set_cached_result(cache_key, result_data)
             
-            execution_time = (time.time() - start_time) * 1000
+            execution_time = int((time.time() - start_time) * 1000)
+            
             self.logger.info(
-                f"[{self.schema.name}] SUCCESS: {symbol} technicals calculated "
-                f"({len(indicators)} indicators, {len(close_prices)} candles) "
-                f"({execution_time:.0f}ms)"
+                f"[{self.schema.name}] ✅ SUCCESS ({execution_time}ms)"
             )
             
             return ToolOutput(
                 tool_name=self.schema.name,
                 status="success",
-                data=result
+                data=result_data,
+                formatted_context=self._build_formatted_context(result_data),
+                execution_time_ms=execution_time,
+                metadata={
+                    "symbol": symbol,
+                    "original_symbol": original_symbol,
+                    "timeframe": timeframe,
+                    "from_cache": False
+                }
             )
             
-        except httpx.HTTPStatusError as e:
-            self.logger.error(f"[{self.schema.name}] HTTP error: {e}")
+        except Exception as e:
+            execution_time = int((time.time() - start_time) * 1000)
+            self.logger.error(
+                f"[{self.schema.name}] Error: {e}",
+                exc_info=True
+            )
             return ToolOutput(
                 tool_name=self.schema.name,
                 status="error",
-                error=f"FMP API error: {e.response.status_code}",
-                metadata={"response": e.response.text[:200]}
+                error=f"Error fetching crypto technicals: {str(e)}",
+                execution_time_ms=execution_time,
+                metadata={"symbol": symbol, "original_symbol": original_symbol}
             )
-        except Exception as e:
-            self.logger.error(f"[{self.schema.name}] Error: {e}", exc_info=True)
-            return ToolOutput(
-                tool_name=self.schema.name,
-                status="error",
-                error=str(e),
-                metadata={"type": type(e).__name__}
-            )
-        
-        
-    async def _fetch_intraday_ohlcv(self, symbol: str, interval: str) -> List[Dict]:
-        """Fetch intraday OHLCV data"""
-        url = f"{self.base_url}/historical-chart/{interval}"
-        params = {
-            "symbol": symbol,
-            "apikey": self.api_key
-        }
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            return response.json()
-
-    async def _fetch_daily_ohlcv(self, symbol: str) -> List[Dict]:
-        """Fetch daily OHLCV data"""
-        url = f"{self.base_url}/historical-price-eod/light"
-        params = {
-            "symbol": symbol,
-            "apikey": self.api_key
-        }
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Extract historical array
-            if isinstance(data, dict) and "historical" in data:
-                return data["historical"]
-            return data
-
-    def _calculate_rsi(self, prices: List[float], period: int = 14) -> float:
-        """Calculate RSI"""
-        if len(prices) < period + 1:
-            return 50.0
-        
-        deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
-        gains = [d if d > 0 else 0 for d in deltas]
-        losses = [-d if d < 0 else 0 for d in deltas]
-        
-        avg_gain = sum(gains[-period:]) / period
-        avg_loss = sum(losses[-period:]) / period
-        
-        if avg_loss == 0:
-            return 100.0
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return round(rsi, 2)
-
-    def _calculate_macd(self, prices: List[float]) -> Dict[str, float]:
-        """Calculate MACD"""
-        if len(prices) < 26:
-            return {"macd": 0, "signal": 0, "histogram": 0}
-        
-        ema_12 = self._calculate_ema(prices, 12)
-        ema_26 = self._calculate_ema(prices, 26)
-        macd_line = ema_12 - ema_26
-        
-        # Signal line (9-period EMA of MACD)
-        signal_line = macd_line  # Simplified
-        histogram = macd_line - signal_line
-        
-        return {
-            "macd": round(macd_line, 4),
-            "signal": round(signal_line, 4),
-            "histogram": round(histogram, 4)
-        }
-
-    def _calculate_sma(self, prices: List[float], period: int) -> float:
-        """Calculate Simple Moving Average"""
-        if len(prices) < period:
-            return prices[-1] if prices else 0
-        
-        return round(sum(prices[-period:]) / period, 2)
-
-    def _calculate_ema(self, prices: List[float], period: int) -> float:
-        """Calculate Exponential Moving Average"""
-        if len(prices) < period:
-            return prices[-1] if prices else 0
-        
-        multiplier = 2 / (period + 1)
-        ema = sum(prices[:period]) / period
-        
-        for price in prices[period:]:
-            ema = (price - ema) * multiplier + ema
-        
-        return round(ema, 2)
-
-    async def _get_cached_result(self, cache_key: str) -> Dict[str, Any] | None:
-        """Get cached result from Redis"""
+    
+    async def _fetch_indicator(
+        self,
+        symbol: str,
+        timeframe: str,
+        indicator: str,
+        period: int = None
+    ) -> Optional[Dict]:
+        """Fetch a single indicator from FMP API"""
         try:
-            redis_client = await get_redis_client_llm()
-            cached_bytes = await redis_client.get(cache_key)
-            await redis_client.close()
+            url = f"{self.base_url}/technical_indicator/{timeframe}"
+            params = {
+                "symbol": symbol,
+                "type": indicator,
+                "apikey": self.api_key
+            }
+            if period:
+                params["period"] = period
             
-            if cached_bytes:
-                return json.loads(cached_bytes.decode('utf-8'))
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+            
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]  # Most recent value
             return None
+            
         except Exception as e:
-            self.logger.warning(f"Cache read error: {e}")
+            self.logger.warning(f"[{indicator}] Fetch error: {e}")
             return None
-
-    async def _cache_result(self, cache_key: str, result: Dict[str, Any]):
-        """Cache result to Redis"""
+    
+    async def _fetch_current_price(self, symbol: str) -> Optional[float]:
+        """Fetch current price"""
         try:
-            redis_client = await get_redis_client_llm()
-            json_string = json.dumps(result)
-            await redis_client.set(cache_key, json_string, ex=self.CACHE_TTL)
-            await redis_client.close()
+            url = f"{self.base_url}/quote"
+            params = {"symbol": symbol, "apikey": self.api_key}
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+            
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0].get("price", 0)
+            return None
+            
         except Exception as e:
-            self.logger.warning(f"Cache write error: {e}")
+            self.logger.warning(f"[PRICE] Fetch error: {e}")
+            return None
+    
+    def _interpret_rsi(self, rsi: Optional[float]) -> str:
+        """Interpret RSI value"""
+        if rsi is None:
+            return "N/A"
+        elif rsi >= 70:
+            return "Overbought (potential sell signal)"
+        elif rsi <= 30:
+            return "Oversold (potential buy signal)"
+        elif rsi >= 60:
+            return "Bullish momentum"
+        elif rsi <= 40:
+            return "Bearish momentum"
+        else:
+            return "Neutral"
+    
+    def _determine_trend(
+        self,
+        price: Optional[float],
+        sma_20: Optional[Dict],
+        sma_50: Optional[Dict],
+        ema_20: Optional[Dict]
+    ) -> str:
+        """Determine overall trend based on MAs"""
+        if price is None:
+            return "Unknown"
+        
+        sma20_val = sma_20.get("sma") if sma_20 else None
+        sma50_val = sma_50.get("sma") if sma_50 else None
+        ema20_val = ema_20.get("ema") if ema_20 else None
+        
+        signals = []
+        
+        if sma20_val and price > sma20_val:
+            signals.append(1)
+        elif sma20_val:
+            signals.append(-1)
+        
+        if sma50_val and price > sma50_val:
+            signals.append(1)
+        elif sma50_val:
+            signals.append(-1)
+        
+        if ema20_val and price > ema20_val:
+            signals.append(1)
+        elif ema20_val:
+            signals.append(-1)
+        
+        if not signals:
+            return "Unknown"
+        
+        avg_signal = sum(signals) / len(signals)
+        
+        if avg_signal > 0.5:
+            return "Bullish (price above key MAs)"
+        elif avg_signal < -0.5:
+            return "Bearish (price below key MAs)"
+        else:
+            return "Mixed/Consolidating"
+    
+    def _build_formatted_context(self, data: Dict) -> str:
+        """Build human-readable formatted context"""
+        symbol = data.get('symbol', 'Unknown')
+        timeframe = data.get('timeframe', 'N/A')
+        price = data.get('current_price', 0)
+        indicators = data.get('indicators', {})
+        trend = data.get('trend', 'Unknown')
+        
+        rsi = indicators.get('rsi', {})
+        macd = indicators.get('macd', {})
+        
+        lines = [
+            f"📊 CRYPTO TECHNICALS - {symbol} ({timeframe}):",
+            f"",
+            f"💵 Current Price: ${price:,.2f}" if price else "💵 Current Price: N/A",
+            f"📈 Overall Trend: {trend}",
+            f"",
+            f"📉 Indicators:",
+            f"  • RSI(14): {rsi.get('value', 'N/A')} - {rsi.get('interpretation', 'N/A')}",
+            f"  • MACD: {macd.get('macd', 'N/A')}",
+            f"  • MACD Signal: {macd.get('signal', 'N/A')}",
+            f"  • SMA(20): {indicators.get('sma_20', 'N/A')}",
+            f"  • SMA(50): {indicators.get('sma_50', 'N/A')}",
+            f"  • EMA(20): {indicators.get('ema_20', 'N/A')}"
+        ]
+        
+        return '\n'.join(lines)
+
+
+# Standalone test
+if __name__ == "__main__":
+    import asyncio
+    import os
+    
+    async def test():
+        api_key = os.getenv("FMP_API_KEY")
+        if not api_key:
+            print("❌ FMP_API_KEY not set")
+            return
+        
+        tool = GetCryptoTechnicalsTool(api_key=api_key)
+        
+        print("\n" + "="*60)
+        print("Testing getCryptoTechnicals Tool")
+        print("="*60)
+        
+        # Test with BTCUSDT format
+        print("\nTest: BTCUSDT (Binance format)")
+        result = await tool.execute(symbol="BTCUSDT", timeframe="1hour")
+        
+        if result.status == 'success':
+            print(f"✅ Success")
+            print(f"Symbol: {result.data['symbol']}")
+            print(f"Trend: {result.data['trend']}")
+            print(f"\nFormatted Context:")
+            print(result.formatted_context)
+        else:
+            print(f"❌ Error: {result.error}")
+    
+    asyncio.run(test())

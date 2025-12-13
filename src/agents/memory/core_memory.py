@@ -96,38 +96,85 @@ class CoreMemory(LoggerMixin):
             Dict with default 'persona' and 'human' blocks
         """
         try:
-            # Load default persona template
+            default_config = {}
+            
+            # Try to load default persona template if exists
             if self.default_persona_path.exists():
-                with open(self.default_persona_path, 'r', encoding='utf-8') as f:
-                    default_config = yaml.safe_load(f)
+                try:
+                    with open(self.default_persona_path, 'r', encoding='utf-8') as f:
+                        default_config = yaml.safe_load(f) or {}
+                except Exception as e:
+                    self.logger.warning(f"Could not load default persona file: {e}")
+            
+            # Use loaded persona or fallback to hardcoded
+            persona_content = default_config.get('persona')
+            if not persona_content:
+                fallback = self._get_hardcoded_default()
+                persona_content = fallback['persona']
+            
+            # Create default human block with timestamp
+            current_date = datetime.now().strftime('%Y-%m-%d')
+            default_human = (
+                f"[General - {current_date}]\n"
+                f"User ID: {user_id}\n"
+                f"Joined: {current_date}\n"
+                f"Language Preference: Auto-detect\n\n"
+                f"[Portfolio - {current_date}]\n"
+                f"Status: Not configured yet\n\n"
+                f"[Interest_Profile - {current_date}]\n"
+                f"Interests: General stock/crypto analysis"
+            )
+            
+            # Save to disk immediately (This creates the file)
+            success = await self.save_core_memory(user_id, persona_content, default_human)
+            
+            if success:
+                self.logger.info(f"✅ Created new core memory file for User {user_id}")
             else:
-                # Hardcoded fallback if file doesn't exist
-                default_config = self._get_hardcoded_default()
-            
-            # Create default human block
-            default_human = f"""User ID: {user_id}
-Joined: {datetime.now().strftime('%Y-%m-%d')}
-Language Preference: Auto-detect
-Portfolio: Not configured yet
-Watchlist: Empty
-Risk Tolerance: Not specified
-Trading Style: Not specified
-Interests: General stock/crypto analysis
-"""
-            
-            core_memory = {
-                'persona': default_config.get('persona', ''),
+                self.logger.error(f"❌ Failed to create file for User {user_id}")
+
+            return {
+                'persona': persona_content,
                 'human': default_human
             }
             
-            # Save to user's config file
-            await self.save_core_memory(user_id, core_memory['persona'], core_memory['human'])
-            
-            return core_memory
-            
         except Exception as e:
-            self.logger.error(f"Error creating default core memory: {e}")
+            self.logger.error(f"Critical error creating default memory: {e}")
             return self._get_hardcoded_default()
+        
+#         try:
+#             # Load default persona template
+#             if self.default_persona_path.exists():
+#                 with open(self.default_persona_path, 'r', encoding='utf-8') as f:
+#                     default_config = yaml.safe_load(f)
+#             else:
+#                 # Hardcoded fallback if file doesn't exist
+#                 default_config = self._get_hardcoded_default()
+            
+#             # Create default human block
+#             default_human = f"""User ID: {user_id}
+# Joined: {datetime.now().strftime('%Y-%m-%d')}
+# Language Preference: Auto-detect
+# Portfolio: Not configured yet
+# Watchlist: Empty
+# Risk Tolerance: Not specified
+# Trading Style: Not specified
+# Interests: General stock/crypto analysis
+# """
+            
+#             core_memory = {
+#                 'persona': default_config.get('persona', ''),
+#                 'human': default_human
+#             }
+            
+#             # Save to user's config file
+#             await self.save_core_memory(user_id, core_memory['persona'], core_memory['human'])
+            
+#             return core_memory
+            
+#         except Exception as e:
+#             self.logger.error(f"Error creating default core memory: {e}")
+#             return self._get_hardcoded_default()
     
     
     def _get_hardcoded_default(self) -> Dict[str, str]:
@@ -202,6 +249,10 @@ Communication Style:
                 'persona': persona,
                 'human': human,
                 'updated_at': datetime.now().isoformat(),
+                'metadata': {
+                    'created_by': 'system_auto_gen' if not user_config_path.exists() else 'update',
+                    'version': '1.0'
+                },
                 'token_counts': {
                     'persona': persona_tokens,
                     'human': human_tokens,
@@ -209,6 +260,7 @@ Communication Style:
                 }
             }
             
+            user_config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(user_config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(config, f, allow_unicode=True, default_flow_style=False)
             

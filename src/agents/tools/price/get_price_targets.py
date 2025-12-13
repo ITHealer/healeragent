@@ -1,26 +1,350 @@
+# # File: src/agents/tools/price/get_price_targets.py
+
+# """
+# GetPriceTargetsTool - Atomic Tool for Analyst Price Targets
+
+# Responsibility: Lấy analyst consensus price targets
+# - Target high (highest analyst target)
+# - Target low (lowest analyst target)
+# - Target median
+# - Target consensus (mean)
+# - Number of analysts
+
+# KHÔNG BAO GỒM:
+# - ❌ Current price (use getStockPrice)
+# - ❌ Stock recommendations (different endpoint)
+# - ❌ Earnings estimates (different endpoint)
+
+# Data Source: FMP /v4/price-target-consensus?symbol={symbol}
+# Cache TTL: 1-24 hours (data doesn't change frequently)
+# """
+
+# import httpx
+# import logging
+# from typing import Dict, Any, Optional
+# from datetime import datetime
+
+# from src.agents.tools.base import (
+#     BaseTool,
+#     ToolSchema,
+#     ToolParameter,
+#     ToolOutput,
+#     create_success_output,
+#     create_error_output
+# )
+
+
+# class GetPriceTargetsTool(BaseTool):
+#     """
+#     Atomic tool để lấy analyst price targets
+    
+#     Data source: FMP /v4/price-target-consensus
+    
+#     Usage:
+#         tool = GetPriceTargetsTool()
+#         result = await tool.safe_execute(symbol="AAPL")
+        
+#         if result.is_success():
+#             target_high = result.data['target_high']
+#             consensus = result.data['target_consensus']
+#             upside = result.data['upside_potential_pct']
+#     """
+    
+#     # FMP API Configuration
+#     FMP_BASE_URL = "https://financialmodelingprep.com/api"
+    
+#     def __init__(self, api_key: Optional[str] = None):
+#         """
+#         Initialize tool
+        
+#         Args:
+#             api_key: FMP API key (fallback to env var if not provided)
+#         """
+#         super().__init__()
+        
+#         # Get API key from env if not provided
+#         if api_key is None:
+#             import os
+#             api_key = os.environ.get("FMP_API_KEY")
+        
+#         if not api_key:
+#             raise ValueError("FMP_API_KEY not provided and not found in environment")
+        
+#         self.api_key = api_key
+#         self.logger = logging.getLogger(__name__)
+        
+#         # Define schema
+#         self.schema = ToolSchema(
+#             name="getPriceTargets",
+#             category="price",
+#             description=(
+#                 "Get analyst price targets and recommendations from major financial institutions. "
+#                 "Returns consensus price targets, analyst ratings, and price projections. "
+#                 "Use when user asks about analyst opinions, price targets, or buy/sell ratings."
+#             ),
+#             capabilities=[
+#                 "✅ Analyst consensus price target",
+#                 "✅ High/low price target range",
+#                 "✅ Number of analysts covering",
+#                 "✅ Average rating (Buy/Hold/Sell)",
+#                 "✅ Target vs current price comparison"
+#             ],
+#             limitations=[
+#                 "❌ Targets may be outdated (updated quarterly)",
+#                 "❌ Not all stocks have analyst coverage",
+#                 "❌ No real-time target updates"
+#             ],
+#             usage_hints=[
+#                 # English
+#                 "User asks: 'Apple price target' → USE THIS",
+#                 "User asks: 'What do analysts say about TSLA?' → USE THIS",
+#                 "User asks: 'Should I buy Microsoft?' → USE THIS",
+#                 # Vietnamese
+#                 "User asks: 'Mục tiêu giá của Amazon' → USE THIS",
+#                 "User asks: 'Các nhà phân tích đánh giá NVDA như thế nào?' → USE THIS",
+#                 # When NOT to use
+#                 "User wants technical analysis targets → DO NOT USE (use getTechnicalIndicators)"
+#             ],
+#             parameters=[
+#                 ToolParameter(
+#                     name="symbol",
+#                     type="string",
+#                     description="Stock ticker symbol",
+#                     required=True,
+#                     pattern="^[A-Z]{1,7}$"
+#                 )
+#             ],
+#             returns={
+#                 "symbol": "string",
+#                 "consensus_target": "number",
+#                 "high_target": "number",
+#                 "low_target": "number",
+#                 "analyst_count": "number",
+#                 "average_rating": "string",
+#                 "timestamp": "string"
+#             },
+#             typical_execution_time_ms=1000,
+#             requires_symbol=True
+#         )
+    
+#     async def execute(self, symbol: str) -> ToolOutput:
+#         """
+#         Execute price targets retrieval
+        
+#         Args:
+#             symbol: Stock symbol
+            
+#         Returns:
+#             ToolOutput with price target data
+#         """
+#         symbol_upper = symbol.upper()
+        
+#         self.logger.info(f"[getPriceTargets] Executing for symbol={symbol_upper}")
+        
+#         try:
+#             # Fetch from FMP
+#             raw_data = await self._fetch_from_fmp(symbol_upper)
+            
+#             if not raw_data:
+#                 return create_error_output(
+#                     tool_name=self.schema.name,
+#                     error=f"No price target data available for {symbol_upper}"
+#                 )
+            
+#             # Format to schema
+#             formatted_data = self._format_targets_data(raw_data, symbol_upper)
+            
+#             return create_success_output(
+#                 tool_name=self.schema.name,
+#                 data=formatted_data,
+#                 metadata={
+#                     "source": "FMP /v4/price-target-consensus",
+#                     "symbol_queried": symbol_upper,
+#                     "cache_ttl": "1-24 hours",
+#                     "timestamp": datetime.now().isoformat()
+#                 }
+#             )
+            
+#         except Exception as e:
+#             self.logger.error(
+#                 f"[getPriceTargets] Error for {symbol_upper}: {e}",
+#                 exc_info=True
+#             )
+#             return create_error_output(
+#                 tool_name=self.schema.name,
+#                 error=f"Failed to fetch price targets: {str(e)}"
+#             )
+    
+#     async def _fetch_from_fmp(self, symbol: str) -> Optional[Dict]:
+#         """Fetch price targets from FMP API"""
+#         url = f"{self.FMP_BASE_URL}/v4/price-target-consensus"
+        
+#         params = {
+#             "symbol": symbol,
+#             "apikey": self.api_key
+#         }
+        
+#         try:
+#             async with httpx.AsyncClient(timeout=10.0) as client:
+#                 response = await client.get(url, params=params)
+#                 response.raise_for_status()
+                
+#                 data = response.json()
+                
+#                 # FMP returns list with single item or dict
+#                 if isinstance(data, list) and len(data) > 0:
+#                     return data[0]
+#                 elif isinstance(data, dict) and data:
+#                     return data
+                
+#                 return None
+                
+#         except httpx.HTTPStatusError as e:
+#             self.logger.error(f"FMP HTTP error {e.response.status_code}: {e.response.text}")
+#             return None
+#         except Exception as e:
+#             self.logger.error(f"FMP request error: {e}")
+#             return None
+    
+#     def _format_targets_data(self, raw_data: Dict, symbol: str) -> Dict[str, Any]:
+#         """
+#         Format raw FMP response to tool schema
+        
+#         Args:
+#             raw_data: FMP API response
+#             symbol: Stock symbol
+            
+#         Returns:
+#             Formatted data matching schema
+#         """
+#         # Extract target values
+#         target_high = self._safe_float(raw_data.get("targetHigh", 0.0))
+#         target_low = self._safe_float(raw_data.get("targetLow", 0.0))
+#         target_median = self._safe_float(raw_data.get("targetMedian", 0.0))
+#         target_consensus = self._safe_float(raw_data.get("targetConsensus", 0.0))
+        
+#         # Number of analysts
+#         num_analysts = int(raw_data.get("numberOfAnalysts", 0))
+        
+#         # Current price for comparison (if available)
+#         current_price = self._safe_float(raw_data.get("currentPrice", 0.0))
+        
+#         # Calculate upside potential
+#         upside_pct = 0.0
+#         if current_price > 0 and target_consensus > 0:
+#             upside_pct = ((target_consensus - current_price) / current_price) * 100
+        
+#         # Calculate target range
+#         target_range_pct = 0.0
+#         if target_low > 0 and target_high > 0:
+#             target_range_pct = ((target_high - target_low) / target_low) * 100
+        
+#         return {
+#             "symbol": symbol,
+#             "target_high": round(target_high, 2),
+#             "target_low": round(target_low, 2),
+#             "target_median": round(target_median, 2),
+#             "target_consensus": round(target_consensus, 2),
+#             "number_of_analysts": num_analysts,
+#             "current_price": round(current_price, 2) if current_price > 0 else None,
+#             "upside_potential_pct": round(upside_pct, 2),
+#             "target_range_pct": round(target_range_pct, 2),
+#             "timestamp": datetime.now().isoformat()
+#         }
+    
+#     def _safe_float(self, value: Any) -> float:
+#         """Safely convert value to float"""
+#         try:
+#             return float(value)
+#         except (ValueError, TypeError):
+#             return 0.0
+
+
+# # ============================================================================
+# # Standalone Testing
+# # ============================================================================
+
+# if __name__ == "__main__":
+#     import asyncio
+#     import json
+#     import os
+    
+#     async def test_tool():
+#         """Standalone test for GetPriceTargetsTool"""
+        
+#         api_key = os.environ.get("FMP_API_KEY")
+#         if not api_key:
+#             print("❌ ERROR: FMP_API_KEY not found in environment")
+#             return
+        
+#         print("=" * 80)
+#         print("TESTING [GetPriceTargetsTool]")
+#         print("=" * 80)
+        
+#         tool = GetPriceTargetsTool(api_key=api_key)
+        
+#         # Test 1: Valid symbol
+#         print("\n📊 Test 1: Valid symbol (AAPL)")
+#         print("-" * 40)
+#         result = await tool.safe_execute(symbol="AAPL")
+        
+#         print(f"Status: {result.status}")
+#         print(f"Execution time: {result.execution_time_ms}ms")
+        
+#         if result.is_success():
+#             print("✅ SUCCESS")
+#             print(f"\nSymbol: {result.data['symbol']}")
+#             print(f"Analysts: {result.data['number_of_analysts']}")
+#             print(f"\nPrice Targets:")
+#             print(f"  High: ${result.data['target_high']:,.2f}")
+#             print(f"  Consensus: ${result.data['target_consensus']:,.2f}")
+#             print(f"  Median: ${result.data['target_median']:,.2f}")
+#             print(f"  Low: ${result.data['target_low']:,.2f}")
+            
+#             if result.data['current_price']:
+#                 print(f"\nCurrent Price: ${result.data['current_price']:,.2f}")
+#                 upside = result.data['upside_potential_pct']
+#                 emoji = "🎯" if upside > 0 else "⚠️"
+#                 print(f"{emoji} Upside to Consensus: {upside:+.2f}%")
+            
+#             print(f"Target Range: {result.data['target_range_pct']:.2f}%")
+#         else:
+#             print(f"❌ ERROR: {result.error}")
+        
+#         # Test 2: Another symbol
+#         print("\n📊 Test 2: TSLA targets")
+#         print("-" * 40)
+#         result = await tool.safe_execute(symbol="TSLA")
+        
+#         if result.is_success():
+#             print(f"✅ Consensus: ${result.data['target_consensus']:,.2f}")
+#             print(f"✅ Upside: {result.data['upside_potential_pct']:+.2f}%")
+        
+#         print("\n" + "=" * 80)
+#         print("TESTING COMPLETE")
+#         print("=" * 80)
+    
+#     asyncio.run(test_tool())
+
+
+
 # File: src/agents/tools/price/get_price_targets.py
 
 """
-GetPriceTargetsTool - Atomic Tool for Analyst Price Targets
+GetPriceTargetsTool - FIXED VERSION
 
-Responsibility: Lấy analyst consensus price targets
-- Target high (highest analyst target)
-- Target low (lowest analyst target)
-- Target median
-- Target consensus (mean)
-- Number of analysts
-
-KHÔNG BAO GỒM:
-- ❌ Current price (use getStockPrice)
-- ❌ Stock recommendations (different endpoint)
-- ❌ Earnings estimates (different endpoint)
-
-Data Source: FMP /v4/price-target-consensus?symbol={symbol}
-Cache TTL: 1-24 hours (data doesn't change frequently)
+Changes:
+1. ✅ Added grades-summary API call for analyst ratings
+2. ✅ Calculate analyst_count and average_rating
+3. ✅ Return ALL required schema fields
+4. ✅ Added Redis caching with 4-hour TTL
+5. ✅ Parallel API calls for performance
 """
 
 import httpx
+import json
 import logging
+import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime
 
@@ -32,43 +356,33 @@ from src.agents.tools.base import (
     create_success_output,
     create_error_output
 )
+from src.helpers.redis_cache import get_redis_client_llm
 
 
 class GetPriceTargetsTool(BaseTool):
     """
-    Atomic tool để lấy analyst price targets
+    Atomic tool for analyst price targets with ratings
     
-    Data source: FMP /v4/price-target-consensus
+    Data sources:
+    - FMP /v4/price-target-consensus (price targets)
+    - FMP /stable/grades-summary (analyst ratings)
     
-    Usage:
-        tool = GetPriceTargetsTool()
-        result = await tool.safe_execute(symbol="AAPL")
-        
-        if result.is_success():
-            target_high = result.data['target_high']
-            consensus = result.data['target_consensus']
-            upside = result.data['upside_potential_pct']
+    Cache: 4 hours (analyst targets don't change frequently)
     """
     
-    # FMP API Configuration
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
+    FMP_STABLE_BASE = "https://financialmodelingprep.com/stable"
+    CACHE_TTL = 14400  # 4 hours
     
     def __init__(self, api_key: Optional[str] = None):
-        """
-        Initialize tool
-        
-        Args:
-            api_key: FMP API key (fallback to env var if not provided)
-        """
         super().__init__()
         
-        # Get API key from env if not provided
         if api_key is None:
             import os
             api_key = os.environ.get("FMP_API_KEY")
         
         if not api_key:
-            raise ValueError("FMP_API_KEY not provided and not found in environment")
+            raise ValueError("FMP_API_KEY not provided")
         
         self.api_key = api_key
         self.logger = logging.getLogger(__name__)
@@ -87,6 +401,7 @@ class GetPriceTargetsTool(BaseTool):
                 "✅ High/low price target range",
                 "✅ Number of analysts covering",
                 "✅ Average rating (Buy/Hold/Sell)",
+                "✅ Rating breakdown (Strong Buy/Buy/Hold/Sell)",
                 "✅ Target vs current price comparison"
             ],
             limitations=[
@@ -95,14 +410,11 @@ class GetPriceTargetsTool(BaseTool):
                 "❌ No real-time target updates"
             ],
             usage_hints=[
-                # English
                 "User asks: 'Apple price target' → USE THIS",
                 "User asks: 'What do analysts say about TSLA?' → USE THIS",
                 "User asks: 'Should I buy Microsoft?' → USE THIS",
-                # Vietnamese
                 "User asks: 'Mục tiêu giá của Amazon' → USE THIS",
                 "User asks: 'Các nhà phân tích đánh giá NVDA như thế nào?' → USE THIS",
-                # When NOT to use
                 "User wants technical analysis targets → DO NOT USE (use getTechnicalIndicators)"
             ],
             parameters=[
@@ -123,44 +435,127 @@ class GetPriceTargetsTool(BaseTool):
                 "average_rating": "string",
                 "timestamp": "string"
             },
-            typical_execution_time_ms=1000,
+            typical_execution_time_ms=1200,
             requires_symbol=True
         )
     
     async def execute(self, symbol: str) -> ToolOutput:
         """
-        Execute price targets retrieval
+        Execute price targets retrieval with analyst ratings
         
         Args:
             symbol: Stock symbol
             
         Returns:
-            ToolOutput with price target data
+            ToolOutput with ALL required fields
         """
+        start_time = datetime.now()
         symbol_upper = symbol.upper()
         
         self.logger.info(f"[getPriceTargets] Executing for symbol={symbol_upper}")
         
         try:
-            # Fetch from FMP
-            raw_data = await self._fetch_from_fmp(symbol_upper)
+            # ═══════════════════════════════════════════════════════════
+            # STEP 1: Check Redis cache
+            # ═══════════════════════════════════════════════════════════
+            cache_key = f"price_targets_{symbol_upper}"
+            redis_client = await get_redis_client_llm()
             
-            if not raw_data:
+            if redis_client:
+                try:
+                    cached_bytes = await redis_client.get(cache_key)
+                    if cached_bytes:
+                        self.logger.info(f"[CACHE HIT] {cache_key}")
+                        cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        
+                        execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                        
+                        return create_success_output(
+                            tool_name=self.schema.name,
+                            data=cached_data,
+                            metadata={
+                                "source": "Redis cache",
+                                "symbol_queried": symbol_upper,
+                                "execution_time_ms": int(execution_time),
+                                "from_cache": True,
+                                "timestamp": datetime.now().isoformat()
+                            }
+                        )
+                except Exception as e:
+                    self.logger.warning(f"[CACHE] Error reading: {e}")
+            
+            # ═══════════════════════════════════════════════════════════
+            # STEP 2: Fetch from both APIs in parallel
+            # ═══════════════════════════════════════════════════════════
+            price_targets_task = self._fetch_price_targets(symbol_upper)
+            ratings_task = self._fetch_analyst_ratings(symbol_upper)
+            
+            results = await asyncio.gather(
+                price_targets_task,
+                ratings_task,
+                return_exceptions=True
+            )
+            
+            price_targets = results[0]
+            ratings = results[1]
+            
+            # Handle errors
+            if isinstance(price_targets, Exception):
                 return create_error_output(
                     tool_name=self.schema.name,
-                    error=f"No price target data available for {symbol_upper}"
+                    error=f"Failed to fetch price targets: {str(price_targets)}"
                 )
             
-            # Format to schema
-            formatted_data = self._format_targets_data(raw_data, symbol_upper)
+            if not price_targets:
+                return create_error_output(
+                    tool_name=self.schema.name,
+                    error=f"No analyst price targets available for {symbol_upper}"
+                )
+            
+            # ═══════════════════════════════════════════════════════════
+            # STEP 3: Format with ALL required fields
+            # ═══════════════════════════════════════════════════════════
+            formatted_data = self._format_targets_data(
+                price_targets,
+                ratings if not isinstance(ratings, Exception) else None,
+                symbol_upper
+            )
+            
+            # ═══════════════════════════════════════════════════════════
+            # STEP 4: Cache the result
+            # ═══════════════════════════════════════════════════════════
+            if redis_client:
+                try:
+                    json_string = json.dumps(formatted_data)
+                    await redis_client.set(cache_key, json_string, ex=self.CACHE_TTL)
+                    self.logger.info(f"[CACHE SET] {cache_key} (TTL={self.CACHE_TTL}s)")
+                except Exception as e:
+                    self.logger.warning(f"[CACHE] Error writing: {e}")
+            
+            # Close Redis
+            if redis_client:
+                try:
+                    await redis_client.close()
+                except:
+                    pass
+            
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+            
+            self.logger.info(
+                f"[getPriceTargets] ✅ SUCCESS ({int(execution_time)}ms) - "
+                f"Analysts: {formatted_data['analyst_count']}, "
+                f"Rating: {formatted_data['average_rating']}"
+            )
             
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
                 metadata={
-                    "source": "FMP /v4/price-target-consensus",
+                    "source": "FMP price-target-consensus + grades-summary",
                     "symbol_queried": symbol_upper,
-                    "cache_ttl": "1-24 hours",
+                    "execution_time_ms": int(execution_time),
+                    "from_cache": False,
+                    "cache_ttl": f"{self.CACHE_TTL}s",
                     "timestamp": datetime.now().isoformat()
                 }
             )
@@ -175,7 +570,7 @@ class GetPriceTargetsTool(BaseTool):
                 error=f"Failed to fetch price targets: {str(e)}"
             )
     
-    async def _fetch_from_fmp(self, symbol: str) -> Optional[Dict]:
+    async def _fetch_price_targets(self, symbol: str) -> Optional[Dict]:
         """Fetch price targets from FMP API"""
         url = f"{self.FMP_BASE_URL}/v4/price-target-consensus"
         
@@ -200,56 +595,166 @@ class GetPriceTargetsTool(BaseTool):
                 return None
                 
         except httpx.HTTPStatusError as e:
-            self.logger.error(f"FMP HTTP error {e.response.status_code}: {e.response.text}")
+            self.logger.error(f"FMP HTTP error {e.response.status_code}")
             return None
         except Exception as e:
             self.logger.error(f"FMP request error: {e}")
             return None
     
-    def _format_targets_data(self, raw_data: Dict, symbol: str) -> Dict[str, Any]:
+    async def _fetch_analyst_ratings(self, symbol: str) -> Optional[Dict]:
         """
-        Format raw FMP response to tool schema
+        Fetch analyst ratings from FMP grades-summary API
         
-        Args:
-            raw_data: FMP API response
-            symbol: Stock symbol
+        Response format:
+        {
+          "symbol": "AAPL",
+          "strongBuy": 15,
+          "buy": 10,
+          "hold": 5,
+          "sell": 1,
+          "strongSell": 0
+        }
+        """
+        url = f"{self.FMP_STABLE_BASE}/grades-summary"
+        
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # FMP returns list or dict
+                if isinstance(data, list) and len(data) > 0:
+                    return data[0]
+                elif isinstance(data, dict) and data:
+                    return data
+                
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"FMP grades-summary error: {e}")
+            return None
+    
+    def _format_targets_data(
+        self,
+        price_targets: Dict,
+        ratings: Optional[Dict],
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Format raw FMP responses to tool schema
+        
+        ✅ Returns ALL required fields:
+        - consensus_target
+        - high_target
+        - low_target
+        - analyst_count
+        - average_rating
+        """
+        # ═══════════════════════════════════════════════════════════
+        # Extract price target values
+        # ═══════════════════════════════════════════════════════════
+        target_high = self._safe_float(price_targets.get("targetHigh", 0.0))
+        target_low = self._safe_float(price_targets.get("targetLow", 0.0))
+        target_median = self._safe_float(price_targets.get("targetMedian", 0.0))
+        target_consensus = self._safe_float(price_targets.get("targetConsensus", 0.0))
+        
+        # Number of analysts from price targets API
+        num_analysts_from_targets = int(price_targets.get("numberOfAnalysts", 0))
+        
+        # Current price for comparison
+        current_price = self._safe_float(price_targets.get("currentPrice", 0.0))
+        
+        # ═══════════════════════════════════════════════════════════
+        # Calculate analyst metrics from ratings
+        # ═══════════════════════════════════════════════════════════
+        analyst_count = num_analysts_from_targets
+        average_rating = "No Rating"
+        rating_breakdown = {}
+        
+        if ratings and isinstance(ratings, dict):
+            strong_buy = int(ratings.get("strongBuy", 0))
+            buy = int(ratings.get("buy", 0))
+            hold = int(ratings.get("hold", 0))
+            sell = int(ratings.get("sell", 0))
+            strong_sell = int(ratings.get("strongSell", 0))
             
-        Returns:
-            Formatted data matching schema
-        """
-        # Extract target values
-        target_high = self._safe_float(raw_data.get("targetHigh", 0.0))
-        target_low = self._safe_float(raw_data.get("targetLow", 0.0))
-        target_median = self._safe_float(raw_data.get("targetMedian", 0.0))
-        target_consensus = self._safe_float(raw_data.get("targetConsensus", 0.0))
+            # Calculate total analysts from ratings
+            total_from_ratings = strong_buy + buy + hold + sell + strong_sell
+            
+            # Use the larger count (more accurate)
+            if total_from_ratings > analyst_count:
+                analyst_count = total_from_ratings
+            
+            # Calculate weighted average rating
+            if analyst_count > 0:
+                # Scoring: Strong Buy=5, Buy=4, Hold=3, Sell=2, Strong Sell=1
+                total_score = (
+                    strong_buy * 5 +
+                    buy * 4 +
+                    hold * 3 +
+                    sell * 2 +
+                    strong_sell * 1
+                )
+                
+                avg_score = total_score / analyst_count
+                
+                # Convert to label
+                if avg_score >= 4.5:
+                    average_rating = "Strong Buy"
+                elif avg_score >= 3.5:
+                    average_rating = "Buy"
+                elif avg_score >= 2.5:
+                    average_rating = "Hold"
+                elif avg_score >= 1.5:
+                    average_rating = "Sell"
+                else:
+                    average_rating = "Strong Sell"
+            
+            rating_breakdown = {
+                "strong_buy": strong_buy,
+                "buy": buy,
+                "hold": hold,
+                "sell": sell,
+                "strong_sell": strong_sell
+            }
         
-        # Number of analysts
-        num_analysts = int(raw_data.get("numberOfAnalysts", 0))
-        
-        # Current price for comparison (if available)
-        current_price = self._safe_float(raw_data.get("currentPrice", 0.0))
-        
-        # Calculate upside potential
+        # ═══════════════════════════════════════════════════════════
+        # Calculate additional metrics
+        # ═══════════════════════════════════════════════════════════
         upside_pct = 0.0
         if current_price > 0 and target_consensus > 0:
             upside_pct = ((target_consensus - current_price) / current_price) * 100
         
-        # Calculate target range
         target_range_pct = 0.0
         if target_low > 0 and target_high > 0:
             target_range_pct = ((target_high - target_low) / target_low) * 100
         
+        # ═══════════════════════════════════════════════════════════
+        # Return ALL required fields (schema.returns)
+        # ═══════════════════════════════════════════════════════════
         return {
+            # ✅ Required fields from schema
             "symbol": symbol,
-            "target_high": round(target_high, 2),
-            "target_low": round(target_low, 2),
-            "target_median": round(target_median, 2),
-            "target_consensus": round(target_consensus, 2),
-            "number_of_analysts": num_analysts,
+            "consensus_target": round(target_consensus, 2),
+            "high_target": round(target_high, 2),
+            "low_target": round(target_low, 2),
+            "analyst_count": analyst_count,
+            "average_rating": average_rating,
+            "timestamp": datetime.now().isoformat(),
+            
+            # Additional fields (not in schema but useful)
+            "median_target": round(target_median, 2),
+            "rating_breakdown": rating_breakdown,
             "current_price": round(current_price, 2) if current_price > 0 else None,
             "upside_potential_pct": round(upside_pct, 2),
-            "target_range_pct": round(target_range_pct, 2),
-            "timestamp": datetime.now().isoformat()
+            "target_range_pct": round(target_range_pct, 2)
         }
     
     def _safe_float(self, value: Any) -> float:
@@ -266,25 +771,24 @@ class GetPriceTargetsTool(BaseTool):
 
 if __name__ == "__main__":
     import asyncio
-    import json
     import os
     
     async def test_tool():
-        """Standalone test for GetPriceTargetsTool"""
+        """Test GetPriceTargetsTool with validation"""
         
         api_key = os.environ.get("FMP_API_KEY")
         if not api_key:
-            print("❌ ERROR: FMP_API_KEY not found in environment")
+            print("❌ ERROR: FMP_API_KEY not found")
             return
         
         print("=" * 80)
-        print("TESTING [GetPriceTargetsTool]")
+        print("TESTING [GetPriceTargetsTool] - FIXED VERSION")
         print("=" * 80)
         
         tool = GetPriceTargetsTool(api_key=api_key)
         
-        # Test 1: Valid symbol
-        print("\n📊 Test 1: Valid symbol (AAPL)")
+        # Test with AAPL
+        print("\n📊 Test: AAPL")
         print("-" * 40)
         result = await tool.safe_execute(symbol="AAPL")
         
@@ -293,35 +797,34 @@ if __name__ == "__main__":
         
         if result.is_success():
             print("✅ SUCCESS")
-            print(f"\nSymbol: {result.data['symbol']}")
-            print(f"Analysts: {result.data['number_of_analysts']}")
-            print(f"\nPrice Targets:")
-            print(f"  High: ${result.data['target_high']:,.2f}")
-            print(f"  Consensus: ${result.data['target_consensus']:,.2f}")
-            print(f"  Median: ${result.data['target_median']:,.2f}")
-            print(f"  Low: ${result.data['target_low']:,.2f}")
             
-            if result.data['current_price']:
-                print(f"\nCurrent Price: ${result.data['current_price']:,.2f}")
-                upside = result.data['upside_potential_pct']
-                emoji = "🎯" if upside > 0 else "⚠️"
-                print(f"{emoji} Upside to Consensus: {upside:+.2f}%")
+            # Verify ALL required fields present
+            required_fields = tool.schema.get_required_fields()
+            missing = [f for f in required_fields if f not in result.data]
             
-            print(f"Target Range: {result.data['target_range_pct']:.2f}%")
+            if missing:
+                print(f"\n⚠️  PARTIAL - Missing fields: {missing}")
+            else:
+                print(f"\n✅ ALL REQUIRED FIELDS PRESENT")
+            
+            print(f"\nData:")
+            print(f"  Symbol: {result.data['symbol']}")
+            print(f"  Consensus: ${result.data['consensus_target']:,.2f}")
+            print(f"  High: ${result.data['high_target']:,.2f}")
+            print(f"  Low: ${result.data['low_target']:,.2f}")
+            print(f"  Analysts: {result.data['analyst_count']}")
+            print(f"  Rating: {result.data['average_rating']}")
+            
+            if result.data.get('rating_breakdown'):
+                bd = result.data['rating_breakdown']
+                print(f"\n  Rating Breakdown:")
+                print(f"    Strong Buy: {bd.get('strong_buy', 0)}")
+                print(f"    Buy: {bd.get('buy', 0)}")
+                print(f"    Hold: {bd.get('hold', 0)}")
+                print(f"    Sell: {bd.get('sell', 0)}")
         else:
             print(f"❌ ERROR: {result.error}")
         
-        # Test 2: Another symbol
-        print("\n📊 Test 2: TSLA targets")
-        print("-" * 40)
-        result = await tool.safe_execute(symbol="TSLA")
-        
-        if result.is_success():
-            print(f"✅ Consensus: ${result.data['target_consensus']:,.2f}")
-            print(f"✅ Upside: {result.data['upside_potential_pct']:+.2f}%")
-        
         print("\n" + "=" * 80)
-        print("TESTING COMPLETE")
-        print("=" * 80)
     
     asyncio.run(test_tool())
