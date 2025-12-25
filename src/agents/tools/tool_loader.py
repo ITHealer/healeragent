@@ -1,25 +1,3 @@
-# File: src/agents/tools/tool_loader.py
-"""
-Tool Loader - Centralized Tool Registration
-
-Loads and registers all 31 tools across 9 categories:
-- price: 3 tools
-- technical: 4 tools
-- risk: 4 tools
-- fundamentals: 5 tools
-- news: 4 tools
-- market: 5 tools
-- crypto: 2 tools
-- discovery: 1 tool
-- memory: 3 tools
-- reasoning: 1 tool (Think Tool - optional)
-
-Usage:
-    from src.agents.tools.tool_loader import load_all_tools, get_registry
-    
-    registry, failed = load_all_tools()
-"""
-
 import os
 import logging
 from typing import List, Tuple, Optional
@@ -94,6 +72,10 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.market", "GetMarketBreadthTool", "api_key"),
         ("src.agents.tools.market", "GetStockHeatmapTool", "api_key"),
         ("src.agents.tools.market", "GetMarketNewsTool", "api_key"),
+        ("src.agents.tools.market", "GetTopGainersTool", "api_key"),
+        ("src.agents.tools.market", "GetTopLosersTool", "api_key"),
+        ("src.agents.tools.market", "GetMostActivesTool", "api_key"),
+        
     ],
     
     # ========================================================================
@@ -115,11 +97,12 @@ TOOL_DEFINITIONS = {
     # MEMORY TOOLS (3)
     # ========================================================================
     "memory": [
+        ("src.agents.tools.memory.search_conversation_history", "SearchConversationHistoryTool", None),
+        ("src.agents.tools.memory.get_recent_conversations", "GetRecentConversationsTool", None),
         ("src.agents.tools.memory.search_recall_memory", "SearchRecallMemoryTool", None),
         ("src.agents.tools.memory.search_archival_memory", "SearchArchivalMemoryTool", None),
-        ("src.agents.tools.memory.search_procedural_memory", "SearchProceduralMemoryTool", None),
     ],
-    
+        
     # ========================================================================
     # REASONING TOOLS (1) - Think Tool
     # ========================================================================
@@ -170,11 +153,11 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
     fmp_api_key = os.environ.get("FMP_API_KEY")
     
     if not fmp_api_key:
-        logger.warning("⚠️ FMP_API_KEY not set - some tools may not work")
+        logger.warning("FMP_API_KEY not set - some tools may not work")
     
-    logger.info("=" * 70)
-    logger.info("[TOOL LOADER] Starting tool registration...")
-    logger.info("=" * 70)
+    # logger.info("=" * 70)
+    # logger.info("[TOOL LOADER] Starting tool registration...")
+    # logger.info("=" * 70)
     
     # Register tools by category
     for category, tools in TOOL_DEFINITIONS.items():
@@ -196,33 +179,33 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
             except ImportError as e:
                 error_msg = f"{class_name}: {e}"
                 failed_imports.append(error_msg)
-                logger.warning(f"⚠️ Could not import {class_name}: {e}")
+                logger.warning(f"Could not import {class_name}: {e}")
                 
             except Exception as e:
                 error_msg = f"{class_name}: {e}"
                 failed_imports.append(error_msg)
-                logger.error(f"❌ Error creating {class_name}: {e}")
+                logger.error(f"Error creating {class_name}: {e}")
         
-        if category_count > 0:
-            logger.info(f"✅ {category}: {category_count} tools registered")
+        # if category_count > 0:
+        #     logger.info(f"{category}: {category_count} tools registered")
     
     # Summary
     summary = registry.get_summary()
     
-    logger.info("=" * 70)
-    logger.info("[TOOL LOADER] Registration complete")
-    logger.info(f"[TOOL LOADER] Total tools: {summary['total_tools']}")
-    logger.info(f"[TOOL LOADER] Categories: {list(summary['categories'].keys())}")
+    # logger.info("=" * 70)
+    # logger.info("[TOOL LOADER] Registration complete")
+    # logger.info(f"[TOOL LOADER] Total tools: {summary['total_tools']}")
+    # logger.info(f"[TOOL LOADER] Categories: {list(summary['categories'].keys())}")
     
-    for cat, count in sorted(summary['categories'].items()):
-        logger.info(f"[TOOL LOADER]   - {cat}: {count} tools")
+    # for cat, count in sorted(summary['categories'].items()):
+    #     logger.info(f"[TOOL LOADER]   - {cat}: {count} tools")
     
-    if failed_imports:
-        logger.warning(f"[TOOL LOADER] Failed: {len(failed_imports)} tools")
-        for failure in failed_imports[:5]:
-            logger.warning(f"[TOOL LOADER]   - {failure}")
+    # if failed_imports:
+    #     logger.warning(f"[TOOL LOADER] Failed: {len(failed_imports)} tools")
+    #     for failure in failed_imports[:5]:
+    #         logger.warning(f"[TOOL LOADER]   - {failure}")
     
-    logger.info("=" * 70)
+    # logger.info("=" * 70)
     
     return registry, failed_imports
 

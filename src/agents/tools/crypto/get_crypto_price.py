@@ -1,16 +1,3 @@
-# File: src/agents/tools/crypto/get_crypto_price.py
-"""
-GetCryptoPriceTool - FIXED with symbol normalization
-
-Supports multiple input formats:
-- BTCUSD (FMP format) ✅
-- BTCUSDT (Binance format) ✅ → auto-converts to BTCUSD
-- BTC (short format) ✅ → auto-converts to BTCUSD
-
-FMP Stable API:
-GET https://financialmodelingprep.com/stable/quote?symbol=BTCUSD
-"""
-
 import json
 import time
 from typing import Dict, Any, Optional
@@ -59,7 +46,7 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
         self.api_key = api_key
         self.base_url = "https://financialmodelingprep.com/stable"
         
-        # Define schema - relaxed pattern to accept multiple formats
+        # Define schema
         self.schema = ToolSchema(
             name="getCryptoPrice",
             category="crypto",

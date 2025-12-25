@@ -6,7 +6,7 @@ Quản lý danh mục stock/crypto symbols, symbol changes, delisted companies.
 """
 
 from typing import Optional, List, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import date, datetime
 from enum import Enum
 from datetime import datetime, date as Date
@@ -226,9 +226,14 @@ class SymbolValidationResult(BaseModel):
 
 class BulkValidationRequest(BaseModel):
     """Request model cho bulk symbol validation."""
-    symbols: List[str] = Field(..., min_items=1, max_items=100, description="List of symbols to validate")
+    symbols: List[str] = Field(..., min_items=1, max_items=1000, description="List of symbols to validate")
     asset_class: Optional[AssetClass] = Field(None, description="Filter by asset class")
-
+    @field_validator('asset_class', mode='before')
+    @classmethod
+    def empty_string_to_none(cls, v):
+        if v == "" or v is None:
+            return None
+        return v
 
 class BulkValidationResponse(BaseModel):
     """Response cho bulk validation."""

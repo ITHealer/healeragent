@@ -36,7 +36,7 @@ class SearchRetrieval(LoggerMixin):
             self.reranker = ModelLoader.get_flag_reranker(model_key)
             self.model_name = model_key
             
-        self.logger.debug(f"Using FlagReranker model: {self.model_name}")
+        # self.logger.debug(f"Using FlagReranker model: {self.model_name}")
     
     def _query_retrieval_reranking(self, candidates: List[Document], query: str, threshold=0.06) -> List[Document]:
         """

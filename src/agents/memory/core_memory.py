@@ -1,11 +1,3 @@
-"""
-Core Memory System - Always-loaded memory blocks (Tier 1)
-
-Memory Hierarchy:
-- PERSONA Block: Agent identity, expertise, language, style
-- HUMAN Block: User profile, portfolio, watchlist, preferences
-"""
-
 import yaml
 import os
 from typing import Dict, Optional, Tuple
@@ -129,9 +121,9 @@ class CoreMemory(LoggerMixin):
             success = await self.save_core_memory(user_id, persona_content, default_human)
             
             if success:
-                self.logger.info(f"✅ Created new core memory file for User {user_id}")
+                self.logger.info(f"Created new core memory file for User {user_id}")
             else:
-                self.logger.error(f"❌ Failed to create file for User {user_id}")
+                self.logger.error(f"Failed to create file for User {user_id}")
 
             return {
                 'persona': persona_content,
@@ -141,41 +133,7 @@ class CoreMemory(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Critical error creating default memory: {e}")
             return self._get_hardcoded_default()
-        
-#         try:
-#             # Load default persona template
-#             if self.default_persona_path.exists():
-#                 with open(self.default_persona_path, 'r', encoding='utf-8') as f:
-#                     default_config = yaml.safe_load(f)
-#             else:
-#                 # Hardcoded fallback if file doesn't exist
-#                 default_config = self._get_hardcoded_default()
-            
-#             # Create default human block
-#             default_human = f"""User ID: {user_id}
-# Joined: {datetime.now().strftime('%Y-%m-%d')}
-# Language Preference: Auto-detect
-# Portfolio: Not configured yet
-# Watchlist: Empty
-# Risk Tolerance: Not specified
-# Trading Style: Not specified
-# Interests: General stock/crypto analysis
-# """
-            
-#             core_memory = {
-#                 'persona': default_config.get('persona', ''),
-#                 'human': default_human
-#             }
-            
-#             # Save to user's config file
-#             await self.save_core_memory(user_id, core_memory['persona'], core_memory['human'])
-            
-#             return core_memory
-            
-#         except Exception as e:
-#             self.logger.error(f"Error creating default core memory: {e}")
-#             return self._get_hardcoded_default()
-    
+  
     
     def _get_hardcoded_default(self) -> Dict[str, str]:
         """Hardcoded fallback default memory"""

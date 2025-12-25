@@ -1,22 +1,3 @@
-# File: src/agents/tools/technical/get_relative_strength.py
-
-"""
-GetRelativeStrengthTool - Atomic Tool for Relative Strength Analysis
-
-Responsibility: So sánh hiệu suất tương đối với benchmark
-- Relative performance vs SPY/market
-- Outperformance/underperformance metrics
-- Multi-timeframe comparison
-- Strength trend analysis
-
-KHÔNG BAO GỒM:
-- ❌ Absolute price returns (use getStockPerformance)
-- ❌ Technical indicators (use getTechnicalIndicators)
-- ❌ Sector comparison (use getSectorPerformance)
-
-This tool WRAPS existing RelativeStrengthHandler
-"""
-
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime

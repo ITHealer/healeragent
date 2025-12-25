@@ -229,7 +229,7 @@ class SymbolDirectoryService:
             
             duration = (datetime.utcnow() - start_time).total_seconds()
             
-            self.repo.h(
+            self.repo.upsert_sync_metadata(
                 entity_type="crypto",
                 total_records=count,
                 sync_duration_seconds=int(duration),
@@ -483,6 +483,48 @@ class SymbolDirectoryService:
     # ========================================================================
     # VALIDATION & QUERY OPERATIONS
     # ========================================================================
+    
+    def validate_symbols_bulk(
+        self, 
+        symbols: List[str], 
+        asset_class_filter: Optional[AssetClass] = None
+    ) -> tuple[List[SymbolValidationResult], List[str], List[str]]:
+        """
+        Validate multiple symbols efficiently.
+        """
+        # Convert Enum to string value for Repository (e.g., AssetClass.STOCK -> "stock")
+        asset_class_str = asset_class_filter.value if asset_class_filter else None
+        
+        # Batch lookup with optimized filter
+        existing_map = self.repo.get_existing_symbols_batch(symbols, asset_class_str)
+        
+        results = []
+        valid_symbols = []
+        invalid_symbols = []
+
+        for symbol in symbols:
+            upper_symbol = symbol.upper()
+            found_asset_class = existing_map.get(upper_symbol)
+            
+            is_valid = found_asset_class is not None
+            
+            # Create result object
+            result_item = SymbolValidationResult(
+                symbol=upper_symbol,
+                is_valid=is_valid,
+                asset_class=AssetClass(found_asset_class) if found_asset_class else None,
+                exists_in_cache=is_valid,
+                message=f"Valid {found_asset_class}" if is_valid else "Symbol not found"
+            )
+            
+            results.append(result_item)
+            
+            if is_valid:
+                valid_symbols.append(upper_symbol)
+            else:
+                invalid_symbols.append(upper_symbol)
+
+        return results, valid_symbols, invalid_symbols
     
     def validate_symbol(
         self,

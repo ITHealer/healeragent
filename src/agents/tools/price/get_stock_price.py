@@ -1,21 +1,3 @@
-"""
-GetStockPriceTool - Atomic Tool for Stock Price Data
-
-Responsibility: Lấy giá hiện tại và metrics cơ bản
-- Current price
-- Daily change
-- Volume
-- Day high/low
-
-KHÔNG BAO GỒM:
-- ❌ Technical indicators (RSI, MACD, etc.) → Use getTechnicalIndicators
-- ❌ Historical data → Use getStockPerformance
-- ❌ Financial ratios → Use getFinancialRatios
-- ❌ News/sentiment → Use getStockNews
-
-This is ATOMIC - làm 1 việc duy nhất là fetch current price data
-"""
-
 import httpx
 import logging
 from typing import Dict, Any, Optional

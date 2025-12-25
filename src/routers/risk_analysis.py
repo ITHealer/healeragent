@@ -12,7 +12,14 @@ from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.agents.memory.memory_manager import MemoryManager
-from src.routers.llm_chat import analyze_conversation_importance
+from src.helpers.llm_chat_helper import (
+    stream_with_heartbeat,
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
@@ -76,12 +83,12 @@ async def risk_analysis_chat(
         # 1. Get relevant context from memory
         context = ""
         memory_stats = {}
-        
+        document_references = []
         if chat_request.session_id and user_id:
             try:
                 query_text = chat_request.question_input or f"Analyze risk management for {chat_request.symbol}"
                 
-                context, memory_stats = await memory_manager.get_relevant_context(
+                context, memory_stats, document_references = await memory_manager.get_relevant_context(
                     session_id=chat_request.session_id,
                     user_id=user_id,
                     current_query=query_text,
@@ -233,11 +240,7 @@ async def risk_analysis_chat_stream(
     chat_request: RiskAnalysisChatRequest,
     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
 ):
-    """
-    Streaming endpoint for risk analysis with memory integration
-    
-    Enhanced with memory context and importance scoring
-    """
+    """Streaming endpoint for risk analysis with memory integration"""
     user_id = getattr(request.state, "user_id", None)
     
     # Save user question first
@@ -254,47 +257,46 @@ async def risk_analysis_chat_stream(
         except Exception as save_error:
             logger.error(f"Error saving user question: {str(save_error)}")
     
-    # Get memory context
-    # Get chat history
-    chat_history = ""
-    if chat_request.session_id:
-        try:
-            chat_history = ChatMessageHistory.string_message_chat_history(
-                session_id=chat_request.session_id
-            )
-        except Exception as e:
-            logger.error(f"Error fetching history: {e}")
-
-    context = ""
-    memory_stats = {}
-    
-    if chat_request.session_id and user_id:
-        try:
-            context, memory_stats = await memory_manager.get_relevant_context(
-                session_id=chat_request.session_id,
-                user_id=user_id,
-                current_query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
-                llm_provider=llm_provider,
-                max_short_term=5,
-                max_long_term=3
-            )
-            
-            logger.info(f"Retrieved memory context for risk streaming: {memory_stats}")
-        except Exception as e:
-            logger.error(f"Error getting memory: {e}")
-    
-    enhanced_history = ""
-    if context:
-        enhanced_history = f"{context}\n\n"
-    if chat_history:
-        enhanced_history += f"[Conversation History]\n{chat_history}"
-    
-    async def format_sse():
+    async def generate_stream():
         full_response = []
         stop_levels_result = None
         position_sizing_result = None
         
         try:
+            # Get chat history
+            chat_history = ""
+            if chat_request.session_id:
+                try:
+                    chat_history = ChatMessageHistory.string_message_chat_history(
+                        session_id=chat_request.session_id
+                    )
+                except Exception as e:
+                    logger.error(f"Error fetching history: {e}")
+
+            # Get memory context
+            context = ""
+            memory_stats = {}
+            if chat_request.session_id and user_id:
+                try:
+                    context, memory_stats, _ = await memory_manager.get_relevant_context(
+                        session_id=chat_request.session_id,
+                        user_id=user_id,
+                        current_query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
+                        llm_provider=llm_provider,
+                        max_short_term=5,
+                        max_long_term=3
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting memory: {e}")
+            
+            # Build enhanced history
+            enhanced_history = ""
+            if context:
+                enhanced_history = f"{context}\n\n"
+            if chat_history:
+                enhanced_history += f"[Conversation History]\n{chat_history}"
+            # ============= HẾT PHẦN CONTEXT =============
+            
             # Config
             entry_price = 0
             stop_price = 0
@@ -306,13 +308,13 @@ async def risk_analysis_chat_stream(
             risk_handler = RiskAnalysisHandler(market_data)
             llm_helper = RiskAnalysisLLMHelper()
             
-            # 1. Calculate stop loss levels with context
+            # 1. Calculate stop loss levels
             stop_levels_result = await risk_handler.suggest_stop_loss_levels(
                 symbol=chat_request.symbol,
                 lookback_days=lookback_days,
             )
             
-            # 2. Calculate position sizing if enough information is available
+            # 2. Calculate position sizing if available
             if all([entry_price, stop_price, risk_amount, account_size]):
                 position_sizing_result = await risk_handler.calculate_position_sizing(
                     symbol=chat_request.symbol,
@@ -323,11 +325,10 @@ async def risk_analysis_chat_stream(
                     max_risk_percent=2.0
                 )
             
-            # 3. Stream LLM analysis with context
+            # 3. Get API key and LLM generator
             api_key = ModelProviderFactory._get_api_key(chat_request.provider_type)
             
-            # Stream LLM interpretation
-            async for chunk in llm_helper.stream_generate_risk_analysis_with_llm(
+            llm_gen = llm_helper.stream_generate_risk_analysis_with_llm(
                 symbol=chat_request.symbol,
                 stop_levels_data=stop_levels_result,
                 position_sizing_data=position_sizing_result,
@@ -335,28 +336,30 @@ async def risk_analysis_chat_stream(
                 model_name=chat_request.model_name,
                 provider_type=chat_request.provider_type,
                 api_key=api_key,
-                memory_context=enhanced_history  # Pass memory context
-            ):
-                if chunk:
-                    full_response.append(chunk)
-                    yield f"{json.dumps({'content': chunk})}\n\n"
-                    # event_data = {
-                    #     "session_id": chat_request.session_id,
-                    #     "type": "chunk",
-                    #     "data": chunk
-                    # }
-                    # yield f"{json.dumps(event_data, ensure_ascii=False)}\n\n"
+                memory_context=enhanced_history
+            )
             
-            # Join full response
+            # 4. Stream with heartbeat
+            async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
+                if event["type"] == "content":
+                    full_response.append(event["chunk"])
+                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                elif event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                elif event["type"] == "error":
+                    yield sse_error(event["error"])
+                    break
+                elif event["type"] == "done":
+                    break
+            
+            # 5. Post-processing
             complete_response = ''.join(full_response)
             
-            # 4. Analyze conversation importance
-            importance_score = 0.7  # Default higher for risk
-            
-            if chat_request.session_id and user_id:
+            # 6. Analyze importance
+            importance_score = 0.7
+            if chat_request.session_id and user_id and complete_response:
                 try:
                     analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                    
                     importance_score = await analyze_conversation_importance(
                         query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
                         response=complete_response,
@@ -365,75 +368,47 @@ async def risk_analysis_chat_stream(
                         provider_type=chat_request.provider_type
                     )
                     
-                    # Boost for critical risk levels
                     if stop_levels_result and stop_levels_result.get("risk_level") in ["high", "extreme"]:
                         importance_score = min(1.0, importance_score + 0.2)
-                    
-                    logger.info(f"Risk analysis stream importance: {importance_score}")
-                    
                 except Exception as e:
-                    logger.error(f"Error analyzing conversation: {e}")
+                    logger.error(f"Error analyzing importance: {e}")
             
-            # 5. Store in memory system
+            # 7. Store in memory
             if chat_request.session_id and user_id and complete_response:
                 try:
-                    metadata = {
-                        "type": "risk_analysis",
-                        "symbol": chat_request.symbol,
-                        "stop_levels": stop_levels_result,
-                        "position_sizing": position_sizing_result,
-                        "lookback_days": lookback_days,
-                        "risk_level": stop_levels_result.get("risk_level") if stop_levels_result else None,
-                        "analysis_type": "streaming"
-                    }
-                    
                     await memory_manager.store_conversation_turn(
                         session_id=chat_request.session_id,
                         user_id=user_id,
                         query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
                         response=complete_response,
-                        metadata=metadata,
+                        metadata={
+                            "type": "risk_analysis",
+                            "symbol": chat_request.symbol,
+                            "risk_level": stop_levels_result.get("risk_level") if stop_levels_result else None
+                        },
                         importance_score=importance_score
                     )
                     
-                    # Save to chat history
-                    chat_service.save_assistant_response(
-                        session_id=chat_request.session_id,
-                        created_at=datetime.now(),
-                        question_id=question_id,
-                        content=complete_response,
-                        response_time=0.1
-                    )
-                except Exception as save_error:
-                    logger.error(f"Error saving assistant response: {str(save_error)}")
+                    if question_id:
+                        chat_service.save_assistant_response(
+                            session_id=chat_request.session_id,
+                            created_at=datetime.now(),
+                            question_id=question_id,
+                            content=complete_response,
+                            response_time=0.1
+                        )
+                except Exception as e:
+                    logger.error(f"Error saving: {e}")
             
-            # Send completion event with memory stats
-            yield "[DONE]\n\n"
-            # completion_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "completion",
-            #     "data": "[DONE]",
-            #     # "memory_stats": memory_stats
-            # }
-            # yield f"{json.dumps(completion_data)}\n\n"
+            yield sse_done()
             
         except Exception as e:
-            logger.error(f"Error in risk analysis streaming: {str(e)}")
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
-            # error_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "error",
-            #     "data": str(e)
-            # }
-            # yield f"{json.dumps(error_data)}\n\n"
+            logger.error(f"Error in risk analysis streaming: {e}")
+            yield sse_error(str(e))
+            yield sse_done()
     
     return StreamingResponse(
-        format_sse(),
+        generate_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+        headers=SSE_HEADERS
     )

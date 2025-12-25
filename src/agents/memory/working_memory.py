@@ -1,212 +1,50 @@
-# File: src/agents/memory/working_memory.py
-"""
-Working Memory (Scratchpad) - Task-specific Temporary Memory
-
-Architecture inspired by:
-- Anthropic's multi-agent researcher (save plan to Memory)
-- RAISE architecture (Scratchpad + Examples)
-- LangGraph thread-scoped memory
-- Weaviate Context Engineering (Task Context Storage)
-
-╔════════════════════════════════════════════════════════════════════════════╗
-║                         WORKING MEMORY ARCHITECTURE                         ║
-╠════════════════════════════════════════════════════════════════════════════╣
-║                                                                            ║
-║  ┌─────────────────────────────────────────────────────────────────────┐   ║
-║  │                        WorkingMemoryManager                          │   ║
-║  │                     (Singleton - All Sessions)                       │   ║
-║  └───────────────────────────────┬─────────────────────────────────────┘   ║
-║                                  │                                         ║
-║            ┌─────────────────────┼─────────────────────┐                   ║
-║            │                     │                     │                   ║
-║            ▼                     ▼                     ▼                   ║
-║  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐         ║
-║  │ WorkingMemory    │  │ WorkingMemory    │  │ WorkingMemory    │         ║
-║  │ (Session A)      │  │ (Session B)      │  │ (Session C)      │         ║
-║  │                  │  │                  │  │                  │         ║
-║  │ ┌──────────────┐ │  │ ┌──────────────┐ │  │ ┌──────────────┐ │         ║
-║  │ │ Task Plan    │ │  │ │ Task Plan    │ │  │ │ Task Plan    │ │         ║
-║  │ ├──────────────┤ │  │ ├──────────────┤ │  │ ├──────────────┤ │         ║
-║  │ │ Tool Outputs │ │  │ │ Tool Outputs │ │  │ │ Tool Outputs │ │         ║
-║  │ ├──────────────┤ │  │ ├──────────────┤ │  │ ├──────────────┤ │         ║
-║  │ │ Reasoning    │ │  │ │ Reasoning    │ │  │ │ Reasoning    │ │         ║
-║  │ ├──────────────┤ │  │ ├──────────────┤ │  │ ├──────────────┤ │         ║
-║  │ │ Symbols      │ │  │ │ Symbols      │ │  │ │ Symbols      │ │         ║
-║  │ └──────────────┘ │  │ └──────────────┘ │  │ └──────────────┘ │         ║
-║  └──────────────────┘  └──────────────────┘  └──────────────────┘         ║
-║                                                                            ║
-╚════════════════════════════════════════════════════════════════════════════╝
-
-Entry Types:
-- TASK_PLAN: Current execution plan from Planning Agent
-- TOOL_OUTPUT: Results from tool executions
-- REASONING: Agent's thoughts, analysis, conclusions
-- SYMBOLS: Extracted symbols for current query context
-- INTERMEDIATE: Partial results during multi-step tasks
-- USER_CONTEXT: Relevant user context for current task
-
-Features:
-- Session-scoped (isolated per conversation)
-- Auto-expiry (configurable TTL)
-- Priority-based retention
-- Token-aware storage
-- Redis caching support (optional)
-
-Usage:
-    from src.agents.memory.working_memory import (
-        WorkingMemoryManager,
-        EntryType
-    )
-    
-    # Get manager (singleton)
-    manager = WorkingMemoryManager()
-    
-    # Get working memory for session
-    memory = manager.get_memory(session_id)
-    
-    # Add entries
-    memory.add_plan(task_plan_dict)
-    memory.add_tool_output("getStockPrice", {"AAPL": 195.50})
-    memory.add_reasoning("User wants real-time price with technical analysis")
-    memory.add_symbols(["AAPL", "NVDA"])
-    
-    # Get context for LLM
-    context = memory.get_context_for_llm(max_tokens=2000)
-    
-    # Clear after task completion
-    memory.clear_task()
-"""
-
-import json
-import time
+import uuid
 import threading
-from typing import Dict, List, Optional, Any, Union
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any, Set
+from dataclasses import dataclass, field
 from enum import Enum
-from dataclasses import dataclass, field, asdict
-from collections import OrderedDict
 
 from src.utils.logger.custom_logging import LoggerMixin
-
-# Token counting
-try:
-    import tiktoken
-    TIKTOKEN_AVAILABLE = True
-except ImportError:
-    TIKTOKEN_AVAILABLE = False
+from src.helpers.token_counter import TokenCounter
 
 
 # ============================================================================
-# ENUMS & CONSTANTS
+# ENUMS & DATA CLASSES
 # ============================================================================
 
 class EntryType(Enum):
     """Types of working memory entries"""
-    TASK_PLAN = "task_plan"           # Execution plan from Planning Agent
-    TOOL_OUTPUT = "tool_output"       # Results from tool executions
-    REASONING = "reasoning"           # Agent's thoughts and analysis
-    SYMBOLS = "symbols"               # Extracted symbols for context
-    INTERMEDIATE = "intermediate"     # Partial results during multi-step
-    USER_CONTEXT = "user_context"     # Relevant user context
-    QUERY_CONTEXT = "query_context"   # Query-specific context (intent, language)
-    ERROR = "error"                   # Error information for recovery
+    QUERY_CONTEXT = "query_context"    # Current query intent, language, categories
+    TASK_PLAN = "task_plan"            # Planned tasks from Planning Agent
+    TOOL_OUTPUT = "tool_output"        # Results from tool execution
+    INTERMEDIATE = "intermediate"      # Intermediate processing results
+    REASONING = "reasoning"            # Agent's reasoning/analysis
+    SYMBOLS = "symbols"                # Stock/crypto symbols in context
+    USER_CONTEXT = "user_context"      # User-provided context for this request
+    ERROR = "error"                    # Error information for recovery
 
 
 class Priority(Enum):
-    """Entry priority for retention decisions"""
-    LOW = 1       # Can be dropped first
-    MEDIUM = 2    # Standard importance
-    HIGH = 3      # Keep unless absolutely necessary
-    CRITICAL = 4  # Never drop automatically
+    """Priority levels for entries (affects eviction order)"""
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4  # Never auto-evict
 
-
-# Default TTL by entry type (seconds)
-DEFAULT_TTL = {
-    EntryType.TASK_PLAN: 3600,        # 1 hour
-    EntryType.TOOL_OUTPUT: 1800,      # 30 minutes  
-    EntryType.REASONING: 3600,        # 1 hour
-    EntryType.SYMBOLS: 1800,          # 30 minutes
-    EntryType.INTERMEDIATE: 900,      # 15 minutes
-    EntryType.USER_CONTEXT: 7200,     # 2 hours
-    EntryType.QUERY_CONTEXT: 1800,    # 30 minutes
-    EntryType.ERROR: 600,             # 10 minutes
-}
-
-# Default priority by entry type
-DEFAULT_PRIORITY = {
-    EntryType.TASK_PLAN: Priority.HIGH,
-    EntryType.TOOL_OUTPUT: Priority.MEDIUM,
-    EntryType.REASONING: Priority.MEDIUM,
-    EntryType.SYMBOLS: Priority.HIGH,
-    EntryType.INTERMEDIATE: Priority.LOW,
-    EntryType.USER_CONTEXT: Priority.HIGH,
-    EntryType.QUERY_CONTEXT: Priority.HIGH,
-    EntryType.ERROR: Priority.LOW,
-}
-
-
-# ============================================================================
-# TOKEN COUNTER (Reused from context_compressor)
-# ============================================================================
-
-def count_tokens(text: str, model_name: str = "gpt-4") -> int:
-    """Count tokens in text"""
-    if not text:
-        return 0
-    
-    if TIKTOKEN_AVAILABLE:
-        try:
-            encoding = tiktoken.encoding_for_model(model_name)
-        except KeyError:
-            encoding = tiktoken.get_encoding("cl100k_base")
-        return len(encoding.encode(text))
-    
-    # Fallback: approximate 4 chars per token
-    return len(text) // 4
-
-
-# ============================================================================
-# DATA MODELS
-# ============================================================================
 
 @dataclass
 class WorkingMemoryEntry:
-    """
-    Single entry in working memory (scratchpad)
-    
-    Attributes:
-        id: Unique identifier
-        entry_type: Type of entry (plan, tool_output, reasoning, etc.)
-        content: The actual data (can be dict, list, or string)
-        priority: Importance level for retention
-        created_at: Creation timestamp
-        expires_at: Expiration timestamp (for auto-cleanup)
-        metadata: Additional metadata (tool_name, symbol, etc.)
-        token_count: Cached token count for the entry
-    """
-    id: str
+    """Single entry in working memory"""
+    entry_id: str
     entry_type: EntryType
     content: Any
-    priority: Priority = Priority.MEDIUM
-    created_at: datetime = field(default_factory=datetime.now)
-    expires_at: Optional[datetime] = None
+    priority: Priority
+    created_at: datetime
+    expires_at: Optional[datetime]
+    token_count: int
     metadata: Dict[str, Any] = field(default_factory=dict)
-    token_count: int = 0
-    
-    def __post_init__(self):
-        """Calculate token count after initialization"""
-        if self.token_count == 0:
-            content_str = self._content_to_string()
-            self.token_count = count_tokens(content_str)
-    
-    def _content_to_string(self) -> str:
-        """Convert content to string for token counting"""
-        if isinstance(self.content, str):
-            return self.content
-        elif isinstance(self.content, (dict, list)):
-            return json.dumps(self.content, ensure_ascii=False)
-        else:
-            return str(self.content)
+    turn_count: int = 0  # Track which turn this entry was created
     
     def is_expired(self) -> bool:
         """Check if entry has expired"""
@@ -214,309 +52,259 @@ class WorkingMemoryEntry:
             return False
         return datetime.now() > self.expires_at
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for serialization"""
-        return {
-            "id": self.id,
-            "entry_type": self.entry_type.value,
-            "content": self.content,
-            "priority": self.priority.value,
-            "created_at": self.created_at.isoformat(),
-            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
-            "metadata": self.metadata,
-            "token_count": self.token_count,
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkingMemoryEntry":
-        """Create from dictionary"""
-        return cls(
-            id=data["id"],
-            entry_type=EntryType(data["entry_type"]),
-            content=data["content"],
-            priority=Priority(data["priority"]),
-            created_at=datetime.fromisoformat(data["created_at"]),
-            expires_at=datetime.fromisoformat(data["expires_at"]) if data.get("expires_at") else None,
-            metadata=data.get("metadata", {}),
-            token_count=data.get("token_count", 0),
-        )
+    def is_stale_symbols(self, current_turn: int, max_turns: int = 5) -> bool:
+        """Check if symbol entry is stale (too many turns old)"""
+        if self.entry_type != EntryType.SYMBOLS:
+            return False
+        return (current_turn - self.turn_count) > max_turns
 
 
 @dataclass
 class WorkingMemoryStats:
-    """Statistics for working memory usage"""
-    total_entries: int = 0
-    total_tokens: int = 0
-    entries_by_type: Dict[str, int] = field(default_factory=dict)
-    tokens_by_type: Dict[str, int] = field(default_factory=dict)
-    oldest_entry: Optional[datetime] = None
-    newest_entry: Optional[datetime] = None
+    """Statistics about working memory state"""
+    total_entries: int
+    total_tokens: int
+    entries_by_type: Dict[str, int]
+    tokens_by_type: Dict[str, int]
+    oldest_entry: Optional[datetime]
+    newest_entry: Optional[datetime]
+    symbols_turn_count: Optional[int] = None
 
 
 # ============================================================================
-# WORKING MEMORY (Per Session)
+# MAIN WORKING MEMORY CLASS
 # ============================================================================
 
 class WorkingMemory(LoggerMixin):
     """
-    Working Memory for a single session - acts as a scratchpad
+    Working Memory - Session-scoped scratchpad for task execution
     
-    This is the temporary memory that holds:
-    - Current task plan
-    - Tool execution results
-    - Reasoning and analysis
-    - Extracted symbols
-    - Intermediate results
+    Symbol continuity across turns
+    - Symbols are NOT cleared in clear_task()
+    - Symbols have TTL based on turn count
+    - Explicit clear_symbols() for manual cleanup
     
-    All data is session-scoped and automatically cleaned up.
+    Features:
+    - Token-based capacity management
+    - Priority-based eviction
+    - Type-based retrieval
+    - Thread-safe operations
     """
     
-    # Token budget for working memory
-    MAX_TOKENS = 8000  # Max tokens to store
-    CONTEXT_BUDGET = 2000  # Max tokens to return for LLM context
+    # Capacity limits
+    DEFAULT_MAX_TOKENS = 8000
+    DEFAULT_ENTRY_TTL_SECONDS = 3600  # 1 hour
+    
+    # Symbol configuration
+    SYMBOL_MAX_TURNS = 5  # Keep symbols for N turns before considering stale
     
     def __init__(
         self,
         session_id: str,
-        user_id: Optional[str] = None,
-        max_tokens: int = MAX_TOKENS,
-        context_budget: int = CONTEXT_BUDGET,
+        user_id: str,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
     ):
         """
         Initialize working memory for a session
         
         Args:
-            session_id: Unique session identifier
-            user_id: Optional user identifier
-            max_tokens: Maximum tokens to store
-            context_budget: Maximum tokens for LLM context
+            session_id: Session identifier
+            user_id: User identifier
+            max_tokens: Maximum token capacity
         """
         super().__init__()
         
         self.session_id = session_id
         self.user_id = user_id
         self.max_tokens = max_tokens
-        self.context_budget = context_budget
         
-        # Storage: OrderedDict to maintain insertion order
-        self._entries: OrderedDict[str, WorkingMemoryEntry] = OrderedDict()
-        
-        # Quick access indexes
+        # Storage
+        self._entries: Dict[str, WorkingMemoryEntry] = {}
         self._by_type: Dict[EntryType, List[str]] = {t: [] for t in EntryType}
         
-        # Counters
+        # Token tracking
         self._total_tokens = 0
-        self._entry_counter = 0
+        self.token_counter = TokenCounter()
+        
+        # Thread safety
+        self._lock = threading.RLock()
+        
+        # Turn tracking for symbol TTL
+        self._current_turn = 0
         
         # Timestamps
         self.created_at = datetime.now()
-        self.last_accessed = datetime.now()
         self.last_modified = datetime.now()
         
-        # Lock for thread safety
-        self._lock = threading.RLock()
-        
         self.logger.debug(
-            f"[WORKING_MEMORY] Initialized for session {session_id[:8]}... "
-            f"(max_tokens={max_tokens})"
+            f"[WORKING_MEMORY] Initialized for session {session_id[:8]}..., "
+            f"max_tokens={max_tokens}"
         )
     
     # ========================================================================
-    # CORE CRUD OPERATIONS
+    # TURN MANAGEMENT
     # ========================================================================
     
-    def _generate_entry_id(self) -> str:
-        """Generate unique entry ID"""
-        self._entry_counter += 1
-        timestamp = int(time.time() * 1000)
-        return f"wm_{timestamp}_{self._entry_counter}"
+    def increment_turn(self) -> int:
+        """Increment turn counter (call at start of each request)"""
+        with self._lock:
+            self._current_turn += 1
+            return self._current_turn
+    
+    def get_current_turn(self) -> int:
+        """Get current turn number"""
+        return self._current_turn
+    
+    # ========================================================================
+    # CORE ADD/REMOVE METHODS
+    # ========================================================================
     
     def _add_entry(
         self,
         entry_type: EntryType,
         content: Any,
-        priority: Optional[Priority] = None,
-        ttl_seconds: Optional[int] = None,
+        priority: Priority = Priority.MEDIUM,
         metadata: Optional[Dict[str, Any]] = None,
+        ttl_seconds: Optional[int] = None,
     ) -> str:
         """
-        Internal method to add entry to working memory
+        Internal method to add entry with eviction handling
         
         Args:
             entry_type: Type of entry
-            content: Content to store
-            priority: Optional priority override
-            ttl_seconds: Optional TTL override
+            content: Entry content
+            priority: Priority level
             metadata: Optional metadata
+            ttl_seconds: Time-to-live in seconds
             
         Returns:
             Entry ID
         """
         with self._lock:
-            # Generate ID
-            entry_id = self._generate_entry_id()
+            # Calculate token count
+            token_count = self._estimate_tokens(content)
             
-            # Determine TTL
-            if ttl_seconds is None:
-                ttl_seconds = DEFAULT_TTL.get(entry_type, 1800)
-            
-            expires_at = datetime.now() + timedelta(seconds=ttl_seconds)
-            
-            # Determine priority
-            if priority is None:
-                priority = DEFAULT_PRIORITY.get(entry_type, Priority.MEDIUM)
+            # Check if we need to evict
+            while self._total_tokens + token_count > self.max_tokens:
+                if not self._evict_lowest_priority():
+                    self.logger.warning(
+                        f"[WORKING_MEMORY] Cannot evict, skipping add"
+                    )
+                    return ""
             
             # Create entry
+            entry_id = f"wm_{uuid.uuid4().hex[:8]}"
+            expires_at = None
+            if ttl_seconds:
+                expires_at = datetime.now() + timedelta(seconds=ttl_seconds)
+            
             entry = WorkingMemoryEntry(
-                id=entry_id,
+                entry_id=entry_id,
                 entry_type=entry_type,
                 content=content,
                 priority=priority,
+                created_at=datetime.now(),
                 expires_at=expires_at,
+                token_count=token_count,
                 metadata=metadata or {},
+                turn_count=self._current_turn,
             )
-            
-            # Check if we need to make room
-            if self._total_tokens + entry.token_count > self.max_tokens:
-                self._evict_entries(entry.token_count)
             
             # Store
             self._entries[entry_id] = entry
             self._by_type[entry_type].append(entry_id)
-            self._total_tokens += entry.token_count
-            
-            # Update timestamps
+            self._total_tokens += token_count
             self.last_modified = datetime.now()
             
             self.logger.debug(
                 f"[WORKING_MEMORY] Added {entry_type.value}: "
-                f"{entry.token_count} tokens (total: {self._total_tokens})"
+                f"{token_count} tokens (total: {self._total_tokens})"
             )
             
             return entry_id
     
-    def get_entry(self, entry_id: str) -> Optional[WorkingMemoryEntry]:
-        """Get entry by ID"""
-        with self._lock:
-            self.last_accessed = datetime.now()
-            return self._entries.get(entry_id)
-    
-    def get_entries_by_type(
-        self,
-        entry_type: EntryType,
-        limit: Optional[int] = None,
-        include_expired: bool = False,
-    ) -> List[WorkingMemoryEntry]:
-        """
-        Get all entries of a specific type
-        
-        Args:
-            entry_type: Type to filter by
-            limit: Optional limit on number of entries
-            include_expired: Whether to include expired entries
-            
-        Returns:
-            List of entries (newest first)
-        """
-        with self._lock:
-            self.last_accessed = datetime.now()
-            
-            entry_ids = self._by_type.get(entry_type, [])
-            entries = []
-            
-            # Reverse to get newest first
-            for entry_id in reversed(entry_ids):
-                entry = self._entries.get(entry_id)
-                if entry:
-                    if include_expired or not entry.is_expired():
-                        entries.append(entry)
-                        if limit and len(entries) >= limit:
-                            break
-            
-            return entries
-    
     def remove_entry(self, entry_id: str) -> bool:
-        """Remove entry by ID"""
+        """Remove an entry by ID"""
         with self._lock:
             if entry_id not in self._entries:
                 return False
             
-            entry = self._entries.pop(entry_id)
+            entry = self._entries[entry_id]
             
-            # Update indexes
+            # Remove from type index
             if entry_id in self._by_type[entry.entry_type]:
                 self._by_type[entry.entry_type].remove(entry_id)
             
-            # Update counters
+            # Update token count
             self._total_tokens -= entry.token_count
             
+            # Remove from main storage
+            del self._entries[entry_id]
             self.last_modified = datetime.now()
             
+            return True
+    
+    def _evict_lowest_priority(self) -> bool:
+        """
+        Evict lowest priority non-critical entry
+        
+        FIXED: Never evict SYMBOLS entries during regular eviction
+        
+        Returns:
+            True if eviction succeeded
+        """
+        with self._lock:
+            candidates = []
+            
+            for entry_id, entry in self._entries.items():
+                # Never evict critical entries
+                if entry.priority == Priority.CRITICAL:
+                    continue
+                
+                # FIXED: Don't evict symbols during regular eviction
+                # Symbols should persist for cross-turn continuity
+                if entry.entry_type == EntryType.SYMBOLS:
+                    continue
+                
+                # Prefer expired entries
+                if entry.is_expired():
+                    candidates.insert(0, (entry_id, entry))
+                else:
+                    candidates.append((entry_id, entry))
+            
+            if not candidates:
+                return False
+            
+            # Sort by priority (ascending) then by age (oldest first)
+            candidates.sort(
+                key=lambda x: (x[1].priority.value, x[1].created_at)
+            )
+            
+            # Evict first candidate
+            evict_id = candidates[0][0]
+            evict_tokens = self._entries[evict_id].token_count
+            
+            self.remove_entry(evict_id)
+            
             self.logger.debug(
-                f"[WORKING_MEMORY] Removed {entry.entry_type.value}: "
-                f"-{entry.token_count} tokens (total: {self._total_tokens})"
+                f"[WORKING_MEMORY] Evicted entry, freed {evict_tokens} tokens"
             )
             
             return True
     
-    def _evict_entries(self, tokens_needed: int) -> int:
-        """
-        Evict entries to make room for new content
-        
-        Strategy:
-        1. Remove expired entries first
-        2. Remove LOW priority entries
-        3. Remove MEDIUM priority entries (oldest first)
-        4. Remove HIGH priority entries (oldest first)
-        5. Never remove CRITICAL entries
-        
-        Args:
-            tokens_needed: Tokens we need to free up
-            
-        Returns:
-            Tokens actually freed
-        """
-        tokens_freed = 0
-        entries_to_remove = []
-        
-        # Step 1: Collect expired entries
-        for entry_id, entry in self._entries.items():
-            if entry.is_expired():
-                entries_to_remove.append(entry_id)
-                tokens_freed += entry.token_count
-        
-        # Step 2: Collect by priority (LOW → MEDIUM → HIGH)
-        if tokens_freed < tokens_needed:
-            for priority in [Priority.LOW, Priority.MEDIUM, Priority.HIGH]:
-                for entry_id, entry in self._entries.items():
-                    if entry_id in entries_to_remove:
-                        continue
-                    if entry.priority == priority:
-                        entries_to_remove.append(entry_id)
-                        tokens_freed += entry.token_count
-                        if tokens_freed >= tokens_needed:
-                            break
-                if tokens_freed >= tokens_needed:
-                    break
-        
-        # Remove collected entries
-        for entry_id in entries_to_remove:
-            if entry_id in self._entries:
-                entry = self._entries.pop(entry_id)
-                if entry_id in self._by_type[entry.entry_type]:
-                    self._by_type[entry.entry_type].remove(entry_id)
-                self._total_tokens -= entry.token_count
-        
-        if entries_to_remove:
-            self.logger.info(
-                f"[WORKING_MEMORY] Evicted {len(entries_to_remove)} entries, "
-                f"freed {tokens_freed} tokens"
-            )
-        
-        return tokens_freed
+    def _estimate_tokens(self, content: Any) -> int:
+        """Estimate token count for content"""
+        if isinstance(content, str):
+            return self.token_counter.count_tokens(content)
+        elif isinstance(content, (dict, list)):
+            import json
+            text = json.dumps(content, ensure_ascii=False, default=str)
+            return self.token_counter.count_tokens(text)
+        else:
+            return self.token_counter.count_tokens(str(content))
     
     # ========================================================================
-    # CONVENIENCE METHODS (Type-specific)
+    # SPECIALIZED ADD METHODS
     # ========================================================================
     
     def add_plan(
@@ -534,7 +322,7 @@ class WorkingMemory(LoggerMixin):
         Returns:
             Entry ID
         """
-        # Clear previous plan (only keep latest)
+        # Clear previous plan first
         self.clear_type(EntryType.TASK_PLAN)
         
         return self._add_entry(
@@ -548,7 +336,7 @@ class WorkingMemory(LoggerMixin):
         self,
         tool_name: str,
         output: Any,
-        task_id: Optional[int] = None,
+        task_id: Optional[str] = None,
         execution_time_ms: Optional[int] = None,
     ) -> str:
         """
@@ -557,8 +345,8 @@ class WorkingMemory(LoggerMixin):
         Args:
             tool_name: Name of the tool
             output: Tool output data
-            task_id: Optional task ID this belongs to
-            execution_time_ms: Optional execution time
+            task_id: Associated task ID
+            execution_time_ms: Execution time in milliseconds
             
         Returns:
             Entry ID
@@ -609,6 +397,8 @@ class WorkingMemory(LoggerMixin):
         """
         Add extracted symbols for current context
         
+        FIXED: Merges with existing symbols instead of replacing
+        
         Args:
             symbols: List of symbols (e.g., ["AAPL", "NVDA"])
             source: Where symbols came from (query, history, tool)
@@ -616,20 +406,29 @@ class WorkingMemory(LoggerMixin):
         Returns:
             Entry ID
         """
-        # Clear previous symbols (keep only latest)
-        self.clear_type(EntryType.SYMBOLS)
-        
-        metadata = {
-            "source": source,
-            "count": len(symbols),
-        }
-        
-        return self._add_entry(
-            entry_type=EntryType.SYMBOLS,
-            content=symbols,
-            priority=Priority.HIGH,
-            metadata=metadata,
-        )
+        with self._lock:
+            # Get existing symbols
+            existing_symbols = self.get_current_symbols()
+            
+            # Merge new symbols (deduplicate)
+            merged_symbols = list(set(existing_symbols + symbols))
+            
+            # Clear old symbols entry
+            self.clear_type(EntryType.SYMBOLS)
+            
+            metadata = {
+                "source": source,
+                "count": len(merged_symbols),
+                "added_symbols": symbols,
+                "merged_from": existing_symbols,
+            }
+            
+            return self._add_entry(
+                entry_type=EntryType.SYMBOLS,
+                content=merged_symbols,
+                priority=Priority.HIGH,  # High priority - important for continuity
+                metadata=metadata,
+            )
     
     def add_intermediate(
         self,
@@ -679,15 +478,15 @@ class WorkingMemory(LoggerMixin):
         Returns:
             Entry ID
         """
-        # Clear previous query context
-        self.clear_type(EntryType.QUERY_CONTEXT)
-        
         content = {
             "intent": intent,
             "language": language,
             "categories": categories or [],
             "query_type": query_type,
         }
+        
+        # Clear previous query context
+        self.clear_type(EntryType.QUERY_CONTEXT)
         
         return self._add_entry(
             entry_type=EntryType.QUERY_CONTEXT,
@@ -700,16 +499,16 @@ class WorkingMemory(LoggerMixin):
         error_type: str,
         message: str,
         recoverable: bool = True,
-        details: Optional[Dict[str, Any]] = None,
+        context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
-        Add error information for recovery
+        Add error for potential recovery
         
         Args:
             error_type: Type of error
             message: Error message
             recoverable: Whether error is recoverable
-            details: Additional error details
+            context: Additional context
             
         Returns:
             Entry ID
@@ -718,171 +517,36 @@ class WorkingMemory(LoggerMixin):
             "error_type": error_type,
             "message": message,
             "recoverable": recoverable,
-            "details": details or {},
+            "context": context,
+            "occurred_at": datetime.now().isoformat(),
         }
         
         return self._add_entry(
             entry_type=EntryType.ERROR,
             content=content,
-            priority=Priority.LOW,
-            ttl_seconds=600,  # 10 minutes
+            priority=Priority.HIGH if recoverable else Priority.CRITICAL,
         )
-    
-    # ========================================================================
-    # CONTEXT RETRIEVAL
-    # ========================================================================
-    
-    def get_context_for_llm(
-        self,
-        max_tokens: Optional[int] = None,
-        include_types: Optional[List[EntryType]] = None,
-        exclude_types: Optional[List[EntryType]] = None,
-    ) -> str:
-        """
-        Get formatted context for LLM prompt injection
-        
-        Priority order for inclusion:
-        1. Query Context (intent, language)
-        2. Symbols (current context)
-        3. Task Plan (current plan)
-        4. Tool Outputs (recent results)
-        5. Reasoning (analysis)
-        6. Intermediate Results
-        
-        Args:
-            max_tokens: Token budget (default: context_budget)
-            include_types: Only include these types
-            exclude_types: Exclude these types
-            
-        Returns:
-            Formatted context string
-        """
-        with self._lock:
-            self.last_accessed = datetime.now()
-            
-            max_tokens = max_tokens or self.context_budget
-            
-            # Determine which types to include
-            if include_types:
-                types_to_include = include_types
-            else:
-                types_to_include = list(EntryType)
-                if exclude_types:
-                    types_to_include = [t for t in types_to_include if t not in exclude_types]
-            
-            # Priority order for inclusion
-            priority_order = [
-                EntryType.QUERY_CONTEXT,
-                EntryType.SYMBOLS,
-                EntryType.TASK_PLAN,
-                EntryType.TOOL_OUTPUT,
-                EntryType.REASONING,
-                EntryType.INTERMEDIATE,
-                EntryType.USER_CONTEXT,
-                EntryType.ERROR,
-            ]
-            
-            sections = []
-            tokens_used = 0
-            
-            for entry_type in priority_order:
-                if entry_type not in types_to_include:
-                    continue
-                
-                entries = self.get_entries_by_type(entry_type, include_expired=False)
-                
-                if not entries:
-                    continue
-                
-                section = self._format_entries_section(entry_type, entries)
-                section_tokens = count_tokens(section)
-                
-                if tokens_used + section_tokens <= max_tokens:
-                    sections.append(section)
-                    tokens_used += section_tokens
-                else:
-                    # Try to fit partial content
-                    remaining = max_tokens - tokens_used
-                    if remaining > 100:  # Only if meaningful space left
-                        truncated = self._truncate_section(section, remaining)
-                        if truncated:
-                            sections.append(truncated)
-                    break
-            
-            if not sections:
-                return ""
-            
-            # Build final context
-            context = "\n\n".join(sections)
-            
-            self.logger.debug(
-                f"[WORKING_MEMORY] Generated context: {tokens_used} tokens "
-                f"from {len(sections)} sections"
-            )
-            
-            return context
-    
-    def _format_entries_section(
-        self,
-        entry_type: EntryType,
-        entries: List[WorkingMemoryEntry],
-    ) -> str:
-        """Format entries of a type into a section"""
-        
-        type_headers = {
-            EntryType.QUERY_CONTEXT: "📋 QUERY CONTEXT",
-            EntryType.SYMBOLS: "🎯 CURRENT SYMBOLS",
-            EntryType.TASK_PLAN: "📝 TASK PLAN",
-            EntryType.TOOL_OUTPUT: "🔧 TOOL RESULTS",
-            EntryType.REASONING: "💭 REASONING",
-            EntryType.INTERMEDIATE: "📊 INTERMEDIATE RESULTS",
-            EntryType.USER_CONTEXT: "👤 USER CONTEXT",
-            EntryType.ERROR: "⚠️ ERRORS",
-        }
-        
-        header = type_headers.get(entry_type, entry_type.value.upper())
-        lines = [f"<{header}>"]
-        
-        for entry in entries:
-            if isinstance(entry.content, dict):
-                content_str = json.dumps(entry.content, ensure_ascii=False, indent=2)
-            elif isinstance(entry.content, list):
-                if entry_type == EntryType.SYMBOLS:
-                    content_str = ", ".join(entry.content)
-                else:
-                    content_str = json.dumps(entry.content, ensure_ascii=False)
-            else:
-                content_str = str(entry.content)
-            
-            # Add metadata if relevant
-            if entry_type == EntryType.TOOL_OUTPUT and entry.metadata.get("tool_name"):
-                lines.append(f"[{entry.metadata['tool_name']}]:")
-            
-            lines.append(content_str)
-        
-        lines.append(f"</{header}>")
-        
-        return "\n".join(lines)
-    
-    def _truncate_section(self, section: str, max_tokens: int) -> str:
-        """Truncate section to fit token budget"""
-        current_tokens = count_tokens(section)
-        
-        if current_tokens <= max_tokens:
-            return section
-        
-        # Simple truncation: keep first N characters
-        ratio = max_tokens / current_tokens
-        target_chars = int(len(section) * ratio * 0.9)  # 10% safety margin
-        
-        if target_chars < 50:
-            return ""
-        
-        return section[:target_chars] + "\n... (truncated)"
     
     # ========================================================================
     # GETTER METHODS
     # ========================================================================
+    
+    def get_entries_by_type(
+        self,
+        entry_type: EntryType,
+        limit: int = 10,
+    ) -> List[WorkingMemoryEntry]:
+        """Get entries by type (most recent first)"""
+        with self._lock:
+            entry_ids = self._by_type.get(entry_type, [])
+            entries = [
+                self._entries[eid]
+                for eid in entry_ids
+                if eid in self._entries
+            ]
+            # Sort by created_at descending
+            entries.sort(key=lambda e: e.created_at, reverse=True)
+            return entries[:limit]
     
     def get_current_plan(self) -> Optional[Dict[str, Any]]:
         """Get current task plan"""
@@ -893,6 +557,19 @@ class WorkingMemory(LoggerMixin):
         """Get current symbols in context"""
         entries = self.get_entries_by_type(EntryType.SYMBOLS, limit=1)
         return entries[0].content if entries else []
+    
+    def get_symbols_metadata(self) -> Optional[Dict[str, Any]]:
+        """Get metadata about current symbols (source, turn, etc.)"""
+        entries = self.get_entries_by_type(EntryType.SYMBOLS, limit=1)
+        if entries:
+            return {
+                "symbols": entries[0].content,
+                "source": entries[0].metadata.get("source"),
+                "turn_count": entries[0].turn_count,
+                "current_turn": self._current_turn,
+                "turns_old": self._current_turn - entries[0].turn_count,
+            }
+        return None
     
     def get_tool_outputs(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent tool outputs with metadata"""
@@ -911,6 +588,98 @@ class WorkingMemory(LoggerMixin):
         """Get current query context"""
         entries = self.get_entries_by_type(EntryType.QUERY_CONTEXT, limit=1)
         return entries[0].content if entries else None
+    
+    # ========================================================================
+    # CONTEXT FORMATTING
+    # ========================================================================
+    
+    def get_context_for_llm(
+        self,
+        max_tokens: int = 2000,
+        include_types: Optional[List[EntryType]] = None,
+    ) -> str:
+        """
+        Format working memory for LLM context
+        
+        Args:
+            max_tokens: Maximum tokens to include
+            include_types: Types to include (default: all)
+            
+        Returns:
+            Formatted string for LLM
+        """
+        with self._lock:
+            if include_types is None:
+                include_types = list(EntryType)
+            
+            sections = []
+            current_tokens = 0
+            
+            # Order by priority for inclusion
+            priority_order = [
+                EntryType.SYMBOLS,      # Always include current symbols
+                EntryType.QUERY_CONTEXT,
+                EntryType.TASK_PLAN,
+                EntryType.TOOL_OUTPUT,
+                EntryType.REASONING,
+                EntryType.INTERMEDIATE,
+                EntryType.ERROR,
+            ]
+            
+            for entry_type in priority_order:
+                if entry_type not in include_types:
+                    continue
+                
+                entries = self.get_entries_by_type(entry_type, limit=5)
+                
+                for entry in entries:
+                    # Format entry
+                    formatted = self._format_entry(entry)
+                    entry_tokens = self.token_counter.count_tokens(formatted)
+                    
+                    if current_tokens + entry_tokens > max_tokens:
+                        break
+                    
+                    sections.append(formatted)
+                    current_tokens += entry_tokens
+            
+            return "\n\n".join(sections)
+    
+    def _format_entry(self, entry: WorkingMemoryEntry) -> str:
+        """Format a single entry for LLM"""
+        import json
+        
+        if entry.entry_type == EntryType.SYMBOLS:
+            symbols = entry.content if isinstance(entry.content, list) else [entry.content]
+            return f"Current Symbols: {', '.join(symbols)}"
+        
+        elif entry.entry_type == EntryType.QUERY_CONTEXT:
+            ctx = entry.content
+            return (
+                f"Query Context:\n"
+                f"- Intent: {ctx.get('intent', 'unknown')}\n"
+                f"- Type: {ctx.get('query_type', 'unknown')}\n"
+                f"- Language: {ctx.get('language', 'auto')}"
+            )
+        
+        elif entry.entry_type == EntryType.TASK_PLAN:
+            plan = entry.content
+            task_count = len(plan.get('tasks', []))
+            return (
+                f"Task Plan:\n"
+                f"- Strategy: {plan.get('strategy', 'unknown')}\n"
+                f"- Tasks: {task_count}"
+            )
+        
+        elif entry.entry_type == EntryType.TOOL_OUTPUT:
+            tool_name = entry.metadata.get('tool_name', 'unknown')
+            return f"Tool Output ({tool_name}): [data available]"
+        
+        else:
+            content_str = str(entry.content)
+            if len(content_str) > 200:
+                content_str = content_str[:200] + "..."
+            return f"{entry.entry_type.value}: {content_str}"
     
     # ========================================================================
     # CLEANUP METHODS
@@ -945,14 +714,17 @@ class WorkingMemory(LoggerMixin):
         """
         Clear task-specific data (call after task completion)
         
+        FIXED: Does NOT clear symbols for cross-turn continuity
+        
         Clears:
         - Task plan
         - Tool outputs
         - Intermediate results
         - Query context
+        - Errors
         
         Keeps:
-        - Symbols (may be useful for follow-up)
+        - Symbols (for follow-up queries)
         - User context
         - Reasoning (may be useful for context)
         
@@ -960,6 +732,7 @@ class WorkingMemory(LoggerMixin):
             Number of entries cleared
         """
         with self._lock:
+            # FIXED: SYMBOLS is NOT in this list
             types_to_clear = [
                 EntryType.TASK_PLAN,
                 EntryType.TOOL_OUTPUT,
@@ -974,14 +747,56 @@ class WorkingMemory(LoggerMixin):
             
             if total_cleared > 0:
                 self.logger.info(
-                    f"[WORKING_MEMORY] Cleared task data: {total_cleared} entries"
+                    f"[WORKING_MEMORY] Cleared task data: {total_cleared} entries "
+                    f"(symbols preserved)"
                 )
             
             return total_cleared
     
+    def clear_stale_symbols(self, max_turns: int = None) -> bool:
+        """
+        Clear symbols if they are stale (too many turns old)
+        
+        Call this periodically or when starting a clearly new topic
+        
+        Args:
+            max_turns: Maximum turns before symbols are stale
+            
+        Returns:
+            True if symbols were cleared
+        """
+        max_turns = max_turns or self.SYMBOL_MAX_TURNS
+        
+        with self._lock:
+            entries = self.get_entries_by_type(EntryType.SYMBOLS, limit=1)
+            
+            if not entries:
+                return False
+            
+            entry = entries[0]
+            turns_old = self._current_turn - entry.turn_count
+            
+            if turns_old > max_turns:
+                self.clear_type(EntryType.SYMBOLS)
+                self.logger.info(
+                    f"[WORKING_MEMORY] Cleared stale symbols "
+                    f"({turns_old} turns old > {max_turns} max)"
+                )
+                return True
+            
+            return False
+    
+    def clear_symbols(self) -> int:
+        """
+        Explicitly clear symbols
+        
+        Use this when user clearly changes topic or explicitly requests
+        """
+        return self.clear_type(EntryType.SYMBOLS)
+    
     def clear_all(self) -> int:
         """
-        Clear all entries
+        Clear all entries including symbols
         
         Returns:
             Number of entries cleared
@@ -1034,23 +849,29 @@ class WorkingMemory(LoggerMixin):
             tokens_by_type = {}
             
             for entry_type in EntryType:
-                entries = self._by_type.get(entry_type, [])
-                entries_by_type[entry_type.value] = len(entries)
+                entry_ids = self._by_type.get(entry_type, [])
+                entries_by_type[entry_type.value] = len(entry_ids)
                 
-                tokens = sum(
+                type_tokens = sum(
                     self._entries[eid].token_count
-                    for eid in entries
+                    for eid in entry_ids
                     if eid in self._entries
                 )
-                tokens_by_type[entry_type.value] = tokens
+                tokens_by_type[entry_type.value] = type_tokens
             
             oldest = None
             newest = None
+            symbols_turn = None
             
             if self._entries:
                 entries_list = list(self._entries.values())
                 oldest = min(e.created_at for e in entries_list)
                 newest = max(e.created_at for e in entries_list)
+                
+                # Get symbol turn count
+                symbol_entries = self.get_entries_by_type(EntryType.SYMBOLS, limit=1)
+                if symbol_entries:
+                    symbols_turn = symbol_entries[0].turn_count
             
             return WorkingMemoryStats(
                 total_entries=len(self._entries),
@@ -1059,328 +880,112 @@ class WorkingMemory(LoggerMixin):
                 tokens_by_type=tokens_by_type,
                 oldest_entry=oldest,
                 newest_entry=newest,
+                symbols_turn_count=symbols_turn,
             )
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize to dictionary (for Redis caching)"""
-        with self._lock:
-            return {
-                "session_id": self.session_id,
-                "user_id": self.user_id,
-                "created_at": self.created_at.isoformat(),
-                "last_accessed": self.last_accessed.isoformat(),
-                "last_modified": self.last_modified.isoformat(),
-                "entries": [e.to_dict() for e in self._entries.values()],
-            }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkingMemory":
-        """Deserialize from dictionary (for Redis caching)"""
-        memory = cls(
-            session_id=data["session_id"],
-            user_id=data.get("user_id"),
-        )
-        
-        memory.created_at = datetime.fromisoformat(data["created_at"])
-        memory.last_accessed = datetime.fromisoformat(data["last_accessed"])
-        memory.last_modified = datetime.fromisoformat(data["last_modified"])
-        
-        for entry_data in data.get("entries", []):
-            entry = WorkingMemoryEntry.from_dict(entry_data)
-            memory._entries[entry.id] = entry
-            memory._by_type[entry.entry_type].append(entry.id)
-            memory._total_tokens += entry.token_count
-        
-        return memory
-    
-    def __repr__(self) -> str:
-        return (
-            f"WorkingMemory(session={self.session_id[:8]}..., "
-            f"entries={len(self._entries)}, tokens={self._total_tokens})"
-        )
 
 
 # ============================================================================
-# WORKING MEMORY MANAGER (Singleton)
+# WORKING MEMORY MANAGER (Session Management)
 # ============================================================================
 
 class WorkingMemoryManager(LoggerMixin):
     """
-    Singleton manager for all working memories across sessions
+    Manages working memory instances across sessions
     
-    Responsibilities:
-    - Create/retrieve WorkingMemory instances per session
-    - Cleanup expired sessions
-    - Optional Redis persistence
-    - Thread-safe access
+    Thread-safe singleton pattern for global access
     """
     
     _instance = None
     _lock = threading.Lock()
     
-    # Session TTL (default: 2 hours)
-    SESSION_TTL_SECONDS = 7200
-    
-    # Max sessions to keep in memory
+    # Session cleanup
+    SESSION_TTL_SECONDS = 3600 * 4  # 4 hours
     MAX_SESSIONS = 1000
     
     def __new__(cls):
-        """Singleton pattern"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-                    cls._instance._initialized = False
-        return cls._instance
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
     
     def __init__(self):
-        """Initialize manager (only once)"""
         if self._initialized:
             return
         
         super().__init__()
-        
-        # Storage: session_id -> WorkingMemory
-        self._memories: Dict[str, WorkingMemory] = {}
-        self._access_times: Dict[str, datetime] = {}
-        
-        # Lock for thread safety
-        self._manager_lock = threading.RLock()
-        
-        # Optional Redis client
-        self._redis_client = None
-        
+        self._sessions: Dict[str, WorkingMemory] = {}
+        self._session_lock = threading.RLock()
         self._initialized = True
         
-        self.logger.info(
-            f"[WORKING_MEMORY_MANAGER] Initialized "
-            f"(max_sessions={self.MAX_SESSIONS}, ttl={self.SESSION_TTL_SECONDS}s)"
-        )
+        self.logger.info("[WORKING_MEMORY_MANAGER] Initialized")
     
-    def configure_redis(self, redis_client) -> None:
-        """
-        Configure Redis for persistence
-        
-        Args:
-            redis_client: Redis client instance
-        """
-        self._redis_client = redis_client
-        self.logger.info("[WORKING_MEMORY_MANAGER] Redis configured for persistence")
-    
-    def get_memory(
+    def get_or_create(
         self,
         session_id: str,
-        user_id: Optional[str] = None,
-        create_if_missing: bool = True,
-    ) -> Optional[WorkingMemory]:
-        """
-        Get or create working memory for a session
-        
-        Args:
-            session_id: Session identifier
-            user_id: Optional user identifier
-            create_if_missing: Whether to create if not exists
-            
-        Returns:
-            WorkingMemory instance or None
-        """
-        with self._manager_lock:
-            # Check in-memory cache first
-            if session_id in self._memories:
-                memory = self._memories[session_id]
-                self._access_times[session_id] = datetime.now()
-                return memory
-            
-            # Try loading from Redis
-            if self._redis_client:
-                memory = self._load_from_redis(session_id)
-                if memory:
-                    self._memories[session_id] = memory
-                    self._access_times[session_id] = datetime.now()
-                    return memory
-            
-            # Create new if requested
-            if create_if_missing:
-                # Check if we need to evict old sessions
-                if len(self._memories) >= self.MAX_SESSIONS:
-                    self._evict_oldest_sessions(count=100)
+        user_id: str,
+        max_tokens: int = WorkingMemory.DEFAULT_MAX_TOKENS,
+    ) -> WorkingMemory:
+        """Get existing or create new working memory for session"""
+        with self._session_lock:
+            if session_id not in self._sessions:
+                # Cleanup if too many sessions
+                if len(self._sessions) >= self.MAX_SESSIONS:
+                    self._cleanup_old_sessions()
                 
-                memory = WorkingMemory(
+                self._sessions[session_id] = WorkingMemory(
                     session_id=session_id,
                     user_id=user_id,
+                    max_tokens=max_tokens,
                 )
-                
-                self._memories[session_id] = memory
-                self._access_times[session_id] = datetime.now()
                 
                 self.logger.debug(
-                    f"[WORKING_MEMORY_MANAGER] Created memory for session {session_id[:8]}..."
+                    f"[WORKING_MEMORY_MANAGER] Created new session {session_id[:8]}..."
                 )
-                
-                return memory
             
-            return None
+            return self._sessions[session_id]
     
-    def save_memory(self, session_id: str) -> bool:
-        """
-        Save working memory to Redis
-        
-        Args:
-            session_id: Session to save
-            
-        Returns:
-            Success status
-        """
-        if not self._redis_client:
-            return False
-        
-        with self._manager_lock:
-            if session_id not in self._memories:
-                return False
-            
-            memory = self._memories[session_id]
-            return self._save_to_redis(session_id, memory)
+    def get(self, session_id: str) -> Optional[WorkingMemory]:
+        """Get existing working memory (or None)"""
+        with self._session_lock:
+            return self._sessions.get(session_id)
     
-    def _load_from_redis(self, session_id: str) -> Optional[WorkingMemory]:
-        """Load working memory from Redis"""
-        try:
-            key = f"working_memory:{session_id}"
-            data = self._redis_client.get(key)
-            
-            if data:
-                return WorkingMemory.from_dict(json.loads(data))
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"[WORKING_MEMORY_MANAGER] Redis load error: {e}")
-            return None
-    
-    def _save_to_redis(self, session_id: str, memory: WorkingMemory) -> bool:
-        """Save working memory to Redis"""
-        try:
-            key = f"working_memory:{session_id}"
-            data = json.dumps(memory.to_dict(), ensure_ascii=False)
-            
-            self._redis_client.setex(
-                key,
-                self.SESSION_TTL_SECONDS,
-                data,
-            )
-            
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"[WORKING_MEMORY_MANAGER] Redis save error: {e}")
+    def remove(self, session_id: str) -> bool:
+        """Remove a session's working memory"""
+        with self._session_lock:
+            if session_id in self._sessions:
+                del self._sessions[session_id]
+                return True
             return False
     
-    def _evict_oldest_sessions(self, count: int = 100) -> int:
-        """
-        Evict oldest sessions to make room
-        
-        Args:
-            count: Number of sessions to evict
+    def _cleanup_old_sessions(self):
+        """Remove sessions older than TTL"""
+        with self._session_lock:
+            cutoff = datetime.now() - timedelta(seconds=self.SESSION_TTL_SECONDS)
             
-        Returns:
-            Number evicted
-        """
-        # Sort by last access time
-        sorted_sessions = sorted(
-            self._access_times.items(),
-            key=lambda x: x[1],
-        )
-        
-        evicted = 0
-        for session_id, _ in sorted_sessions[:count]:
-            if session_id in self._memories:
-                # Save to Redis before evicting
-                if self._redis_client:
-                    self._save_to_redis(session_id, self._memories[session_id])
-                
-                del self._memories[session_id]
-                del self._access_times[session_id]
-                evicted += 1
-        
-        self.logger.info(f"[WORKING_MEMORY_MANAGER] Evicted {evicted} old sessions")
-        
-        return evicted
-    
-    def cleanup_expired(self) -> int:
-        """
-        Cleanup expired sessions
-        
-        Returns:
-            Number of sessions cleaned up
-        """
-        with self._manager_lock:
-            now = datetime.now()
-            expired_threshold = now - timedelta(seconds=self.SESSION_TTL_SECONDS)
-            
-            expired_sessions = [
-                session_id
-                for session_id, access_time in self._access_times.items()
-                if access_time < expired_threshold
+            old_sessions = [
+                sid for sid, wm in self._sessions.items()
+                if wm.last_modified < cutoff
             ]
             
-            for session_id in expired_sessions:
-                if session_id in self._memories:
-                    del self._memories[session_id]
-                if session_id in self._access_times:
-                    del self._access_times[session_id]
+            for sid in old_sessions:
+                del self._sessions[sid]
             
-            if expired_sessions:
+            if old_sessions:
                 self.logger.info(
-                    f"[WORKING_MEMORY_MANAGER] Cleaned up {len(expired_sessions)} expired sessions"
+                    f"[WORKING_MEMORY_MANAGER] Cleaned up {len(old_sessions)} old sessions"
                 )
-            
-            return len(expired_sessions)
     
-    def get_stats(self) -> Dict[str, Any]:
-        """Get manager statistics"""
-        with self._manager_lock:
-            total_entries = sum(
-                len(m._entries) for m in self._memories.values()
-            )
-            total_tokens = sum(
-                m._total_tokens for m in self._memories.values()
-            )
-            
+    def get_all_stats(self) -> Dict[str, Any]:
+        """Get stats for all sessions"""
+        with self._session_lock:
             return {
-                "active_sessions": len(self._memories),
-                "total_entries": total_entries,
-                "total_tokens": total_tokens,
-                "max_sessions": self.MAX_SESSIONS,
-                "session_ttl_seconds": self.SESSION_TTL_SECONDS,
-                "redis_enabled": self._redis_client is not None,
+                "total_sessions": len(self._sessions),
+                "sessions": {
+                    sid[:8]: wm.get_stats().__dict__
+                    for sid, wm in self._sessions.items()
+                }
             }
-    
-    def clear_session(self, session_id: str) -> bool:
-        """
-        Clear and remove a session's working memory
-        
-        Args:
-            session_id: Session to clear
-            
-        Returns:
-            Success status
-        """
-        with self._manager_lock:
-            if session_id in self._memories:
-                self._memories[session_id].clear_all()
-                del self._memories[session_id]
-            
-            if session_id in self._access_times:
-                del self._access_times[session_id]
-            
-            # Also remove from Redis
-            if self._redis_client:
-                try:
-                    key = f"working_memory:{session_id}"
-                    self._redis_client.delete(key)
-                except Exception:
-                    pass
-            
-            return True
 
 
 # ============================================================================
@@ -1388,98 +993,15 @@ class WorkingMemoryManager(LoggerMixin):
 # ============================================================================
 
 def get_working_memory_manager() -> WorkingMemoryManager:
-    """Get the singleton WorkingMemoryManager instance"""
+    """Get the global working memory manager instance"""
     return WorkingMemoryManager()
 
 
 def get_working_memory(
     session_id: str,
-    user_id: Optional[str] = None,
+    user_id: str,
+    max_tokens: int = WorkingMemory.DEFAULT_MAX_TOKENS,
 ) -> WorkingMemory:
-    """
-    Convenience function to get working memory for a session
-    
-    Args:
-        session_id: Session identifier
-        user_id: Optional user identifier
-        
-    Returns:
-        WorkingMemory instance
-    """
+    """Convenience function to get/create working memory"""
     manager = get_working_memory_manager()
-    return manager.get_memory(session_id, user_id)
-
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-if __name__ == "__main__":
-    # Example usage
-    import asyncio
-    
-    async def demo():
-        # Get manager
-        manager = WorkingMemoryManager()
-        
-        # Get memory for session
-        session_id = "demo_session_123"
-        memory = manager.get_memory(session_id, user_id="user_1")
-        
-        # Add various entries
-        memory.add_symbols(["AAPL", "NVDA", "MSFT"])
-        
-        memory.add_query_context(
-            intent="Analyze stock performance",
-            language="en",
-            categories=["price", "technical"],
-            query_type="stock_specific",
-        )
-        
-        memory.add_plan({
-            "tasks": [
-                {"id": 1, "tool": "getStockPrice", "symbol": "AAPL"},
-                {"id": 2, "tool": "getTechnicalIndicators", "symbol": "AAPL"},
-            ],
-            "strategy": "parallel",
-        })
-        
-        memory.add_tool_output(
-            tool_name="getStockPrice",
-            output={"symbol": "AAPL", "price": 195.50, "change": 2.3},
-            task_id=1,
-        )
-        
-        memory.add_reasoning(
-            "User wants comprehensive analysis with both price and technical data",
-            category="intent_analysis",
-        )
-        
-        # Get context for LLM
-        context = memory.get_context_for_llm()
-        print("=== Context for LLM ===")
-        print(context)
-        print()
-        
-        # Get stats
-        stats = memory.get_stats()
-        print("=== Stats ===")
-        print(f"Total entries: {stats.total_entries}")
-        print(f"Total tokens: {stats.total_tokens}")
-        print(f"By type: {stats.entries_by_type}")
-        print()
-        
-        # Manager stats
-        manager_stats = manager.get_stats()
-        print("=== Manager Stats ===")
-        print(manager_stats)
-        print()
-        
-        # Clear task data
-        memory.clear_task()
-        
-        print("=== After clear_task ===")
-        print(f"Remaining entries: {len(memory._entries)}")
-        print(f"Current symbols: {memory.get_current_symbols()}")
-    
-    asyncio.run(demo())
+    return manager.get_or_create(session_id, user_id, max_tokens)

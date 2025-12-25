@@ -1,19 +1,3 @@
-# File: src/agents/tools/memory/search_archival_memory.py
-"""
-SearchArchivalMemoryTool - Search Knowledge Base
-
-Allows agent to dynamically search archival memory (knowledge base)
-during task execution. This is the semantic/factual memory store.
-
-Category: memory
-Purpose: Search stored knowledge and documents
-Use when: Need factual information, user preferences, stored documents
-
-Based on:
-- Letta/MemGPT: Archival memory pattern
-- CoALA: Semantic memory
-"""
-
 import logging
 from typing import Dict, Any, Optional, List
 

@@ -545,14 +545,21 @@ class QdrantConnection(LoggerMixin):
                     modifier=models.Modifier.IDF,
                 )
             },
+            "hnsw_config": models.HnswConfigDiff(
+                on_disk=True,
+                m=16,  # Số connections
+                ef_construct=100,  # Build quality
+            ),
             "optimizers_config": models.OptimizersConfigDiff(
-                memmap_threshold=20000
+                memmap_threshold=10000,
+                indexing_threshold=10000,
             ),
             "quantization_config": models.ScalarQuantization(
                 scalar=models.ScalarQuantizationConfig(
                     type=models.ScalarType.INT8,
-                    always_ram=True,
+                    always_ram=False,
                 ),
             ),
+            "on_disk_payload": True,
             "timeout": 600
         }

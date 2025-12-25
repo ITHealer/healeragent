@@ -6,7 +6,7 @@ from src.translation_agent.handlers.translation_service import TranslationServic
 from src.translation_agent.models.translation_models import TranslationRequest
 from src.providers.provider_factory import ProviderType
 
-router = APIRouter()
+router = APIRouter(prefix="/translator")
 
 class TranslateAPIRequest(BaseModel):
     # Text & Languages
@@ -29,7 +29,7 @@ class TranslateAPIRequest(BaseModel):
     max_tokens_per_chunk: int = Field(1000, ge=100, le=4000)
     
 
-@router.post("/translate")
+@router.post("/translate-text")
 async def translate_text(request: TranslateAPIRequest = Body(...)):
     try:
         service = TranslationService()

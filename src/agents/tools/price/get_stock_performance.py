@@ -1,24 +1,3 @@
-# File: src/agents/tools/price/get_stock_performance.py
-
-"""
-GetStockPerformanceTool - Atomic Tool for Multi-Timeframe Performance
-
-Responsibility: Lấy % thay đổi giá qua nhiều khung thời gian
-- 1 Day performance
-- 5 Days (1 Week) performance  
-- 1 Month, 3 Months, 6 Months performance
-- Year-to-Date (YTD) performance
-- 1 Year performance
-
-KHÔNG BAO GỒM:
-- ❌ Current price (use getStockPrice)
-- ❌ Technical indicators (use getTechnicalIndicators)
-- ❌ Intraday performance (endpoint is EOD only)
-
-Data Source: FMP /v3/stock-price-change/{symbol}
-Update Frequency: Daily after market close (not real-time)
-"""
-
 import httpx
 import logging
 from typing import Dict, Any, Optional

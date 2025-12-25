@@ -1,24 +1,3 @@
-# File: src/agents/tools/technical/detect_chart_patterns.py
-
-"""
-DetectChartPatternsTool - Atomic Tool for Chart Pattern Recognition
-
-Responsibility: Nhận diện các chart patterns phổ biến
-- Double Top/Bottom patterns
-- Head & Shoulders patterns
-- Breakout patterns
-- Consolidation patterns
-- Pattern confidence scores
-
-KHÔNG BAO GỒM:
-- ❌ Price data (use getStockPrice)
-- ❌ Technical indicators (use getTechnicalIndicators)
-- ❌ Volume analysis (use getVolumeProfile)
-- ❌ Trading signals (use assessRisk)
-
-This tool WRAPS existing PatternRecognitionHandler
-"""
-
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime

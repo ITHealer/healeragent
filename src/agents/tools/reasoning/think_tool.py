@@ -1,32 +1,3 @@
-# File: src/agents/tools/reasoning/think_tool.py
-"""
-Think Tool - Anthropic τ-Bench Pattern Implementation
-
-PURPOSE:
-The think tool allows the agent to pause and reason about:
-- Tool outputs before taking next action
-- Policy compliance verification
-- Symbol resolution from conversation context
-- Sequential decision validation
-
-WHEN TO USE:
-- Analyzing tool outputs in long chains
-- Navigating policy-heavy environments
-- Making sequential decisions where mistakes are costly
-
-WHEN NOT TO USE:
-- Non-sequential tool calls (single tool execution)
-- Simple instruction following
-- Conversational queries
-
-Based on:
-- Anthropic Research: "The think tool" (March 2025)
-- τ-Bench evaluation methodology
-- SWE-Bench implementation patterns
-
-Reference: https://www.anthropic.com/research/the-think-tool
-"""
-
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime

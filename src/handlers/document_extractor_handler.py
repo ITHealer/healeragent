@@ -52,7 +52,7 @@ class DocumentExtraction(LoggerMixin):
         super().__init__()
         
         # Initialize RapidOCR at startup with multilingual support
-        self.logger.info("Initializing RapidOCR engine...")
+        self.logger.info("[DocumentExtraction] Initializing RapidOCR engine")
         self.ocr_engine = RapidOCR(lang="en,vi,zh")
         
         # Configure default PDF processing options

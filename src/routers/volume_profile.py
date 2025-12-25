@@ -12,7 +12,14 @@ from src.utils.logger.custom_logging import LoggerMixin
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
-from src.routers.llm_chat import analyze_conversation_importance
+from src.helpers.llm_chat_helper import (
+    stream_with_heartbeat,
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.agents.memory.memory_manager import MemoryManager
 from src.services.background_tasks import trigger_summary_update_nowait
@@ -73,9 +80,10 @@ async def stats_analysis_chat(
         # 1. Get relevant context from memory
         context = ""
         memory_stats = {}
+        document_references = []
         if chat_request.session_id and user_id:
             try:
-                context, memory_stats = await memory_manager.get_relevant_context(
+                context, memory_stats, document_references = await memory_manager.get_relevant_context(
                     session_id=chat_request.session_id,
                     user_id=user_id,
                     current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
@@ -190,7 +198,7 @@ async def stats_analysis_chat_stream(
     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
 ):
     """Volume profile statistics analysis with LLM interpretation"""
-    async def format_sse():
+    async def generate_stream():
         try:
             user_id = getattr(request.state, "user_id", None)
             
@@ -225,9 +233,10 @@ async def stats_analysis_chat_stream(
             # Get memory context
             context = ""
             memory_stats = {}
+            document_references = []
             if chat_request.session_id and user_id:
                 try:
-                    context, memory_stats = await memory_manager.get_relevant_context(
+                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
                         session_id=chat_request.session_id,
                         user_id=user_id,
                         current_query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
@@ -259,7 +268,7 @@ async def stats_analysis_chat_stream(
             full_response = []
             
             # Stream LLM interpretation
-            async for chunk in llm_helper.stream_generate_stats_analysis_with_llm(
+            llm_gen = llm_helper.stream_generate_stats_analysis_with_llm(
                 symbol=chat_request.symbol,
                 volume_data=volume_profile,
                 user_question=chat_request.question_input,
@@ -268,17 +277,21 @@ async def stats_analysis_chat_stream(
                 provider_type=chat_request.provider_type,
                 api_key=api_key,
                 chat_history=enhanced_history
-            ):
-                if chunk:
-                    full_response.append(chunk)
-                    yield f"{json.dumps({'content': chunk})}\n\n"
-                    # event_data = {
-                    #     "session_id": chat_request.session_id,
-                    #     "type": "chunk",
-                    #     "data": chunk
-                    # }
-                    # yield f"{json.dumps(event_data, ensure_ascii=False)}\n\n"
+            )
             
+            # Stream with heartbeat
+            async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
+                if event["type"] == "content":
+                    full_response.append(event["chunk"])
+                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                elif event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                elif event["type"] == "error":
+                    yield sse_error(event["error"])
+                    break
+                elif event["type"] == "done":
+                    break
+
             # Save complete response
             complete_response = ''.join(full_response)
             
@@ -331,36 +344,14 @@ async def stats_analysis_chat_stream(
                     logger.error(f"Error saving to chat history: {str(e)}")
             
             # Completion event
-            # completion_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "completion",
-            #     "data": "[DONE]",
-            #     # "memory_stats": tool_stats
-            # }
-            # yield f"{json.dumps(completion_data)}\n\n"
-            
-            yield "[DONE]\n\n"
+            yield sse_done()
 
-        # except Exception as e:
-        #     logger.error(f"Error in stats analysis streaming: {str(e)}")
-        #     yield f"{json.dumps({'error': str(e)})}\n\n"
-        #     yield "[DONE]\n\n"
         except Exception as e:
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
-            # error_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "error",
-            #     "data": str(e)
-            # }
-            # yield f"{json.dumps(error_data)}\n\n"
+            yield sse_error(str(e))
+            yield sse_done()
     
     return StreamingResponse(
-        format_sse(),
+        generate_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+        headers=SSE_HEADERS
     )

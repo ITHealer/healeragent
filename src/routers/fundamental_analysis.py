@@ -18,7 +18,14 @@ from fastapi.responses import StreamingResponse
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
-from src.routers.llm_chat import analyze_conversation_importance
+from src.helpers.llm_chat_helper import (
+    stream_with_heartbeat,
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 from src.agents.memory.memory_manager import MemoryManager
 from src.services.background_tasks import trigger_summary_update_nowait
 
@@ -55,181 +62,6 @@ class FundamentalAnalysisChatResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
-# @router.post("/fundamental/analysis",
-#             response_model=FundamentalAnalysisChatResponse,
-#             summary="Get financial statement growth with AI analysis")
-# async def get_financial_growth_with_analysis(
-#     request: Request,
-#     chat_request: FundamentalAnalysisChatRequest = Body(...),
-#     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key),
-#     redis_client: Optional[aioredis.Redis] = Depends(get_redis_client)
-# ):
-#     """
-#     Get financial statement growth data with AI-powered analysis.
-#     """
-#     user_id = getattr(request.state, "user_id", None)
-
-#     # Config 
-#     period = "annual"
-#     limit = 10
-
-#     # Extract values from request
-#     symbol = chat_request.symbol
-#     period = period
-#     limit = limit
-#     model_name = chat_request.model_name
-#     provider_type = chat_request.provider_type
-    
-#     # First, get the raw data using existing logic
-#     cache_key = f"financial_growth_{symbol.upper()}_{period}_limit_{limit}"
-    
-#     # Check cache for raw data
-#     growth_data_list = None
-#     if redis_client:
-#         try:
-#             cached_data = await redis_client.get(cache_key)
-#             if cached_data:
-#                 cached_response = json.loads(cached_data)
-#                 if cached_response.get("data") and cached_response["data"].get("data"):
-#                     growth_data_list = cached_response["data"]["data"]
-#                     logger.info(f"Cache HIT for raw data: {cache_key}")
-#         except Exception as e:
-#             logger.error(f"Redis error: {e}")
-    
-#     # If not cached, fetch from FMP
-#     if growth_data_list is None:
-#         # Get raw Pydantic models
-#         growth_data_models = await tool_call_service.get_financial_statement_growth(
-#             symbol=symbol, period=period, limit=limit
-#         )
-        
-#         if growth_data_models:
-#             # Convert Pydantic models to dictionaries
-#             growth_data_list = [item.model_dump() if hasattr(item, 'model_dump') else item.dict() 
-#                                for item in growth_data_models]
-            
-#             # Cache the raw data
-#             if redis_client and growth_data_list:
-#                 try:
-#                     cache_ttl = settings.CACHE_TTL_FINANCIALS_ANNUAL if period == "annual" else settings.CACHE_TTL_FINANCIALS_QUARTERLY
-#                     await redis_client.set(
-#                         cache_key,
-#                         json.dumps({"data": {"data": growth_data_list}}),
-#                         ex=cache_ttl
-#                     )
-#                 except Exception as e:
-#                     logger.error(f"Cache set error: {e}")
-    
-#     # Check if we have data to analyze
-#     if not growth_data_list:
-#         return FundamentalAnalysisChatResponse(
-#             status="404",
-#             message=f"No financial data found for {symbol}",
-#             data={
-#                 "symbol": symbol,
-#                 # "period": period,
-#                 "interpretation": None
-#             }
-#         )
-    
-#     # Now perform AI analysis
-#     try:
-#         # Get API Key
-#         api_key = ModelProviderFactory._get_api_key(provider_type)
-        
-#         # Check for analysis cache
-#         analysis_cache_key = f"fundamental_analysis_{symbol}_{period}_{model_name}_{provider_type}"
-#         cached_analysis = None
-        
-#         if redis_client:
-#             try:
-#                 cached_analysis = await redis_client.get(analysis_cache_key)
-#                 if cached_analysis:
-#                     logger.info(f"Cache HIT for analysis: {analysis_cache_key}")
-#                     cached_data = json.loads(cached_analysis)
-#                     return FundamentalAnalysisChatResponse(
-#                         status=cached_data.get("status", "200"),
-#                         message=cached_data.get("message", "Financial analysis completed successfully"),
-#                         data=cached_data
-#                     )
-#             except Exception as e:
-#                 logger.error(f"Analysis cache error: {e}")
-        
-#         # Generate new analysis - pass dictionary data
-#         analysis_result = await fundamental_handler.analyze_financial_growth(
-#             symbol=symbol,
-#             growth_data=growth_data_list,  # Now this is a list of dicts
-#             period=period,
-#             model_name=model_name,
-#             provider_type=provider_type,
-#             api_key=api_key
-#         )
-        
-#         # Prepare response data
-#         response_data = {
-#             "symbol": symbol,
-#             "interpretation": analysis_result["analysis"],
-#         }
-        
-#         # Cache the complete response
-#         if redis_client:
-#             try:
-#                 cache_data = {
-#                     "status": "200",
-#                     "message": "Financial analysis completed successfully",
-#                     **response_data
-#                 }
-#                 # Analysis cache for shorter time (1 hour)
-#                 await redis_client.set(
-#                     analysis_cache_key,
-#                     json.dumps(cache_data),
-#                     ex=300
-#                 )
-#             except Exception as e:
-#                 logger.error(f"Analysis cache set error: {e}")
-        
-
-#         if chat_request.session_id and user_id:
-#             try:
-#                 from src.helpers.chat_management_helper import ChatService
-#                 chat_service = ChatService()
-                
-#                 question_content = chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}"
-#                 question_id = chat_service.save_user_question(
-#                     session_id=chat_request.session_id,
-#                     created_at=datetime.now(),
-#                     created_by=user_id,
-#                     content=question_content
-#                 )
-                
-#                 chat_service.save_assistant_response(
-#                     session_id=chat_request.session_id,
-#                     created_at=datetime.now(),
-#                     question_id=question_id,
-#                     content=analysis_result["analysis"],
-#                     response_time=0.1 
-#                 )
-#             except Exception as e:
-#                 logger.error(f"Error saving to chat history: {str(e)}")
-
-#         return FundamentalAnalysisChatResponse(
-#             status="200",
-#             message="Financial analysis completed successfully",
-#             data=response_data
-#         )
-        
-#     except Exception as e:
-#         logger.error(f"Analysis error for {symbol}: {str(e)}")
-#         return FundamentalAnalysisChatResponse(
-#             status="500",
-#             message=f"Error analyzing financial data: {str(e)}",
-#             data={
-#                 "symbol": symbol,
-#                 # "period": period,
-#                 "interpretation": None
-#             }
-#         )
-
 @router.post("/fundamental/advanced-analysis",
             response_model=FundamentalAnalysisChatResponse,
             summary="Get comprehensive fundamental analysis with AI insights")
@@ -257,13 +89,13 @@ async def get_financial_growth_with_analysis(
         # 1. Get memory context BEFORE cache check
         context = ""
         memory_stats = {}
-        
+        document_references = []
         if chat_request.session_id and user_id:
             try:
                 query_text = chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}"
                 
                 # Get conversation memory context
-                context, memory_stats = await memory_manager.get_relevant_context(
+                context, memory_stats, document_references = await memory_manager.get_relevant_context(
                     session_id=chat_request.session_id,
                     user_id=user_id,
                     current_query=query_text,
@@ -470,11 +302,8 @@ async def get_financial_growth_with_analysis_stream(
     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key),
     redis_client: Optional[aioredis.Redis] = Depends(get_redis_client)
 ):
-    """
-    Get COMPREHENSIVE fundamental analysis with AI-powered insights (STREAMING VERSION).
-    Includes full metrics: valuation, growth, profitability, leverage, cash flow, and risk.
-    """
-    async def format_sse():
+
+    async def generate_stream():
         try:
             user_id = getattr(request.state, "user_id", None)
             symbol = chat_request.symbol
@@ -508,12 +337,12 @@ async def get_financial_growth_with_analysis_stream(
             # Get conversation memory context
             context = ""
             memory_stats = {}
-            
+            document_references = []
             if chat_request.session_id and user_id:
                 try:
                     query_text = chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}"
                     
-                    context, memory_stats = await memory_manager.get_relevant_context(
+                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
                         session_id=chat_request.session_id,
                         user_id=user_id,
                         current_query=query_text,
@@ -550,20 +379,30 @@ async def get_financial_growth_with_analysis_stream(
             full_response = []
             
             # Stream AI analysis with enhanced context
-            async for chunk in fundamental_handler.stream_comprehensive_analysis(
+            llm_gen = fundamental_handler.stream_comprehensive_analysis(
                 symbol=symbol,
                 report=fundamental_report,
                 growth_data=growth_data_list,
                 model_name=model_name,
                 provider_type=provider_type,
                 api_key=api_key,
-                chat_history=enhanced_history,  
+                chat_history=enhanced_history,
                 user_question=chat_request.question_input,
                 target_language=chat_request.target_language
-            ):
-                if chunk:
-                    full_response.append(chunk)
-                    yield f"{json.dumps({'content': chunk})}\n\n"
+            )
+            
+            # Stream with heartbeat
+            async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
+                if event["type"] == "content":
+                    full_response.append(event["chunk"])
+                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                elif event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                elif event["type"] == "error":
+                    yield sse_error(event["error"])
+                    break
+                elif event["type"] == "done":
+                    break
             
             # Join full response
             analysis_text = ''.join(full_response)
@@ -647,21 +486,17 @@ async def get_financial_growth_with_analysis_stream(
                 except Exception as e:
                     logger.error(f"Error saving to chat history: {str(e)}")
             
-            yield "[DONE]\n\n"
+            yield sse_done()
             
         except Exception as e:
             logger.error(f"Fundamental analysis streaming error for {chat_request.symbol}: {e}")
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
+            yield sse_error(str(e)) 
+            yield sse_done() 
     
     return StreamingResponse(
-        format_sse(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+        generate_stream(),
+         media_type="text/event-stream",
+        headers=SSE_HEADERS 
     )
 
 # Helper functions:

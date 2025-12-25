@@ -7,6 +7,14 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.technical_analysis_llm_helper import TechnicalAnalysisLLMHelper
+from src.helpers.llm_chat_helper import (
+    stream_with_heartbeat,
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 from src.handlers.technical_analysis_handler import get_technical_analysis, get_technical_analysis_with_llm
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.stock.crawlers.market_data_provider import MarketData
@@ -46,6 +54,77 @@ class TechnicalAnalysisChatResponse(BaseModel):
     message: str
     data: Optional[Dict[str, Any]] = None
 
+
+# =============================================================================
+# Helper Functions
+# =============================================================================
+def save_user_question(session_id: str, user_id: int, content: str) -> Optional[int]:
+    """Save user question to chat history."""
+    try:
+        return chat_service.save_user_question(
+            session_id=session_id,
+            created_at=datetime.now(),
+            created_by=user_id,
+            content=content
+        )
+    except Exception as e:
+        logger.error(f"Error saving question: {e}")
+        return None
+
+
+async def get_enhanced_context(session_id: str, user_id: int, question_input: str) -> str:
+    """Get chat history + memory context."""
+    enhanced_history = ""
+    
+    # Get chat history
+    chat_history = ""
+    if session_id:
+        try:
+            chat_history = ChatMessageHistory.string_message_chat_history(
+                session_id=session_id
+            )
+        except Exception as e:
+            logger.error(f"Error fetching chat history: {e}")
+    
+    # Get memory context
+    memory_context = ""
+    if session_id and user_id:
+        try:
+            memory_context, _, _ = await memory_manager.get_relevant_context(
+                session_id=session_id,
+                user_id=user_id,
+                current_query=question_input,
+                llm_provider=llm_provider,
+                max_short_term=5,
+                max_long_term=3
+            )
+        except Exception as e:
+            logger.error(f"Error getting memory context: {e}")
+    
+    if memory_context:
+        enhanced_history = f"[Memory Context]\n{memory_context}\n\n"
+    if chat_history:
+        enhanced_history += f"[Conversation History]\n{chat_history}"
+    
+    return enhanced_history
+
+
+def get_language_instruction(detected_language: str) -> str:
+    """Get language instruction for system prompt."""
+    lang_map = {
+        "en": "English",
+        "vi": "Vietnamese",
+        "zh": "Chinese",
+        "zh-cn": "CHINESE (SIMPLIFIED, CHINA)",
+        "zh-tw": "CHINESE (TRADITIONAL, TAIWAN)",
+    }
+    lang_name = lang_map.get(detected_language, "the detected language")
+    
+    return f"""CRITICAL LANGUAGE REQUIREMENT:
+You MUST respond ENTIRELY in {lang_name} language.
+- ALL text, explanations, and analysis must be in {lang_name}
+- Use appropriate financial terminology for {lang_name}
+- Format numbers and dates according to {lang_name} conventions"""
 
 # # Endpoints
 @router.post("/technical/chat", response_model=TechnicalAnalysisChatResponse)
@@ -87,9 +166,10 @@ async def technical_analysis_chat(
 
         context = ""
         memory_stats = {}
+        document_references = [] 
         if chat_request.session_id and user_id:
             try:
-                context, memory_stats = await memory_manager.get_relevant_context(
+                context, memory_stats, document_references = await memory_manager.get_relevant_context( 
                     session_id=chat_request.session_id,
                     user_id=user_id,
                     current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
@@ -98,6 +178,8 @@ async def technical_analysis_chat(
                     max_long_term=3    # Top 3 important past conversations
                 )
                 logger.info(f"Retrieved memory context for technical analysis: {memory_stats}")
+                if document_references:
+                    logger.info(f"Found {len(document_references)} document references")
             except Exception as e:
                 logger.error(f"Error getting memory context: {e}")
         
@@ -193,7 +275,7 @@ async def technical_analysis_chat(
         )
 
 
-# Endpoint stream
+
 @router.post("/technical/chat/stream")
 async def technical_analysis_chat_stream(
     request: Request,
@@ -201,7 +283,7 @@ async def technical_analysis_chat_stream(
     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
 ):
     """
-    Streaming version of technical analysis chat with memory integration
+    Stream technical analysis with heartbeat.
     """
     user_id = getattr(request.state, "user_id", None)
     
@@ -211,115 +293,58 @@ async def technical_analysis_chat_stream(
             detail="Symbol is required for technical analysis"
         )
     
-    # Save user question first
-    question_id = None
-    if chat_request.session_id and user_id:
-        try:
-            question_content = chat_request.question_input or f"Analyze chart patterns for {chat_request.symbol}"
-            question_id = chat_service.save_user_question(
-                session_id=chat_request.session_id,
-                created_at=datetime.now(),
-                created_by=user_id,
-                content=question_content
-            )
-        except Exception as e:
-            logger.error(f"Error saving question: {e}")
-    
-    # Get chat history
-    chat_history = ""
-    if chat_request.session_id:
-        try:
-            chat_history = ChatMessageHistory.string_message_chat_history(
-                session_id=chat_request.session_id
-            )
-        except Exception as e:
-            logger.error(f"Error fetching history: {e}")
-
-    # Get memory context
-    context = ""
-    memory_stats = {}
-    if chat_request.session_id and user_id:
-        try:
-            context, memory_stats = await memory_manager.get_relevant_context(
-                session_id=chat_request.session_id,
-                user_id=user_id,
-                current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                llm_provider=llm_provider,
-                max_short_term=5,
-                max_long_term=3
-            )
-            logger.info(f"Retrieved memory context for streaming: {memory_stats}")
-        except Exception as e:
-            logger.error(f"Error getting memory: {e}")
-    
-    # Combine contexts
-    enhanced_history = ""
-    if context:
-        enhanced_history = f"{context}\n\n"
-    if chat_history:
-        enhanced_history += f"[Conversation History]\n{chat_history}"
+    # Save user question
+    question_content = chat_request.question_input or f"Analyze chart patterns for {chat_request.symbol}"
+    question_id = save_user_question(chat_request.session_id, user_id, question_content)
     
     # Get API Key
     api_key = ModelProviderFactory._get_api_key(chat_request.provider_type)
-            
-    async def generate():
+    
+    async def generate_stream():
         full_response = []
+        start_time = datetime.now()
+        
         try:
+            # 1. Get enhanced context (chat history + memory)
+            enhanced_history = await get_enhanced_context(
+                session_id=chat_request.session_id,
+                user_id=user_id,
+                question_input=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}"
+            )
             
-            # Get technical analysis data
+            # 2. Get technical analysis data
             df = await market_data.get_historical_data_lookback_ver2(
                 ticker=chat_request.symbol,
                 lookback_days=252
             )
-            
             data_dict = df.reset_index().to_dict(orient="records")
             analysis_data = get_technical_analysis(chat_request.symbol, data_dict)
             
-            # Create prompt with memory context
-            detection_method = ""
-            if len(chat_request.question_input.split()) < 2:
-                detection_method = DetectionMethod.LLM
-            else:
-                detection_method = DetectionMethod.LIBRARY
-
-            # Language detection
+            # 3. Language detection
+            detection_method = (
+                DetectionMethod.LLM if len((chat_request.question_input or "").split()) < 2 
+                else DetectionMethod.LIBRARY
+            )
             language_info = await language_detector.detect(
-                text=chat_request.question_input,
+                text=chat_request.question_input or f"Analyze {chat_request.symbol}",
                 method=detection_method,
                 system_language=chat_request.target_language,
                 model_name=chat_request.model_name,
                 provider_type=chat_request.provider_type,
                 api_key=api_key
             )
-
             detected_language = language_info["detected_language"]
-
-            if detected_language:
-                lang_name = {
-                    "en": "English",
-                    "vi": "Vietnamese", 
-                    "zh": "Chinese",
-                    "zh-cn": "CHINESE (SIMPLIFIED, CHINA)",
-                    "zh-tw": "CHINESE (TRADITIONAL, TAIWAN)",
-                }.get(detected_language, "the detected language")
-                
-            language_instruction = f"""
-            CRITICAL LANGUAGE REQUIREMENT:
-            You MUST respond ENTIRELY in {lang_name} language.
-            - ALL text, explanations, and analysis must be in {lang_name}
-            - Use appropriate financial terminology for {lang_name}
-            - Format numbers and dates according to {lang_name} conventions
-            """
-
+            language_instruction = get_language_instruction(detected_language)
+            
+            # 4. Create prompt
             base_prompt = llm_helper.create_technical_analysis_prompt(
                 chat_request.symbol,
                 analysis_data,
-                chat_request.question_input, 
+                chat_request.question_input,
                 language_instruction
             )
             
-            # Add memory context to prompt if available
-            if context:
+            if enhanced_history:
                 prompt = f"Previous conversations context:\n{enhanced_history}\n\nCurrent analysis request:\n{base_prompt}"
             else:
                 prompt = base_prompt
@@ -329,32 +354,36 @@ async def technical_analysis_chat_stream(
                 {"role": "user", "content": prompt}
             ]
             
-            # Stream response
-            async for chunk in llm_provider.stream_response(
+            # 5. Get LLM generator
+            llm_generator = llm_provider.stream_response(
                 model_name=chat_request.model_name,
                 messages=messages,
                 provider_type=chat_request.provider_type,
                 api_key=api_key
-            ):
-                full_response.append(chunk)
-                yield f"{json.dumps({'content': chunk})}\n\n"
-                # event_data = {
-                #     "session_id": chat_request.session_id,
-                #     "type": "chunk",
-                #     "data": chunk
-                # }
-                # yield f"{json.dumps(event_data, ensure_ascii=False)}\n\n"
+            )
             
-            # Join the full response
+            # 6. Stream with heartbeat using imported function
+            async for event in stream_with_heartbeat(llm_generator, DEFAULT_HEARTBEAT_SEC):
+                if event["type"] == "content":
+                    full_response.append(event["chunk"])
+                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                elif event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                elif event["type"] == "error":
+                    yield f"{json.dumps({'error': event['error']})}\n\n"
+                    break
+                elif event["type"] == "done":
+                    break
+            
+            # 7. Post-processing
             complete_response = ''.join(full_response)
+            response_time = (datetime.now() - start_time).total_seconds()
             
-            # Analyze conversation importance
+            # 8. Analyze importance
             importance_score = 0.5
-            
-            if chat_request.session_id and user_id:
+            if chat_request.session_id and user_id and complete_response:
                 try:
                     analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                    
                     importance_score = await analyze_conversation_importance(
                         query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
                         response=complete_response,
@@ -362,13 +391,10 @@ async def technical_analysis_chat_stream(
                         model_name=analysis_model,
                         provider_type=chat_request.provider_type
                     )
-                    
-                    logger.info(f"Technical analysis stream importance: {importance_score}")
-                    
                 except Exception as e:
-                    logger.error(f"Error analyzing conversation: {e}")
+                    logger.error(f"Error analyzing importance: {e}")
             
-            # Store in memory system
+            # 9. Store in memory
             if chat_request.session_id and user_id and complete_response:
                 try:
                     await memory_manager.store_conversation_turn(
@@ -383,46 +409,31 @@ async def technical_analysis_chat_stream(
                         importance_score=importance_score
                     )
                     
-                    chat_service.save_assistant_response(
+                    if question_id:
+                        chat_service.save_assistant_response(
+                            session_id=chat_request.session_id,
+                            created_at=datetime.now(),
+                            question_id=question_id,
+                            content=complete_response,
+                            response_time=response_time
+                        )
+                    
+                    trigger_summary_update_nowait(
                         session_id=chat_request.session_id,
-                        created_at=datetime.now(),
-                        question_id=question_id,
-                        content=complete_response,
-                        response_time=0.1
+                        user_id=user_id
                     )
-
-                    trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
-
-                except Exception as save_error:
-                    logger.error(f"Error saving assistant response: {str(save_error)}")
+                except Exception as e:
+                    logger.error(f"Error saving to memory: {e}")
             
-            # Send completion event with memory stats
-            yield "[DONE]\n\n"
-            # completion_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "completion",
-            #     "data": "[DONE]",
-            #     # "memory_stats": memory_stats
-            # }
-            # yield f"{json.dumps(completion_data)}\n\n"
+            yield sse_done()
             
         except Exception as e:
-            logger.error(f"Error in streaming: {str(e)}")
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
-            # error_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "error",
-            #     "data": str(e)
-            # }
-            # yield f"{json.dumps(error_data)}\n\n"
+            logger.error(f"Error in streaming: {e}")
+            yield sse_error(str(e))
+            yield sse_done()
     
     return StreamingResponse(
-        generate(),
+        generate_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Content-Type-Options": "nosniff",
-            "Connection": "keep-alive"
-        }
+        headers=SSE_HEADERS
     )

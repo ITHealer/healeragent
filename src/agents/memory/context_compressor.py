@@ -1,29 +1,3 @@
-# File: src/agents/memory/context_compressor.py
-"""
-Context Compressor - Anthropic Context Management Pattern
-
-PURPOSE:
-Manage context window efficiently by:
-1. Monitoring token usage
-2. Triggering compaction when threshold reached
-3. Generating smart summaries
-4. Preserving critical information
-
-STRATEGIES:
-1. Keep Last N Turns: Simple, fast
-2. Token-based Truncation: Precise control
-3. Smart Summarization: LLM-powered compression
-4. Recursive Summarization: Hierarchical compression
-
-Based on:
-- Anthropic Context Management API
-- Claude Code Forge Configuration
-- Weaviate Context Engineering patterns
-
-Reference:
-- https://docs.anthropic.com/en/docs/build-with-claude/context-management
-"""
-
 import functools
 import re
 import json
@@ -278,7 +252,7 @@ class ContextCompressor(LoggerMixin):
         self.llm_provider = LLMGeneratorProvider()
         
         self.logger.info(
-            f"[COMPRESSOR] Initialized with strategy={self.config.strategy.value}, "
+            f"[CONTEXT COMPRESSOR] Initialized with strategy={self.config.strategy.value}, "
             f"threshold={self.config.token_threshold} tokens"
         )
     
@@ -350,13 +324,13 @@ class ContextCompressor(LoggerMixin):
         
         if stats.needs_compaction:
             self.logger.warning(
-                f"[COMPRESSOR] ⚠️ Compaction needed: "
+                f"[CONTEXT COMPRESSOR] ⚠️ Compaction needed: "
                 f"{stats.usage_percent:.1f}% usage, "
                 f"{stats.message_count} messages"
             )
         else:
             self.logger.info(
-                f"[COMPRESSOR] ✅ Context OK: "
+                f"[CONTEXT COMPRESSOR] ✅ Context OK: "
                 f"{stats.usage_percent:.1f}% usage"
             )
         
@@ -392,7 +366,7 @@ class ContextCompressor(LoggerMixin):
         initial_stats = self.get_context_stats(messages, system_prompt)
         
         self.logger.info(
-            f"[COMPRESSOR] Starting compaction: "
+            f"[CONTEXT COMPRESSOR] Starting compaction: "
             f"strategy={strategy.value}, "
             f"messages={len(messages)}, "
             f"tokens={initial_stats.total_tokens}"
@@ -427,7 +401,7 @@ class ContextCompressor(LoggerMixin):
             result.execution_time_ms = execution_time
             
             self.logger.info(
-                f"[COMPRESSOR] ✅ Compaction complete: "
+                f"[CONTEXT COMPRESSOR] ✅ Compaction complete: "
                 f"{initial_stats.total_tokens} → {result.final_tokens} tokens "
                 f"({result.compression_ratio:.1%} reduction) "
                 f"in {execution_time}ms"
@@ -436,7 +410,7 @@ class ContextCompressor(LoggerMixin):
             return result
             
         except Exception as e:
-            self.logger.error(f"[COMPRESSOR] Error: {e}", exc_info=True)
+            self.logger.error(f"[CONTEXT COMPRESSOR] Error: {e}", exc_info=True)
             
             # Fallback to simple truncation
             return await self._compact_keep_last_n(messages)
@@ -736,7 +710,7 @@ class ContextCompressor(LoggerMixin):
             return content.strip()
             
         except Exception as e:
-            self.logger.error(f"[COMPRESSOR] Summary generation error: {e}")
+            self.logger.error(f"[CONTEXT COMPRESSOR] Summary generation error: {e}")
             return None
     
     # ========================================================================
@@ -752,7 +726,8 @@ class ContextCompressor(LoggerMixin):
         
         Used to ensure symbols are preserved during compaction
         """
-        symbol_pattern = r'\b[A-Z]{1,5}\b'
+        # symbol_pattern = r'\b[A-Z]{1,5}\b'
+        symbol_pattern = r'\b[A-Z][A-Z0-9]{0,14}\b'
         symbols = set()
         
         # Common words to exclude

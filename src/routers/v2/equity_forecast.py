@@ -1,5 +1,3 @@
-# src/routers/v2/equity_forecast.py (không thay đổi logic, chỉ log rõ hơn)
-
 import asyncio
 import logging
 from typing import Optional
@@ -23,7 +21,7 @@ from src.utils.logger.set_up_log_dataFMP import setup_logger
 
 logger = setup_logger(__name__, log_level=logging.INFO)
 
-router = APIRouter(prefix="/equity/forecast")
+router = APIRouter(prefix="/equity-forecast")
 
 forecast_service = ForecastService()
 forecast_ai_service = ForecastAIService()

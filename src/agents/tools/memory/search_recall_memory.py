@@ -1,19 +1,3 @@
-# File: src/agents/tools/memory/search_recall_memory.py
-"""
-SearchRecallMemoryTool - Search Conversation History
-
-Allows agent to dynamically search recall memory (conversation history)
-during task execution. This implements the "memory-as-a-tool" pattern.
-
-Category: memory
-Purpose: Search past conversations for relevant context
-Use when: User references past discussions, needs context from history
-
-Based on:
-- Google ADK: Dynamic memory retrieval
-- Letta/MemGPT: Recall memory pattern
-"""
-
 import logging
 from typing import Dict, Any, Optional, List, Literal
 from datetime import datetime, timedelta

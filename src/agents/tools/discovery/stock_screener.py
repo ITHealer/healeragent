@@ -1,11 +1,5 @@
-"""
-Stock Screener Tool - Find stocks by sector and criteria
-
-Location: src/agents/tools/discovery/stock_screener.py
-"""
-
 import httpx
-from typing import Optional, Any
+from typing import Dict, Optional, Any
 from datetime import datetime
 
 from src.agents.tools.base import BaseTool, ToolOutput, ToolSchema, ToolParameter
@@ -69,6 +63,44 @@ SECTOR_MAPPING = {
     "tieu dung": "Consumer Cyclical",
 }
 
+VALID_SECTORS = [
+    "Technology", "Healthcare", "Financial Services",
+    "Consumer Cyclical", "Industrials", "Energy",
+    "Utilities", "Real Estate", "Basic Materials",
+    "Communication Services", "Consumer Defensive"
+]
+
+def normalize_sector(sector: str) -> Optional[str]:
+    """
+    Normalize sector name to FMP format
+    
+    Handles:
+    - English variants: 'tech' → 'Technology'
+    - Vietnamese: 'công nghệ' → 'Technology'
+    - Already valid: 'Technology' → 'Technology'
+    
+    Args:
+        sector: Raw sector input from LLM
+        
+    Returns:
+        Normalized sector name or None if invalid
+    """
+    if not sector:
+        return None
+    
+    sector_lower = sector.lower().strip()
+    
+    # Check mapping first (handles variants)
+    if sector_lower in SECTOR_MAPPING:
+        return SECTOR_MAPPING[sector_lower]
+    
+    # Check if already valid (case-insensitive)
+    for valid in VALID_SECTORS:
+        if sector_lower == valid.lower():
+            return valid
+    
+    # Return None for invalid sector (will be caught by validation)
+    return None
 
 class StockScreenerTool(BaseTool, LoggerMixin):
     """
@@ -92,7 +124,7 @@ class StockScreenerTool(BaseTool, LoggerMixin):
             name="stockScreener",
             category="discovery",
             description=(
-                "Find and filter stocks based on multiple criteria (sector, market cap, price, volume, etc.). "
+                "Find and filter stocks based on multiple criteria (sector, market cap, price, volume, beta, P/E, etc.). "
                 "This tool DISCOVERS stocks - it does NOT analyze specific symbols. "
                 "Returns list of stock symbols matching ALL specified criteria."
             ),
@@ -102,7 +134,8 @@ class StockScreenerTool(BaseTool, LoggerMixin):
                 "✅ Filter by market cap, price range, volume, beta",
                 "✅ Filter by exchange (NYSE, NASDAQ) and country",
                 "✅ Return list of matching stock symbols for further analysis",
-                "✅ Can be used without any symbol input - this tool FINDS symbols"
+                "✅ Can be used without any symbol input - this tool FINDS symbols",
+                "✅ Supports multilingual sector input (English, Vietnamese)"
             ],
             limitations=[
                 "❌ Cannot compute technical indicators (RSI, MACD, Bollinger Bands)",
@@ -123,11 +156,12 @@ class StockScreenerTool(BaseTool, LoggerMixin):
                 ToolParameter(
                     name="sector",
                     type="string",
-                    description="Sector to filter (Technology, Healthcare, Financial Services, etc.)",
+                    description=(
+                        "Sector to filter (Technology, Healthcare, Financial Services, etc.). Accepts variants like 'tech', 'technology', 'Technology', "
+                        "'công nghệ'. Will be normalized to FMP format."
+                    ),
                     required=False,
-                    enum=["Technology", "Healthcare", "Financial Services", "Consumer Cyclical", 
-                        "Industrials", "Energy", "Utilities", "Real Estate", "Basic Materials", 
-                        "Communication Services", "Consumer Defensive"]
+                    enum=VALID_SECTORS
                 ),
                 ToolParameter(
                     name="industry",
@@ -212,7 +246,7 @@ class StockScreenerTool(BaseTool, LoggerMixin):
                 ToolParameter(
                     name="limit",
                     type="integer",
-                    description="Number of stocks to return (RECOMMENDED: 5-10 for quality analysis)",
+                    description="Number of stocks to return (RECOMMENDED: 10-15 for quality analysis)",
                     required=False,
                     default=10,
                     min_value=1,
@@ -228,7 +262,7 @@ class StockScreenerTool(BaseTool, LoggerMixin):
             typical_execution_time_ms=1500
         )
         
-        logger.info("✅ Registered tool: stockScreener (category: discovery)")
+        # logger.info("Registered tool: stockScreener (category: discovery)")
     
     def _normalize_sector(self, sector: str) -> Optional[str]:
         """Normalize sector name to FMP format"""
@@ -278,6 +312,44 @@ class StockScreenerTool(BaseTool, LoggerMixin):
                 await redis_client.set(cache_key, json.dumps(result), ex=self.CACHE_TTL)
         except Exception as e:
             self.logger.warning(f"Cache write error: {e}")
+    
+
+    def validate_input(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Override validate_input to normalize sector BEFORE enum validation.
+        
+        Args:
+            params: Input parameters from LLM
+            
+        Returns:
+            Validated and normalized parameters
+        """
+        # Step 1: Normalize sector BEFORE validation
+        if 'sector' in params and params['sector']:
+            raw_sector = params['sector']
+            normalized = normalize_sector(raw_sector)
+            
+            if normalized:
+                self.logger.debug(
+                    f"[{self.schema.name}] Normalized sector: '{raw_sector}' → '{normalized}'"
+                )
+                params['sector'] = normalized
+            else:
+                # Invalid sector - let parent validation handle error
+                self.logger.warning(
+                    f"[{self.schema.name}] Unknown sector: '{raw_sector}'"
+                )
+        
+        # Step 2: Normalize country variants
+        if 'country' in params and params['country']:
+            country = params['country'].upper().strip()
+            # Normalize common variants
+            if country in ['US', 'USA', 'UNITED STATES', 'MY']:  # MY = Mỹ in Vietnamese context
+                params['country'] = 'US'
+        
+        # Step 3: Call parent validation (now with normalized values)
+        return super().validate_input(params)
+    
     
     async def execute(
         self,

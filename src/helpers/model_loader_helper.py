@@ -30,7 +30,7 @@ class ModelLoader(LoggerMixin):
         super().__init__()
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.logger.info(f"ModelLoader initialized with device: {self.device}")
+        self.logger.info(f"[ModelLoader] Initialized with device: {self.device}")
 
     @staticmethod
     @lru_cache(maxsize=5)
@@ -50,7 +50,7 @@ class ModelLoader(LoggerMixin):
         # Determine model name based on key or default
         model_name = ModelLoader._resolve_model_name(model_key, "BAAI_COLLECTION_RERANK")
         
-        logger.info(f"Loading FlagReranker model: {model_name} on device: {device}")
+        logger.info(f"[ModelLoader] Loading model: {model_name} on device: {device}")
         
         return FlagReranker(model_name, use_fp16=(device.type == "cuda"))
     
@@ -72,7 +72,7 @@ class ModelLoader(LoggerMixin):
         # Determine model name based on key or default
         model_name = ModelLoader._resolve_model_name(model_key, "CROSS_ENCODER_MS_MARCO_RERANK")
         
-        logger.info(f"Loading SentenceTransformer model: {model_name}")
+        logger.info(f"[ModelLoader] Loading model: {model_name}")
         return SentenceTransformer(model_name, cache_folder=CACHE_DIR, device=str(device))
     
     @staticmethod
@@ -88,7 +88,7 @@ class ModelLoader(LoggerMixin):
             AutoTokenizer: Loaded tokenizer
         """
         logger = ModelLoader().logger
-        logger.info(f"Loading tokenizer: {model_name}")
+        logger.info(f"[ModelLoader] Loading model: {model_name}")
         return AutoTokenizer.from_pretrained(model_name, cache_dir=CACHE_DIR)
     
     @staticmethod

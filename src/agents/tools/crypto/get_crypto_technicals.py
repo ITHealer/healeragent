@@ -1,16 +1,3 @@
-# File: src/agents/tools/crypto/get_crypto_technicals.py
-"""
-GetCryptoTechnicalsTool - FIXED with symbol normalization
-
-Supports multiple input formats:
-- BTCUSD (FMP format) ✅
-- BTCUSDT (Binance format) ✅ → auto-converts to BTCUSD
-- BTC (short format) ✅ → auto-converts to BTCUSD
-
-FMP Stable API:
-GET https://financialmodelingprep.com/stable/technical-indicator/{timeframe}?symbol=BTCUSD
-"""
-
 import json
 import time
 from typing import Dict, Any, List, Optional

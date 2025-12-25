@@ -1,0 +1,35 @@
+POSTGRES:
+  USER: "stock_pg_dev"
+  PASSWORD: "stock_pg_dev"
+  HOST: "stock_pg_dev" 
+  PORT: "5432"
+  DATABASE_NAME: "stock_db_dev"
+  SQLALCHEMY_ECHO: "true"
+
+MYSQL:
+  HOST: "14.225.220.56"
+  PORT: 15479
+  DATABASE: "finance_invest"
+  USER: "finance_woking"
+  PASSWORD: "4mDfwzrvYFgQ4NkbTxfRqniPzqGK9PAx"
+  CHARSET: "utf8mb4"
+  POOL_SIZE: 10
+  MAX_OVERFLOW: 20
+
+# MYSQL:
+#   HOST: "14.225.220.56" # ip dev 
+#   PORT: 15479
+#   DATABASE: "chatbot_system"
+#   USER: "wisechat_five"
+#   PASSWORD: "HGW4hFHhzs87DrhrripfPmsAXR9JJVOQ"
+#   CHARSET: "utf8mb4"
+#   POOL_SIZE: 10
+#   MAX_OVERFLOW: 20
+
+MYSQL_CRAWLER:
+  HOST: "107.148.233.40"
+  PORT: 15479
+  USER: "dev_news_cluster_1"
+  PASSWORD: "98J7T1096NikTQb2q8SsrPlpK3Zv4zHX"
+  DATABASE: "dev_news_cluster"
+  CHARSET: "utf8mb4"

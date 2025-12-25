@@ -1,7 +1,3 @@
-"""
-Task Models for Task Decomposition System
-"""
-
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum

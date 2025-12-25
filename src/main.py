@@ -4,7 +4,7 @@ import uvicorn
 import secrets
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Optional
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,23 +12,11 @@ from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from apscheduler.triggers.interval import IntervalTrigger
-from src.scheduler.scheduler_config import create_scheduler, JobConfig
-from src.scheduler.get_data_scheduler import (
-    prefetch_actives_data, 
-    prefetch_crypto_data, 
-    prefetch_default_screener_data, 
-    prefetch_etf_data, 
-    prefetch_gainers_data, 
-    prefetch_losers_data, 
-    prefetch_stock_data
-)
-# from src.scheduler.twitter_jobs import scheduled_twitter_scrape_job
 
 from src.utils.config import settings
 from src.utils.constants import CODEMIND_LLM
 from src.app import IncludeAPIRouter, logger_instance
 from src.utils.config_loader import ConfigReaderInstance
-
 from src.jobs.symbol_directory_monthly_sync import (
     start_symbol_directory_monthly_sync,
     run_symbol_directory_sync_now
@@ -36,8 +24,6 @@ from src.jobs.symbol_directory_monthly_sync import (
 
 from dotenv import load_dotenv
 load_dotenv()
-
-scheduler = create_scheduler()
 
 logger = logger_instance.get_logger(__name__)
 
@@ -53,6 +39,32 @@ def env_bool(key: str, default: bool = False) -> bool:
     if val is None:
         return default
     return val.strip().lower() in ("1", "true", "yes", "on")
+
+def get_scheduler_mode() -> str:
+    """
+    Get scheduler mode from environment
+    
+    Modes:
+    - embedded: Scheduler runs in same process as API (development)
+    - standalone: Scheduler runs in separate process (production)
+    - disabled: No scheduler (API-only instance)
+    """
+    return os.getenv("SCHEDULER_MODE", "embedded").lower()
+
+
+def should_run_scheduler_in_api() -> bool:
+    """Determine if API process should run scheduler"""
+    mode = get_scheduler_mode()
+    
+    if mode == "disabled":
+        return False
+    
+    if mode == "standalone":
+        # In standalone mode, API doesn't run scheduler
+        return False
+    
+    # Embedded mode - API runs scheduler
+    return True
 
 # lifespan (app lifecycle management, default is None).
 def get_application(lifespan: Any = None):
@@ -87,38 +99,42 @@ def get_application(lifespan: Any = None):
 # Perform actions when the application starts and shuts down
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
+    """Application lifecycle manager"""
+
+    # Track resources for cleanup
+    consumer_process: Optional[subprocess.Popen] = None
+    scheduler = None
 
     # ----------------------------------------------------
     # PHASE 1: STARTUP LOGIC (ALL code BEFORE the single 'yield')
     # ----------------------------------------------------
     logger.info("Starting application...")
+    logger.info(f"Environment: {settings.ENV_STATE}")
+    logger.info(f"Scheduler Mode: {get_scheduler_mode()}")
     
-    # ====================================================================
-    # Initialize Tool Registry
-    # ====================================================================
+    # -------------------------------------------------------------------------
+    # 1. Initialize Tool Registry
+    # -------------------------------------------------------------------------
     from src.agents.tools import initialize_registry
     try:    
         registry = initialize_registry()
         summary = registry.get_summary()
         
-        logger.info("=" * 60)
-        logger.info("TOOL REGISTRY INITIALIZED")
+        logger.info("[TOOL REGISTRY] Initialized successfully")
         logger.info(f"Total tools: {summary['total_tools']}")
         logger.info(f"Categories: {list(summary['categories'].keys())}")
         for cat, count in summary['categories'].items():
             logger.info(f"  - {cat}: {count} tools")
-        logger.info("=" * 60)
         
     except Exception as e:
         logger.error(f"Failed to initialize tool registry: {e}")
         logger.warning("Application will continue with legacy tools only")
     
-    # 0. ============= START CONSUMER MANAGER PROCESS =============
+    # -------------------------------------------------------------------------
+    # 2. Start Consumer Manager Process
+    # -------------------------------------------------------------------------
     logger.info("Starting consumer manager process...")
-    consumer_process = None
     try:
-        # Start the consumer manager in a separate process
-        # We use sys.executable to ensure we're using the same python interpreter
         consumer_process = subprocess.Popen([sys.executable, "-m", "src.run_consumers"])
         logger.info(f"Consumer manager process started with PID: {consumer_process.pid}")
     except Exception as e:
@@ -127,7 +143,9 @@ async def app_lifespan(app: FastAPI):
     logger.info(CODEMIND_LLM)
     logger.info('event=app-startup')
 
-    # 1. ============= CONFIGURE PYTORCH/CUDA ENV =============
+    # -------------------------------------------------------------------------
+    # 3. Configure CUDA/PyTorch
+    # -------------------------------------------------------------------------
     try:
         import torch
         logger.info(f"PyTorch CUDA available: {torch.cuda.is_available()}")
@@ -140,7 +158,9 @@ async def app_lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error checking CUDA: {str(e)}")
 
-    # 2. ============= LOAD LOCAL MODEL =============
+    # -------------------------------------------------------------------------
+    # 4. Load Local Models
+    # -------------------------------------------------------------------------
     try:
         from src.helpers.model_manager import model_manager
         
@@ -155,75 +175,59 @@ async def app_lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Error loading models: {str(e)}")
 
-    # 3. ============= JOB SCHEDULING =============
-    logger.info("Configuring background jobs with custom settings...")
-    job_settings = JobConfig.JOB_SETTINGS
-
-    scheduler.add_job(
-        prefetch_stock_data,
-        IntervalTrigger(seconds=job_settings['prefetch_stocks']['interval_seconds']),
-        id="prefetch_stocks",
-        **{k: v for k, v in job_settings['prefetch_stocks'].items() if k != 'interval_seconds'}
-    )
-
-    scheduler.add_job(
-        prefetch_etf_data,
-        IntervalTrigger(seconds=job_settings['prefetch_etfs']['interval_seconds']),
-        id="prefetch_etfs",
-        **{k: v for k, v in job_settings['prefetch_etfs'].items() if k != 'interval_seconds'}
-    )
-    
-    scheduler.add_job(
-        prefetch_crypto_data,
-        IntervalTrigger(seconds=job_settings['prefetch_crypto']['interval_seconds']),
-        id="prefetch_crypto",
-        **{k: v for k, v in job_settings['prefetch_crypto'].items() if k != 'interval_seconds'}
-    )
-    
-    # Discovery jobs
-    scheduler.add_job(
-        prefetch_gainers_data,
-        IntervalTrigger(seconds=job_settings['prefetch_gainers']['interval_seconds']),
-        id="prefetch_gainers",
-        **{k: v for k, v in job_settings['prefetch_gainers'].items() if k != 'interval_seconds'}
-    )
-    
-    scheduler.add_job(
-        prefetch_losers_data,
-        IntervalTrigger(seconds=job_settings['prefetch_losers']['interval_seconds']),
-        id="prefetch_losers",
-        **{k: v for k, v in job_settings['prefetch_losers'].items() if k != 'interval_seconds'}
-    )
-    
-    scheduler.add_job(
-        prefetch_actives_data,
-        IntervalTrigger(seconds=job_settings['prefetch_actives']['interval_seconds']),
-        id="prefetch_actives",
-        **{k: v for k, v in job_settings['prefetch_actives'].items() if k != 'interval_seconds'}
-    )
-    
-    # Screener job
-    scheduler.add_job(
-        prefetch_default_screener_data,
-        IntervalTrigger(seconds=job_settings['prefetch_screener']['interval_seconds']),
-        id="prefetch_screener",
-        **{k: v for k, v in job_settings['prefetch_screener'].items() if k != 'interval_seconds'}
-    )
-
-    # Twitter scraping job
-    # scheduler.add_job(
-    #     scheduled_twitter_scrape_job,
-    #     IntervalTrigger(hours=JobConfig.TWITTER_INTERVAL_HOURS),
-    #     id="scheduled_twitter_scrape",
-    #     replace_existing=True,
-    #     max_instances=1,
-    #     misfire_grace_time=3600
-    # )
-
-    # ============= START SCHEDULER =============
-    scheduler.start()
-
-    logger.info(f"Configured {len(scheduler.get_jobs())} background jobs and started scheduler")
+    # -------------------------------------------------------------------------
+    # 5. Configure Scheduler (only in embedded mode)
+    # -------------------------------------------------------------------------
+    if should_run_scheduler_in_api():
+        logger.info("Configuring background jobs (embedded mode)...")
+        try:
+            from src.scheduler.scheduler_config import create_scheduler, JobConfig
+            from src.scheduler.get_data_scheduler import (
+                prefetch_stock_data,
+                prefetch_etf_data,
+                prefetch_crypto_data,
+                prefetch_gainers_data,
+                prefetch_losers_data,
+                prefetch_actives_data,
+                prefetch_default_screener_data
+            )
+            
+            scheduler = create_scheduler()
+            job_settings = JobConfig.JOB_SETTINGS
+            
+            # Define jobs
+            jobs = [
+                ("prefetch_stocks", prefetch_stock_data, job_settings['prefetch_stocks']),
+                ("prefetch_etfs", prefetch_etf_data, job_settings['prefetch_etfs']),
+                ("prefetch_crypto", prefetch_crypto_data, job_settings['prefetch_crypto']),
+                ("prefetch_gainers", prefetch_gainers_data, job_settings['prefetch_gainers']),
+                ("prefetch_losers", prefetch_losers_data, job_settings['prefetch_losers']),
+                ("prefetch_actives", prefetch_actives_data, job_settings['prefetch_actives']),
+                ("prefetch_screener", prefetch_default_screener_data, job_settings['prefetch_screener']),
+            ]
+            
+            # Register jobs
+            for job_id, func, settings_dict in jobs:
+                # Extract interval_seconds, use rest as kwargs
+                interval = settings_dict.get('interval_seconds', 60)
+                job_kwargs = {k: v for k, v in settings_dict.items() if k != 'interval_seconds'}
+                
+                scheduler.add_job(
+                    func,
+                    IntervalTrigger(seconds=interval),
+                    id=job_id,
+                    **job_kwargs
+                )
+            
+            scheduler.start()
+            logger.info(f"Scheduler started with {len(scheduler.get_jobs())} jobs (embedded mode)")
+            
+        except Exception as e:
+            logger.error(f"Scheduler initialization failed: {e}")
+            scheduler = None
+    else:
+        logger.info(f"Scheduler NOT started in API process (mode: {get_scheduler_mode()})")
+        logger.info("Background jobs will be handled by scheduler_worker service")
 
     # Run symbol directory sync
     # await run_symbol_directory_sync_now()
@@ -240,7 +244,12 @@ async def app_lifespan(app: FastAPI):
 
     # 1. Shutdown Scheduler
     logger.info("Shutting down scheduler...")
-    scheduler.shutdown()
+    if scheduler is not None:
+        try:
+            scheduler.shutdown(wait=False)
+            logger.info("Scheduler stopped")
+        except Exception as e:
+            logger.warning(f"Scheduler shutdown error: {e}")
 
     # 2. Terminate Consumer Process
     if consumer_process:
@@ -267,6 +276,14 @@ async def docs_redirect():
         return {"message": "Service running"}
     return RedirectResponse(url='/docs')
 
+@app.get('/health')
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "scheduler-worker",
+        "scheduler_mode": get_scheduler_mode()
+    }
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:

@@ -15,7 +15,7 @@ from src.models.symbol_directory import (
 from src.services.data_providers.fmp.symbol_directory_service import get_symbol_directory_service
 from src.models.equity import APIResponse, APIResponseData
 
-router = APIRouter()
+router = APIRouter(prefix="/symbol-directory")
 logger = LoggerMixin().logger
 
 
@@ -214,7 +214,7 @@ async def get_symbol_status_http(
     "/validate-bulk",
     response_model=APIResponse[BulkValidationResponse],
     summary="Bulk validate symbols",
-    description="Validate up to 100 symbols at once"
+    description="Validate multiple symbols"
 )
 async def bulk_validate_symbols_http(
     request: BulkValidationRequest,
@@ -223,18 +223,10 @@ async def bulk_validate_symbols_http(
     """Bulk symbol validation"""
     service = get_symbol_directory_service(db)
     
-    results = []
-    valid_symbols = []
-    invalid_symbols = []
-    
-    for symbol in request.symbols:
-        result = service.validate_symbol(symbol, request.asset_class)
-        results.append(result)
-        
-        if result.is_valid:
-            valid_symbols.append(symbol)
-        else:
-            invalid_symbols.append(symbol)
+    results, valid_symbols, invalid_symbols = service.validate_symbols_bulk(
+        request.symbols, 
+        request.asset_class
+    )
     
     bulk_response = BulkValidationResponse(
         total_checked=len(request.symbols),
@@ -485,34 +477,34 @@ async def trigger_manual_sync_http(
 # ============================================================================
 # 11. HEALTH CHECK
 # ============================================================================
-@router.get(
-    "/health",
-    summary="Health check",
-    description="Check symbol directory DB health"
-)
-async def health_check_http(
-    db: Session = Depends(get_db_dependency)
-):
-    """Health check"""
-    service = get_symbol_directory_service(db)
+# @router.get(
+#     "/health",
+#     summary="Health check",
+#     description="Check symbol directory DB health"
+# )
+# async def health_check_http(
+#     db: Session = Depends(get_db_dependency)
+# ):
+#     """Health check"""
+#     service = get_symbol_directory_service(db)
     
-    try:
-        stats = service.get_statistics()
+#     try:
+#         stats = service.get_statistics()
         
-        health = {
-            "status": "healthy",
-            "database_connected": True,
-            "stocks_count": stats.stocks_count,
-            "cryptos_count": stats.crypto_count,
-            "last_stock_sync": stats.last_stock_sync.isoformat() if stats.last_stock_sync else None,
-            "data_available": stats.stocks_count > 0 and stats.crypto_count > 0
-        }
+#         health = {
+#             "status": "healthy",
+#             "database_connected": True,
+#             "stocks_count": stats.stocks_count,
+#             "cryptos_count": stats.crypto_count,
+#             "last_stock_sync": stats.last_stock_sync.isoformat() if stats.last_stock_sync else None,
+#             "data_available": stats.stocks_count > 0 and stats.crypto_count > 0
+#         }
         
-        return health
+#         return health
     
-    except Exception as e:
-        logger.error(f"Health check failed: {str(e)}")
-        return {
-            "status": "unhealthy",
-            "error": str(e)
-        }
+#     except Exception as e:
+#         logger.error(f"Health check failed: {str(e)}")
+#         return {
+#             "status": "unhealthy",
+#             "error": str(e)
+#         }

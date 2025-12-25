@@ -1,7 +1,3 @@
-"""
-BaseTool - Atomic Tool Interface for Financial Trading Agent
-"""
-
 import asyncio
 import logging
 from typing import Dict, List, Optional, Any, Union
@@ -11,14 +7,10 @@ from pydantic import BaseModel, Field, ValidationError
 import json
 
 
-# ============================================================================
-# Models
-# ============================================================================
-
 class ToolParameter(BaseModel):
     """Parameter definition for atomic tool"""
     name: str
-    type: str  # "string", "number", "array", "object", "boolean"
+    type: str  # "string", "number", "array", "object", "boolean", "integer"
     description: str
     required: bool = False
     default: Optional[Any] = None
@@ -27,8 +19,6 @@ class ToolParameter(BaseModel):
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     examples: List[Any] = Field(default_factory=list)
-    # examples: List[str] = Field(default_factory=list)
-
 
 class ToolOutput(BaseModel):
     """Standardized tool output"""
@@ -52,12 +42,7 @@ class ToolOutput(BaseModel):
 
 class ToolSchema(BaseModel):
     """
-    JSON Schema cho atomic tool
-    
-    Đây là "contract" mà tool phải tuân thủ:
-    - Planning Agent dùng để lập kế hoạch
-    - Validation Agent dùng để validate output
-    - Tool Registry dùng để discover tools
+    Complete tool schema for Planning Agent
     """
     name: str
     category: str  # "price", "technical", "fundamentals", "risk", "news", "market", "crypto"
@@ -290,8 +275,12 @@ class BaseTool(ABC):
             # Pattern validation (for strings)
             if param.type == "string" and param.pattern:
                 import re
-                if not re.match(param.pattern, str(value)):
-                    errors.append(f"{param.name} must match pattern {param.pattern}, got {value}")
+                pattern = param.pattern
+                if param.name == "symbol":
+                    pattern = r"^[A-Z0-9]{1,10}(\.[A-Z]{1,2})?$"
+            
+                if not re.match(pattern, str(value)):
+                    errors.append(f"{param.name} must match pattern {pattern}, got {value}")
             
             # Range validation (for numbers)
             if param.type == "number":

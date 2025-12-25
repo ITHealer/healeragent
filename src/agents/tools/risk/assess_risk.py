@@ -1,20 +1,3 @@
-"""
-AssessRiskTool - Atomic Tool for Risk Analysis
-
-Responsibility: Đánh giá rủi ro và recommend stop loss levels
-- ATR-based stop loss
-- Percentage-based stop loss
-- Technical support-based stop loss
-- Position sizing recommendations
-
-KHÔNG BAO GỒM:
-- ❌ Price data (use getStockPrice)
-- ❌ Technical indicators (use getTechnicalIndicators)
-- ❌ Volume analysis (use getVolumeProfile)
-
-This tool WRAPS existing RiskAnalysisHandler để demonstrate pattern reuse
-"""
-
 import logging
 from typing import Dict, Any, Optional
 

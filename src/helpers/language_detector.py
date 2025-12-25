@@ -77,7 +77,7 @@ class LanguageDetector(LoggerMixin):
                 Language.CHINESE,
             ]
             self._language_detector = LanguageDetectorBuilder.from_languages(*languages).build()
-            self.logger.info("Language detector initialized successfully")
+            self.logger.info("[LanguageDetector] Initialized successfully")
         except Exception as e:
             self.logger.error(f"Error initializing language detector: {str(e)}")
             self._language_detector = None

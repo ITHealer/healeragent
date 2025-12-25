@@ -654,7 +654,7 @@ class MemorySearchService(LoggerMixin):
     ) -> List[Dict[str, Any]]:
         """Search knowledge base (Qdrant)"""
         try:
-            results = await self.memory_manager.search_archival(
+            results = await self.memory_manager.search_relevant_memory(
                 query=query,
                 user_id=user_id,
                 limit=limit

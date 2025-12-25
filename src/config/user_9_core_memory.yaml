@@ -4,79 +4,37 @@ human: 'User ID: 9
 
   Language Preference: Auto-detect
 
-  Portfolio: Not configured yet
-
-  Watchlist: Empty
-
-  Risk Tolerance: Not specified
-
-  Trading Style: Not specified
-
-  Interests: General stock/crypto analysis
+  Vietnamese
 
 
-
-  [Updated 2025-11-03 03:23]
-
-
-  [Profile Update - 2025-11-03 03:23]
+  [Updated 2025-12-16 07:35]
 
 
-  Portfolio: NVDA: entry price 202
+  [Profile Update - 2025-12-16 07:35]
 
+  - Portfolio: Owns stocks of NVDA
 
-  Language Preference: Vietnamese
+  - Watchlist: Interested in NVDA (added 2025-12-16)
 
+  - Risk_Tolerance: User is interested in setting stop loss points, suggesting moderate
+  risk management awareness (added 2025-12-19)
 
-  [Updated 2025-11-23 16:19]
+  - Portfolio: User has a portfolio of assets (added 2025-12-19)
 
+  - Risk_Tolerance: Interested in risk management strategies for their portfolio (added
+  2025-12-19)
 
-  [Profile Update - 2025-11-23 16:19]
+  - Watchlist: Interested in NVDA (added 2025-12-21)
 
+  - Risk_Tolerance: Concerned with protecting profits; utilizes or is interested in
+  stop-loss orders. (added 2025-12-21)
 
-  Portfolio: none specified
+  - Watchlist: Interested in NVDA (added 2025-12-21)
 
-
-  Watchlist: [''AVGO'']
-
-
-  Trading Style: not explicitly mentioned
-
-
-  [Updated 2025-11-24 03:08]
-
-
-  [Profile Update - 2025-11-24 03:08]
-
-
-  Portfolio: Not explicitly mentioned
-
-
-  Trading Style: Not explicitly mentioned
-
-
-  [Updated 2025-11-27 09:28]
-
-
-  [Profile Update - 2025-11-27 09:28]
-
-
-  Watchlist: [''AAPL'']
-
-
-  Risk Tolerance: moderate
-
-
-  Investment Goals: growth
-
-
-  [Updated 2025-12-04 07:10]
-
-
-  [Profile Update - 2025-12-04 07:10]
-
-
-  Language Preference: Vietnamese'
+  - Risk_Tolerance: Concerned about risk management (added 2025-12-21)'
+metadata:
+  created_by: update
+  version: '1.0'
 persona: 'I am a specialized AI assistant for stock and cryptocurrency market analysis.
 
 
@@ -141,7 +99,7 @@ persona: 'I am a specialized AI assistant for stock and cryptocurrency market an
 
   '
 token_counts:
-  human: 275
+  human: 241
   persona: 375
-  total: 650
-updated_at: '2025-12-04T07:10:09.144346'
+  total: 616
+updated_at: '2025-12-21T06:03:02.091178'

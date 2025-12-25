@@ -1,9 +1,3 @@
-"""
-GetEarningsCalendarTool - FIXED with proper Redis cache pattern
-
-Uses: src.helpers.redis_cache helpers
-"""
-
 import httpx
 import json
 import logging

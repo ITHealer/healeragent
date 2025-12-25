@@ -1,40 +1,3 @@
-# File: src/agents/planning/planning_agent.py
-"""
-Production-Ready Planning Agent with 3-Stage Flow and Working Memory Support
-
-Architecture:
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    PLANNING AGENT 3-STAGE FLOW                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  Stage 1: CLASSIFY & SELECT CATEGORIES (1 LLM call)                         │
-│  - Semantic analysis of query                                               │
-│  - Context-aware symbol extraction from history + working memory            │
-│  - Category selection based on intent                                       │
-│                                                                             │
-│  Stage 2: LOAD TOOLS FROM REGISTRY (0 LLM calls)                            │
-│  - Load ONLY tools from selected categories                                 │
-│  - Get complete ToolSchema for each tool                                    │
-│  - Progressive disclosure: 7-15 tools typical vs 31 total                   │
-│                                                                             │
-│  Stage 3: CREATE TASK PLAN (1 LLM call)                                     │
-│  - Show COMPLETE tool schemas to LLM                                        │
-│  - LLM creates detailed execution plan                                      │
-│  - Output: TaskPlan with exact tool calls                                   │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-Working Memory Integration:
-- Receives working_memory_context from chat_handler
-- Uses context for symbol continuity across turns
-- Supports task continuation (if existing task in progress)
-
-Features:
-- Multi-model support (GPT-4.1-nano, GPT-4o-mini, GPT-5-nano)
-- Multilingual support (no hardcoded keywords)
-- Semantic understanding via LLM reasoning
-"""
-
 import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
@@ -62,7 +25,7 @@ except ImportError:
 # CONSTANTS
 # ============================================================================
 
-# Valid categories - used for validation only, NOT for classification
+# Valid categories
 VALID_CATEGORIES = [
     "price",        # Stock prices, quotes, performance
     "technical",    # Technical indicators, chart patterns
@@ -72,6 +35,7 @@ VALID_CATEGORIES = [
     "risk",         # Risk assessment, volatility
     "crypto",       # Cryptocurrency
     "discovery",    # Stock screening
+    "memory",       # Cross-session memory search
 ]
 
 # Categories that indicate STRONG financial intent (not just contextual)
@@ -126,12 +90,12 @@ class PlanningAgent(LoggerMixin):
             try:
                 self.tool_registry = get_registry()
                 summary = self.tool_registry.get_summary()
-                self.logger.info(
-                    f"[PLANNING:INIT] ✅ Registry: {summary['total_tools']} tools "
-                    f"in {len(summary['categories'])} categories"
-                )
+                # self.logger.info(
+                #     f"[PLANNING:INIT] Registry: {summary['total_tools']} tools "
+                #     f"in {len(summary['categories'])} categories"
+                # )
             except Exception as e:
-                self.logger.error(f"[PLANNING:INIT] ❌ Registry failed: {e}")
+                self.logger.error(f"[PLANNING:INIT] Registry failed: {e}")
     
     def _detect_model_capability(self, model_name: str) -> ModelCapability:
         """Detect model capability from name"""
@@ -192,7 +156,8 @@ class PlanningAgent(LoggerMixin):
             classification = await self._stage1_classify(
                 query=query,
                 history=formatted_history,
-                working_memory_context=working_memory_context
+                working_memory_context=working_memory_context,
+                core_memory=core_memory
             )
             
             query_type = classification.get("query_type", "stock_specific")
@@ -353,14 +318,24 @@ class PlanningAgent(LoggerMixin):
             elapsed = self._get_elapsed_ms(start_time)
             
             self.logger.info(f"[PLANNING] ══════════════════════════════════════")
-            self.logger.info(f"[PLANNING] ✅ COMPLETE ({elapsed}ms)")
+            self.logger.info(f"[PLANNING] COMPLETE ({elapsed}ms)")
+            self.logger.info(f"[PLANNING] Query Intent: {task_plan.query_intent}")
+            self.logger.info(f"[PLANNING] Reasoning: {task_plan.reasoning}")
             self.logger.info(f"[PLANNING] Tasks: {len(task_plan.tasks)}")
             self.logger.info(f"[PLANNING] Strategy: {task_plan.strategy}")
             self.logger.info(f"[PLANNING] Symbols: {task_plan.symbols}")
-            
+            self.logger.info(f"[PLANNING] Language: {task_plan.response_language}")
+            self.logger.info(f"[PLANNING] ──────────────────────────────────────")
+                        
             for idx, task in enumerate(task_plan.tasks, 1):
                 tools = [t.tool_name for t in task.tools_needed]
-                self.logger.info(f"[PLANNING]   Task {idx}: {tools}")
+                self.logger.info(f"[PLANNING]   Task {idx}: {task.description}")
+                self.logger.info(f"[PLANNING]     Tools: {tools}")
+
+                for tool_call in task.tools_needed:
+                    if tool_call.params:
+                        params_str = ', '.join(f"{k}={v}" for k, v in tool_call.params.items())
+                        self.logger.info(f"[PLANNING]     → {tool_call.tool_name}({params_str})")
             
             return task_plan
             
@@ -383,7 +358,8 @@ class PlanningAgent(LoggerMixin):
         self,
         query: str,
         history: List[Dict[str, str]],
-        working_memory_context: str = None
+        working_memory_context: str = None,
+        core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
         Stage 1: Classify query semantically with Working Memory context
@@ -396,12 +372,18 @@ class PlanningAgent(LoggerMixin):
         NO hardcoded patterns - LLM decides everything
         """
         # Select classifier based on model capability
-        if self.capability == ModelCapability.ADVANCED:
-            result = await self._classify_advanced(query, history, working_memory_context)
-        elif self.capability == ModelCapability.INTERMEDIATE:
-            result = await self._classify_intermediate(query, history, working_memory_context)
+        if self.capability == "advanced":  # ModelCapability.ADVANCED
+            result = await self._classify_advanced(
+                query, history, working_memory_context, core_memory
+            )
+        elif self.capability == "intermediate":  # ModelCapability.INTERMEDIATE  
+            result = await self._classify_intermediate(
+                query, history, working_memory_context, core_memory
+            )
         else:
-            result = await self._classify_basic(query, history, working_memory_context)
+            result = await self._classify_basic(
+                query, history, working_memory_context, core_memory
+            )
         
         # Validate categories (filter invalid ones)
         result = self._validate_categories_output(result)
@@ -410,6 +392,8 @@ class PlanningAgent(LoggerMixin):
         if result.get("symbols") and "price" not in result.get("categories", []):
             result["categories"].append("price")
             self.logger.info(f"[PLANNING:S1] Auto-added 'price' category")
+        if result.get("symbols") and "news" not in result.get("categories", []):
+            result["categories"].append("news")
         
         return result
     
@@ -417,7 +401,8 @@ class PlanningAgent(LoggerMixin):
         self,
         query: str,
         history: List[Dict[str, str]],
-        working_memory_context: str = None
+        working_memory_context: str = None,
+        core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for basic models with Working Memory"""
         
@@ -428,12 +413,31 @@ class PlanningAgent(LoggerMixin):
         wm_section = ""
         if working_memory_context:
             wm_section = f"""
-WORKING MEMORY (current task state):
+WORKING MEMORY (current task state, symbols from previous turns):
 {working_memory_context}
 
 Use this context to understand ongoing tasks and symbol references.
 """
         
+        core_memory_section = ""
+        if core_memory:
+            human_block = core_memory.get('human', '')
+            if human_block:
+                # Limit to prevent token overflow
+                human_truncated = human_block[:1000] if len(human_block) > 1000 else human_block
+                core_memory_section = f"""
+USER PROFILE (from Core Memory):
+{human_truncated}
+
+SYMBOL RESOLUTION FROM USER PROFILE:
+When user says:
+- "my stocks", "các cổ phiếu của tôi", "cổ phiếu yêu thích" → extract symbols from watchlist/portfolio above
+- "tài khoản", "portfolio" → use portfolio symbols
+- References to investments without specific tickers → check user profile
+
+If symbols are found in user profile, include them in the "symbols" output.
+"""
+            
         prompt = f"""{date_context}
 
 You are a financial query analyzer. Analyze the query semantically.
@@ -443,6 +447,8 @@ CURRENT QUERY: {query}
 RECENT CONVERSATION:
 {history_text}
 {wm_section}
+{core_memory_section}
+
 YOUR TASK:
 1. Understand what the user is asking about (semantic analysis)
 2. Extract stock symbols if mentioned (explicit or referenced)
@@ -450,22 +456,35 @@ YOUR TASK:
 4. Detect the response language
 
 CRITICAL: CONVERSATIONAL DETECTION
-If the user is:
-- Greeting (hello, hi, xin chào)
-- Thanking (thanks, cảm ơn, thank you)
-- Saying bye (goodbye, tạm biệt)
-- General chat without financial request
-→ Return query_type: "conversational" with EMPTY categories []
+TRUE conversational messages are ONLY:
+- Greetings: hello, hi, xin chào, chào bạn
+- Thanks: thanks, cảm ơn, thank you, ok cảm ơn
+- Bye: goodbye, tạm biệt
+- Simple acknowledgments without any request
 
-ONLY add categories if user EXPLICITLY asks for financial data.
+IMPORTANT: These are NOT conversational:
+- Asking about past conversations → memory_recall
+- "What did we discuss?" → memory_recall  
+- "What stock did I analyze?" → memory_recall
+- "Tôi vừa hỏi gì?" → memory_recall
+- "Chúng ta đã nói gì về X?" → memory_recall
 
+3. SCREENER: Finding stocks by criteria
+    - If user is looking for stocks that meet certain conditions
+    - Examples:
+        * "Find me stocks haveing market cap > $10B"
+        * "Find me tech stocks with P/E < 20"
+        * "Find me stocks with high dividend yield"
+        * "Find me stocks with high beta"
+    Load "discovery" and other relevant categories such as "fundamentals", "technical", "risk", "price", "news", etc.
+    
 SYMBOL EXTRACTION RULES:
 - Look for uppercase stock tickers: AAPL, MSFT, NVDA, CRM, BTC, ETH
 - Check for reference words that point to previous context
-- Check Working Memory for current symbols in context
+- Check Working Memory for current symbols in context (or symbols from previous turns)
 - If user refers to "it", "that stock", etc., use symbols from context
 
-CATEGORIES (select ONLY if explicitly needed):
+CATEGORIES (select based on user intent):
 - price: Stock prices, quotes, performance data
 - technical: Technical indicators, chart patterns, RSI, MACD
 - fundamentals: P/E ratio, financials, earnings, revenue
@@ -474,14 +493,20 @@ CATEGORIES (select ONLY if explicitly needed):
 - risk: Risk assessment, volatility, stop loss suggestions
 - crypto: Cryptocurrency data (BTC, ETH, etc.)
 - discovery: Stock screening, finding stocks by criteria
+- memory: Recall past conversations, what was discussed, what symbols were mentioned before
 
 QUERY TYPES:
 - stock_specific: Query about specific stock(s)
 - screener: Finding stocks by criteria
 - market_level: Market overview, indices
-- conversational: Greeting, thanks, general chat (NO CATEGORIES NEEDED)
-- memory_recall: Asking about past conversations
+- conversational: ONLY greetings, thanks, bye (NO other categories)
+- memory_recall: Asking about past conversations, previous analysis, what was discussed → MUST select "memory" category
 - task_continuation: Continuing a previous task
+
+CRITICAL RULES:
+1. If query asks "what did we discuss", "what stock", "vừa hỏi gì", "đã nói gì" → query_type: "memory_recall", categories: ["memory"]
+2. memory_recall ALWAYS needs categories: ["memory"]
+3. conversational ONLY for greetings/thanks/bye with categories: []
 
 OUTPUT JSON ONLY:
 {{
@@ -499,7 +524,8 @@ OUTPUT JSON ONLY:
         self,
         query: str,
         history: List[Dict[str, str]],
-        working_memory_context: str = None
+        working_memory_context: str = None,
+        core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for intermediate models with Working Memory"""
         
@@ -513,7 +539,22 @@ OUTPUT JSON ONLY:
 {working_memory_context}
 </working_memory>
 """
-        
+        core_memory_section = ""
+        if core_memory:
+            human_block = core_memory.get('human', '')
+            if human_block:
+                human_truncated = human_block[:1000] if len(human_block) > 1000 else human_block
+                core_memory_section = f"""
+<user_profile>
+{human_truncated}
+</user_profile>
+
+<user_profile_instructions>
+Use this to understand user's watchlist, portfolio, and preferences.
+When user references "my stocks", "cổ phiếu của tôi", "favorites" → extract symbols from profile.
+</user_profile_instructions>
+"""
+            
         prompt = f"""{date_context}
 
 <task>Semantic financial query analysis with context awareness</task>
@@ -524,17 +565,24 @@ OUTPUT JSON ONLY:
 {history_text}
 </history>
 {wm_section}
+{core_memory_section}
+
 <instructions>
 Analyze the query semantically to understand user intent.
 
-CRITICAL: CONVERSATIONAL DETECTION FIRST
-Before anything else, check if this is a conversational message:
-- Greetings: hello, hi, xin chào, chào
-- Thanks: thanks, thank you, cảm ơn, ok cảm ơn
-- Bye: goodbye, tạm biệt
-- General chat: how are you, oke
+CRITICAL: CONVERSATIONAL vs MEMORY_RECALL
+- Conversational: ONLY greetings (hello, hi, xin chào), thanks (cảm ơn), bye (tạm biệt)
+- Memory Recall: Asking about past conversations, previous analysis, what was discussed
 
-If YES → query_type: "conversational", categories: [], symbols: []
+MEMORY RECALL INDICATORS (select categories: ["memory"]):
+- "What did we discuss about X?"
+- "What stock did I ask about?"
+- "Tôi vừa hỏi gì?", "Chúng ta đã nói gì?"
+- "Do you remember our conversation about..."
+- "What symbols did I mention?"
+- Any question about past conversation content
+
+If user asks about previous conversations → query_type: "memory_recall", categories: ["memory"]
 
 STEP 1: Context Check
 - Check Working Memory for current task state
@@ -550,15 +598,17 @@ STEP 3: Intent Classification
 - stock_specific: About specific stocks
 - screener: Finding stocks by criteria
 - market_level: Market overview
-- conversational: Greeting/chat (NO CATEGORIES!)
+- conversational: ONLY greeting/thanks/bye (categories: [])
+- memory_recall: Questions about past conversations (categories: ["memory"])
 - task_continuation: Continuing previous task
 
 STEP 4: Category Selection
-Select ONLY if user explicitly requests:
+Select based on user intent:
 - price, technical, fundamentals, news, market, risk, crypto, discovery
+- memory: For recalling past conversations, what was discussed
 </instructions>
 
-<o>
+<output>
 Return JSON:
 {{
   "query_type": "...",
@@ -567,7 +617,7 @@ Return JSON:
   "reasoning": "Semantic analysis explanation",
   "response_language": "vi|en"
 }}
-</o>
+</output>
 """
         
         return await self._call_llm_json(prompt, "Stage1")
@@ -576,7 +626,8 @@ Return JSON:
         self,
         query: str,
         history: List[Dict[str, str]],
-        working_memory_context: str = None
+        working_memory_context: str = None,
+        core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for advanced models with CoT and Working Memory"""
         
@@ -590,10 +641,19 @@ Return JSON:
 {working_memory_context}
 </working_memory>
 """
-        
+        core_memory_section = ""
+        if core_memory:
+            human_block = core_memory.get('human', '')
+            if human_block:
+                human_truncated = human_block[:1200] if len(human_block) > 1200 else human_block
+                core_memory_section = f"""
+<user_profile source="core_memory">
+{human_truncated}
+</user_profile>
+"""
         prompt = f"""{date_context}
 
-<s>Advanced financial query analyzer with context awareness</s>
+<role>Advanced financial query analyzer with context awareness</role>
 
 <input>
 <query>{query}</query>
@@ -601,37 +661,60 @@ Return JSON:
 {history_text}
 </history>
 {wm_section}
+{core_memory_section}
 </input>
 
 <instructions>
 Think step-by-step to analyze this query semantically.
 
-CRITICAL FIRST CHECK:
+CRITICAL FIRST CHECK - DISTINGUISH CAREFULLY:
+1. CONVERSATIONAL (categories: []):
 Is this a simple conversational message?
 - Greetings: hello, hi, xin chào
 - Thanks: thanks, cảm ơn, ok cảm ơn  
 - Bye: goodbye, tạm biệt
 - General chat without financial request
 
-If YES → Return conversational with EMPTY categories
+2. MEMORY_RECALL (categories: ["memory"]):
+   - Any question about past conversations
+   - Examples:
+     * "What did we discuss?"
+     * "What stock did I ask about?"
+     * "Tôi vừa hỏi gì?", "Tôi vừa phân tích cổ phiếu nào?"
+     * "Chúng ta đã nói gì về X?"
+     * "Do you remember when we talked about..."
+     * "Kiểm tra lại cuộc trò chuyện trước"
+
+3. SCREENER: Finding stocks by criteria
+    - If user is looking for stocks that meet certain conditions
+    - Examples:
+        * "Find me stocks haveing market cap > $10B"
+        * "Find me tech stocks with P/E < 20"
+        * "Find me stocks with high dividend yield"
+        * "Find me stocks with high beta"
+    Load "discovery" and other relevant categories such as "fundamentals", "technical", "risk", "price", "news", etc.
+
+If user asks about PREVIOUS CONVERSATIONS → memory_recall, NOT conversational!
 
 REASONING PROCESS:
-1. Is this a continuation of a previous task? Check Working Memory.
-2. What is the user semantically asking about?
-3. Are there explicit stock symbols?
-4. Are there reference words pointing to history or working memory?
-5. What is the underlying intent?
-6. Which tool categories are ACTUALLY needed?
+1. Is this asking about past conversations? → memory_recall with categories: ["memory"]
+2. Is this a continuation of a previous task? Check Working Memory.
+3. What is the user semantically asking about?
+4. Are there explicit stock symbols?
+5. Are there reference words pointing to history or working memory?
+6. What is the underlying intent?
+7. Which tool categories are ACTUALLY needed?
 
 CATEGORIES:
 - price: Stock prices, quotes, performance
 - technical: Technical indicators, chart patterns
 - fundamentals: Financial ratios, earnings
 - news: News, events, calendar
-- market: Market overview, indices, trending stocks
+- market: Market overview, indices, trending stocks, top gainers, top losers, top active
 - risk: Risk assessment, volatility
 - crypto: Cryptocurrency
 - discovery: Stock screening
+- memory: Recall past conversations, what was discussed before
 </instructions>
 
 <output_format>
@@ -642,7 +725,7 @@ First think in [THOUGHT] block, then output JSON:
 [/THOUGHT]
 ```json
 {{
-  "query_type": "stock_specific|screener|market_level|conversational|task_continuation",
+  "query_type": "stock_specific|screener|market_level|conversational|memory_recall|task_continuation",
   "categories": ["price", ...],
   "symbols": ["SYMBOL", ...],
   "reasoning": "Brief explanation",
@@ -671,7 +754,7 @@ First think in [THOUGHT] block, then output JSON:
         - NO LLM call needed
         """
         if not self.tool_registry:
-            self.logger.error(f"[PLANNING:S2] ❌ Tool registry not available")
+            self.logger.error(f"[PLANNING:S2] Tool registry not available")
             return []
         
         available_tools = []
@@ -747,16 +830,19 @@ You are an AI with a knowledge cutoff. You CANNOT provide:
 - Recent news
 - Live technical indicators
 - Current market state
+- Past conversation history (need memory tools)
 
 DECISION RULES:
 1. Greeting/Thanks/General Chat → NO tools (just respond naturally)
-2. Past conversation recall → NO tools (use history)
+2. memory_recall (asking about past conversations) → YES tools (need searchConversationHistory)
 3. Price/quote request with SYMBOL → YES tools (MUST fetch real-time)
 4. Financial analysis with SYMBOL → YES tools (MUST fetch data)
-5. Stock screening → YES tools (MUST query database)
+5. Stock screening → YES tools ((MUST fetch data)
 6. Market overview request → YES tools (MUST fetch current state)
 
-IMPORTANT: Simple greetings like "thanks", "ok cảm ơn" do NOT need tools!
+IMPORTANT: 
+- Simple greetings like "thanks", "ok cảm ơn" do NOT need tools!
+- BUT questions like "what did we discuss?" NEED memory tools!
 
 OUTPUT JSON:
 {{
@@ -813,83 +899,160 @@ OUTPUT JSON:
         
         prompt = f"""{date_context}
 
-Create an execution plan using the available tools.
+<role>Task planner for financial AI assistant. Create execution plans using the available tools.</role>
 
-INTENT: {validated_intent}
-QUERY: {query}
-SYMBOLS: {symbols if symbols else "None - may need screening"}
-LANGUAGE: {response_language}
+<input>
+Current Query: {query}
+Type: {query_type}
+Symbols: {symbols if symbols else "None - may need screening"}
+Language: {response_language}
+Intent: {validated_intent}
+</input>
 
-AVAILABLE TOOLS (use EXACT names):
+<available_tools>
 {tools_text}
+</available_tools>
 
-PLANNING RULES:
-1. Use EXACT tool names from the list above
-2. If tool requires symbol → params: {{"symbol": "AAPL"}}
-3. Strategy: "parallel" if tasks are independent, "sequential" if dependent
-4. Each task should be focused and simple
-5. Include all necessary tools for complete analysis
+<planning_rules>
+1. Use EXACT tool names from available_tools
+2. Match params to tool schema
+3. Strategy: "parallel" for independent tasks, "sequential" for dependent
+4. For tools with "requires_symbol": include {{"symbol": "TICKER"}} in params
+5. For tools without symbol requirement: use appropriate params or {{}}
+6. Each task should be focused and simple
+7. Include all necessary tools for complete analysis
+8. CRYPTO SYMBOL RULE: DO NOT strip the "USD" suffix - it's required for crypto API calls (e.g., "BTCUSD", "ETHUSD")
 
-EXAMPLES:
+CRITICAL - SEQUENTIAL DEPENDENCIES:
+When query_type is "screener" or other category and needs follow-up analysis:
+1. Task 1: Run stockScreener (returns symbols) - NO dependencies
+2. Task 2+: 
+   - Use placeholder: "symbol": "<FROM_TASK_1>"
+   - MUST include: "dependencies": [1]
+   
+The placeholder <FROM_TASK_N> will be replaced with actual symbols at execution time.
+If you use a placeholder, you MUST include the corresponding dependency!
 
-Example 1 - Single Stock Price:
-Query: "giá CRM"
-Symbols: ["CRM"]
-Plan:
-{{
-  "query_intent": "Get CRM current price",
-  "strategy": "parallel",
-  "symbols": ["CRM"],
-  "response_language": "vi",
-  "reasoning": "Single price query for CRM",
-  "tasks": [{{
-    "id": 1,
-    "description": "Get CRM current price",
-    "tools_needed": [{{"tool_name": "getStockPrice", "params": {{"symbol": "CRM"}}}}],
-    "expected_data": ["price", "change", "volume"],
-    "priority": "high",
-    "dependencies": []
-  }}]
-}}
+WRONG (placeholder without dependency):
+{{"tool_name": "getFinancialRatios", "params": {{"symbol": "<FROM_TASK_1>"}}}}
+"dependencies": []  ← WRONG!
 
-Example 2 - Full Analysis:
-Query: "Phân tích AAPL"
-Symbols: ["AAPL"]
-Plan:
-{{
-  "query_intent": "Comprehensive analysis of AAPL",
-  "strategy": "parallel",
-  "symbols": ["AAPL"],
-  "response_language": "vi",
-  "reasoning": "Full analysis requires price, technicals, fundamentals",
-  "tasks": [
-    {{
-      "id": 1,
-      "description": "Get AAPL price",
-      "tools_needed": [{{"tool_name": "getStockPrice", "params": {{"symbol": "AAPL"}}}}],
-      "expected_data": ["price"],
-      "priority": "high",
-      "dependencies": []
-    }},
-    {{
-      "id": 2,
-      "description": "Get AAPL technicals",
-      "tools_needed": [{{"tool_name": "getTechnicalIndicators", "params": {{"symbol": "AAPL"}}}}],
-      "expected_data": ["RSI", "MACD"],
-      "priority": "medium",
-      "dependencies": []
-    }},
-    {{
-      "id": 3,
-      "description": "Get AAPL financials",
-      "tools_needed": [{{"tool_name": "getFinancialRatios", "params": {{"symbol": "AAPL"}}}}],
-      "expected_data": ["PE", "ROE"],
-      "priority": "medium",
-      "dependencies": []
-    }}
-  ]
-}}
+CORRECT (placeholder WITH dependency):
+{{"tool_name": "getFinancialRatios", "params": {{"symbol": "<FROM_TASK_1>"}}}}
+"dependencies": [1]  ← CORRECT!
+</planning_rules>
 
+<tool_category_guide>
+| Category | Tool Pattern | Params Example |
+|----------|--------------|----------------|
+| price | getStockPrice, getStockQuote | {{"symbol": "AAPL"}} |
+| technical | getTechnicalIndicators | {{"symbol": "AAPL", "indicators": ["RSI","MACD"]}} |
+| fundamentals | getFinancialRatios, getGrowthMetrics | {{"symbol": "AAPL"}} |
+| news | getStockNews | {{"symbol": "AAPL", "limit": 5}} |
+| market | getMarketMovers, getSectorPerformance | {{"mover_type": "gainers"}} or {{}} |
+| discovery | stockScreener | {{"sector": "Technology", "country": "US", "limit": 15}} |
+| crypto | getCryptoPrice, getCryptoTechnicals | {{"symbol": "BTC"}} |
+| risk | getRiskMetrics | {{"symbol": "AAPL"}} |
+| memory | searchConversationHistory | {{"query": "...", "limit": 5}} |
+</tool_category_guide>
+
+<screener_mapping>
+When using stockScreener, map user criteria:
+- "công nghệ" / "technology" / "tech" → sector: "Technology"
+- "tài chính" / "financial" → sector: "Financial Services"
+- "y tế" / "healthcare" → sector: "Healthcare"
+- "năng lượng" / "energy" → sector: "Energy"
+- "Mỹ" / "US" / "America" → country: "US"
+- "Việt Nam" / "VN" → country: "VN"
+</screener_mapping>
+
+<examples>
+Example 1 - Screener (discovery):
+Query: "tìm cổ phiếu công nghệ Mỹ"
+Type: screener
+Tools: stockScreener
+```json
+{{"query_intent":"Screen US tech stocks","strategy":"sequential","estimated_complexity":"moderate","symbols":[],"response_language":"vi","reasoning":"Stock screening by sector and country","tasks":[{{"id":1,"description":"Screen US Technology stocks","tools_needed":[{{"tool_name":"stockScreener","params":{{"sector":"Technology","country":"US","is_actively_trading":true,"limit":15}}}}],"expected_data":["symbols","stocks"],"priority":"high","dependencies":[]}}]}}
+```
+
+Example 2 - Price (single symbol):
+Query: "giá AAPL"
+Type: stock_specific
+Tools: getStockPrice
+```json
+{{"query_intent":"Get AAPL price","strategy":"parallel","estimated_complexity":"simple","symbols":["AAPL"],"response_language":"vi","reasoning":"Single price query","tasks":[{{"id":1,"description":"Get AAPL current price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"AAPL"}}}}],"expected_data":["price","change","volume"],"priority":"high","dependencies":[]}}]}}
+```
+
+Example 3 - Crypto Analysis (Keep FULL symbol):
+Query: "Phân tích kỹ thuật BTCUSD"
+Type: stock_specific
+Tools: getCryptoPrice, getCryptoTechnicals
+```json
+{{"query_intent":"Technical analysis for BTCUSD","strategy":"parallel","estimated_complexity":"moderate","symbols":["BTCUSD"],"response_language":"vi","reasoning":"Crypto analysis needs price and technicals - use FULL symbol BTCUSD","tasks":[{{"id":1,"description":"Get BTC current price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"BTCUSD"}}}}],"expected_data":["price","change"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get BTC technical indicators","tools_needed":[{{"tool_name":"getCryptoTechnicals","params":{{"symbol":"BTCUSD","timeframe":"1hour"}}}}],"expected_data":["RSI","MACD","trend"],"priority":"high","dependencies":[]}}]}}
+```
+
+Example 4 - Technical Analysis:
+Query: "phân tích kỹ thuật NVDA"
+Type: stock_specific
+Tools: getStockPrice, getTechnicalIndicators
+```json
+{{"query_intent":"NVDA technical analysis","strategy":"parallel","estimated_complexity":"moderate","symbols":["NVDA"],"response_language":"vi","reasoning":"Need price and technical indicators","tasks":[{{"id":1,"description":"Get NVDA price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"NVDA"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get NVDA technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"NVDA"}}}}],"expected_data":["RSI","MACD","SMA"],"priority":"high","dependencies":[]}}]}}
+```
+
+Example 5 - Full Analysis (multiple categories):
+Query: "phân tích toàn diện MSFT"
+Type: stock_specific
+Tools: getStockPrice, getTechnicalIndicators, getFinancialRatios, getStockNews
+```json
+{{"query_intent":"Comprehensive MSFT analysis","strategy":"parallel","estimated_complexity":"complex","symbols":["MSFT"],"response_language":"vi","reasoning":"Full analysis needs price, technicals, fundamentals, news","tasks":[{{"id":1,"description":"Get MSFT price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"MSFT"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get MSFT technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"MSFT"}}}}],"expected_data":["RSI","MACD"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get MSFT financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"MSFT"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}},{{"id":4,"description":"Get MSFT news","tools_needed":[{{"tool_name":"getStockNews","params":{{"symbol":"MSFT","limit":5}}}}],"expected_data":["news"],"priority":"medium","dependencies":[]}}]}}
+```
+
+Example 6 - Market Overview:
+Query: "thị trường hôm nay thế nào"
+Type: market_level
+Tools: getSectorPerformance, getTopGainers, getTopLosers, getTopActive
+```json
+{{"query_intent":"Today's market overview","strategy":"parallel","estimated_complexity":"moderate","symbols":[],"response_language":"vi","reasoning":"Market overview needs sector performance and top movers","tasks":[{{"id":1,"description":"Get sector performance","tools_needed":[{{"tool_name":"getSectorPerformance","params":{{}}}}],"expected_data":["sectors"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get top gainers","tools_needed":[{{"tool_name":"getTopGainers","params":{{"limit":5}}}}],"expected_data":["gainers"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get top losers","tools_needed":[{{"tool_name":"getTopLosers","params":{{"limit":5}}}}],"expected_data":["losers"],"priority":"high","dependencies":[]}},{{"id":4,"description":"Get top active stocks","tools_needed":[{{"tool_name":"getTopActive","params":{{"limit":5}}}}],"expected_data":["active_stocks"],"priority":"medium","dependencies":[]}}]}}
+```
+
+Example 7 - Crypto:
+Query: "giá BTC và ETH"
+Type: stock_specific
+Tools: getCryptoPrice
+```json
+{{"query_intent":"Get BTC and ETH prices","strategy":"parallel","estimated_complexity":"simple","symbols":["BTC","ETH"],"response_language":"vi","reasoning":"Crypto price query","tasks":[{{"id":1,"description":"Get BTC price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"BTC"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get ETH price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"ETH"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}}]}}
+```
+
+Example 8 - Compare stocks:
+Query: "so sánh AAPL và MSFT"
+Type: stock_specific
+Tools: getStockPrice, getFinancialRatios
+```json
+{{"query_intent":"Compare AAPL vs MSFT","strategy":"parallel","estimated_complexity":"moderate","symbols":["AAPL","MSFT"],"response_language":"vi","reasoning":"Compare needs price and fundamentals for both","tasks":[{{"id":1,"description":"Get AAPL price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"AAPL"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get MSFT price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"MSFT"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get AAPL financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"AAPL"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}},{{"id":4,"description":"Get MSFT financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"MSFT"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}}]}}
+```
+
+Example 9 - Risk Analysis:
+Query: "đánh giá rủi ro TSLA"
+Type: stock_specific  
+Tools: getStockPrice, getRiskMetrics, getTechnicalIndicators
+```json
+{{"query_intent":"TSLA risk assessment","strategy":"parallel","estimated_complexity":"moderate","symbols":["TSLA"],"response_language":"vi","reasoning":"Risk analysis needs price, risk metrics, and volatility indicators","tasks":[{{"id":1,"description":"Get TSLA price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"TSLA"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get TSLA risk metrics","tools_needed":[{{"tool_name":"getRiskMetrics","params":{{"symbol":"TSLA"}}}}],"expected_data":["beta","volatility"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get TSLA technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"TSLA"}}}}],"expected_data":["RSI","ATR"],"priority":"medium","dependencies":[]}}]}}
+```
+</examples>
+
+<dependency_rules>
+WHEN TO USE DEPENDENCIES:
+- query_type="screener" AND user wants analysis → SEQUENTIAL with <FROM_TASK_N>
+- query_type="stock_specific" with known symbols → PARALLEL, no dependencies
+- query_type="market_level" → PARALLEL, no dependencies
+
+PLACEHOLDER SYNTAX:
+- Use "<FROM_TASK_1>" when Task N depends on Task 1's output
+- The number matches the dependency task's id
+- TaskExecutor will expand this to actual symbols from screener results
+</dependency_rules>
+
+<output_format>
 OUTPUT JSON ONLY:
 {{
   "query_intent": "{validated_intent}",
@@ -900,6 +1063,7 @@ OUTPUT JSON ONLY:
   "reasoning": "Brief explanation of the plan",
   "tasks": [...]
 }}
+</output_format>
 """
         
         return await self._call_llm_json(prompt, "Stage3")
@@ -1022,7 +1186,7 @@ Note: Tools fetch LIVE data from financial APIs
         invalid = [c for c in original if c not in VALID_CATEGORIES]
         
         if invalid:
-            self.logger.warning(f"[PLANNING:S1] ⚠️ Filtered invalid categories: {invalid}")
+            self.logger.warning(f"[PLANNING:S1] Filtered invalid categories: {invalid}")
         
         result["categories"] = valid
         return result
@@ -1052,66 +1216,326 @@ Note: Tools fetch LIVE data from financial APIs
     async def _call_llm_json(
         self,
         prompt: str,
-        stage: str
+        stage: str,
+        max_retries: int = 2
     ) -> Dict[str, Any]:
-        """Call LLM and parse JSON response"""
+        """
+        Call LLM and parse JSON response with retry logic
+        
+        Args:
+            prompt: The prompt to send
+            stage: Stage name for logging
+            max_retries: Number of retries on JSON parse failure
+        """
+        content = ""
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Set appropriate max_tokens based on stage
+                max_tokens = 2000 if stage == "Stage3" else 1000
+                
+                params = {
+                    "model_name": self.model_name,
+                    "messages": [
+                        {
+                            "role": "system", 
+                            "content": "You are a financial assistant. Return ONLY valid JSON, no markdown, no explanation."
+                        },
+                        {"role": "user", "content": prompt}
+                    ],
+                    "provider_type": self.provider_type,
+                    "api_key": self.api_key,
+                    "enable_thinking": False,
+                    "max_tokens": max_tokens
+                }
+                
+                if self.capability != ModelCapability.ADVANCED:
+                    params["temperature"] = 0.1
+                
+                response = await self.llm_provider.generate_response(**params)
+                
+                content = response.get("content", "") if isinstance(response, dict) else str(response)
+                content = content.strip()
+                
+                # Remove thought blocks
+                if "[/THOUGHT]" in content:
+                    _, content = content.split("[/THOUGHT]", 1)
+                
+                # Remove markdown
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0]
+                elif "```" in content:
+                    parts = content.split("```")
+                    if len(parts) >= 2:
+                        content = parts[1]
+                
+                content = content.strip()
+                
+                # Fix JSON issues
+                content = self._fix_json_braces(content)
+                content = self._fix_truncated_json(content, stage)
+                
+                return json.loads(content)
+                
+            except json.JSONDecodeError as e:
+                last_error = e
+                self.logger.warning(
+                    f"[{stage}] JSON parse error (attempt {attempt + 1}/{max_retries + 1}): {e}"
+                )
+                
+                if attempt < max_retries:
+                    # Try to recover or retry
+                    recovered = self._try_recover_json(content, stage)
+                    if recovered:
+                        self.logger.info(f"[{stage}] ✓ Recovered JSON from truncated response")
+                        return recovered
+                    
+                    self.logger.info(f"[{stage}] Retrying with simplified prompt...")
+                    prompt = self._simplify_prompt_for_retry(prompt, stage)
+                    continue
+                else:
+                    self.logger.error(f"[{stage}] JSON parse failed after {max_retries + 1} attempts")
+                    self.logger.error(f"[{stage}] Content: {content[:500]}")
+                    
+                    # Return fallback based on stage
+                    return self._get_fallback_response(stage)
+                    
+            except Exception as e:
+                self.logger.error(f"[{stage}] LLM error: {e}", exc_info=True)
+                raise
+        
+        # Should not reach here, but return fallback
+        return self._get_fallback_response(stage)
+
+
+    def _fix_truncated_json(self, content: str, stage: str) -> str:
+        """
+        Fix truncated JSON responses
+        
+        Common issues:
+        - Response cut off mid-string
+        - Missing closing brackets for arrays/objects
+        """
+        if not content:
+            return '{}'
+        
+        # Check if JSON seems complete
+        if content.endswith('}'):
+            return content
+        
+        # For Stage3, we need tasks array
+        if stage == "Stage3":
+            # Find last complete task object
+            last_task_end = content.rfind('}]')
+            if last_task_end > 0:
+                # Try to close the JSON properly
+                content = content[:last_task_end + 2] + '}'
+                return content
+            
+            # Find if we have tasks array started
+            if '"tasks"' in content and '[' in content:
+                tasks_start = content.find('"tasks"')
+                bracket_start = content.find('[', tasks_start)
+                
+                if bracket_start > 0:
+                    # Check if we're inside a task object
+                    last_open_brace = content.rfind('{')
+                    if last_open_brace > bracket_start:
+                        # We're inside a task object, close it and the array
+                        content = content + '}]}'
+                    else:
+                        # Just close array and main object
+                        content = content + ']}'
+                    return content
+        
+        # Generic fix - close any open structures
+        open_braces = content.count('{') - content.count('}')
+        open_brackets = content.count('[') - content.count(']')
+        
+        # Add missing closures
+        if open_brackets > 0:
+            content = content + (']' * open_brackets)
+        if open_braces > 0:
+            content = content + ('}' * open_braces)
+        
+        return content
+
+
+    def _try_recover_json(self, content: str, stage: str) -> Optional[Dict[str, Any]]:
+        """Try to recover partial JSON"""
+        import re
+        
+        if not content:
+            return None
+        
+        # Try parsing with fixes first
         try:
-            params = {
-                "model_name": self.model_name,
-                "messages": [
-                    {"role": "system", "content": "You are a financial assistant. Return valid JSON only."},
-                    {"role": "user", "content": prompt}
-                ],
-                "provider_type": self.provider_type,
-                "api_key": self.api_key,
-                "enable_thinking": False
+            fixed = self._fix_truncated_json(content, stage)
+            return json.loads(fixed)
+        except:
+            pass
+        
+        # For Stage3, try to extract at least the metadata
+        if stage == "Stage3":
+            try:
+                intent_match = re.search(r'"query_intent"\s*:\s*"([^"]*)"', content)
+                strategy_match = re.search(r'"strategy"\s*:\s*"([^"]*)"', content)
+                symbols_match = re.search(r'"symbols"\s*:\s*\[([^\]]*)\]', content)
+                language_match = re.search(r'"response_language"\s*:\s*"([^"]*)"', content)
+                
+                if intent_match:
+                    symbols = []
+                    if symbols_match:
+                        symbols_str = symbols_match.group(1)
+                        symbols = [s.strip().strip('"') for s in symbols_str.split(',') if s.strip()]
+                    
+                    # Try to extract tasks if any complete
+                    tasks = []
+                    tasks_match = re.search(r'"tasks"\s*:\s*\[(.*)', content, re.DOTALL)
+                    if tasks_match:
+                        tasks_content = tasks_match.group(1)
+                        # Find complete task objects
+                        task_pattern = r'\{[^{}]*"tool_name"[^{}]*\}'
+                        task_matches = re.findall(task_pattern, tasks_content)
+                        
+                        for i, task_str in enumerate(task_matches[:3]):  # Max 3 tasks
+                            try:
+                                # Parse individual task tools
+                                tool_name_match = re.search(r'"tool_name"\s*:\s*"([^"]*)"', task_str)
+                                if tool_name_match:
+                                    tasks.append({
+                                        "id": i + 1,
+                                        "description": f"Execute {tool_name_match.group(1)}",
+                                        "tools_needed": [{
+                                            "tool_name": tool_name_match.group(1),
+                                            "params": {"symbol": symbols[0] if symbols else ""}
+                                        }],
+                                        "expected_data": [],
+                                        "priority": "medium",
+                                        "dependencies": []
+                                    })
+                            except:
+                                continue
+                    
+                    return {
+                        "query_intent": intent_match.group(1),
+                        "strategy": strategy_match.group(1) if strategy_match else "parallel",
+                        "estimated_complexity": "moderate",
+                        "symbols": symbols,
+                        "response_language": language_match.group(1) if language_match else "vi",
+                        "reasoning": "Recovered from truncated response",
+                        "tasks": tasks
+                    }
+            except Exception as e:
+                pass
+        
+        # For Stage1, try to extract classification
+        if stage == "Stage1":
+            try:
+                query_type_match = re.search(r'"query_type"\s*:\s*"([^"]*)"', content)
+                categories_match = re.search(r'"categories"\s*:\s*\[([^\]]*)\]', content)
+                symbols_match = re.search(r'"symbols"\s*:\s*\[([^\]]*)\]', content)
+                
+                if query_type_match:
+                    categories = []
+                    if categories_match:
+                        cat_str = categories_match.group(1)
+                        categories = [c.strip().strip('"') for c in cat_str.split(',') if c.strip()]
+                    
+                    symbols = []
+                    if symbols_match:
+                        sym_str = symbols_match.group(1)
+                        symbols = [s.strip().strip('"') for s in sym_str.split(',') if s.strip()]
+                    
+                    return {
+                        "query_type": query_type_match.group(1),
+                        "categories": categories,
+                        "symbols": symbols,
+                        "reasoning": "Recovered from truncated response",
+                        "response_language": "vi"
+                    }
+            except:
+                pass
+        
+        return None
+
+
+    def _simplify_prompt_for_retry(self, prompt: str, stage: str) -> str:
+        """Simplify prompt for retry attempt"""
+        if stage == "Stage3":
+            return prompt + """
+
+    IMPORTANT FOR RETRY: Keep response SHORT.
+    - Maximum 2-3 tasks only
+    - Brief descriptions
+    - Essential tools only
+    - No lengthy explanations
+    - Return valid JSON immediately
+    """
+        return prompt
+
+
+    def _get_fallback_response(self, stage: str) -> Dict[str, Any]:
+        """Get fallback response for failed JSON parse"""
+        if stage == "Stage1":
+            return {
+                "query_type": "stock_specific",
+                "categories": ["price"],
+                "symbols": [],
+                "reasoning": "Fallback: classification failed",
+                "response_language": "vi"
             }
-            
-            if self.capability != ModelCapability.ADVANCED:
-                params["temperature"] = 0.1
-            
-            response = await self.llm_provider.generate_response(**params)
-            
-            content = response.get("content", "") if isinstance(response, dict) else str(response)
-            content = content.strip()
-            
-            # Remove thought blocks
-            if "[/THOUGHT]" in content:
-                _, content = content.split("[/THOUGHT]", 1)
-            
-            # Remove markdown
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
-            
-            content = content.strip()
-            
-            # Fix JSON braces (common LLM error)
-            content = self._fix_json_braces(content)
-            
-            return json.loads(content)
-            
-        except json.JSONDecodeError as e:
-            self.logger.error(f"[{stage}] JSON parse error: {e}")
-            self.logger.error(f"[{stage}] Content: {content[:300]}")
-            raise
-        except Exception as e:
-            self.logger.error(f"[{stage}] LLM error: {e}", exc_info=True)
-            raise
-    
+        elif stage == "Stage3":
+            return {
+                "query_intent": "Analysis request",
+                "strategy": "parallel",
+                "estimated_complexity": "simple",
+                "symbols": [],
+                "response_language": "vi",
+                "reasoning": "Fallback: plan creation failed",
+                "tasks": []
+            }
+        elif stage == "Thinking":
+            return {
+                "need_tools": True,
+                "final_intent": "Financial analysis",
+                "reason": "Fallback: validation failed"
+            }
+        else:
+            return {}
+
+
+    # ============================================================================
+    # ALSO UPDATE _fix_json_braces to be more robust:
+    # ============================================================================
+
     def _fix_json_braces(self, content: str) -> str:
         """
         Fix mismatched braces in JSON response
         
         Common LLM errors:
         - Extra trailing braces: {}}} → {}
-        - Missing closing braces: {"a": {"b": 1} → {"a": {"b": 1}}
+        - Missing closing braces
+        - Unclosed strings
         """
         if not content:
             return '{}'
         
-        # Count opening and closing braces
+        # Remove any trailing incomplete strings
+        # If we have an unclosed quote, find and close it
+        quote_count = content.count('"')
+        if quote_count % 2 == 1:
+            # Odd number of quotes - unclosed string
+            last_quote = content.rfind('"')
+            if last_quote > 0:
+                # Check if this is the start of an unclosed string
+                before_quote = content[:last_quote]
+                if before_quote.endswith(':') or before_quote.endswith(': '):
+                    # It's a value that got cut off, add closing quote
+                    content = content + '"'
+        
+        # Count braces
         open_count = content.count('{')
         close_count = content.count('}')
         
@@ -1119,17 +1543,17 @@ Note: Tools fetch LIVE data from financial APIs
             return content
         
         if close_count > open_count:
-            # Too many closing braces - remove extras from end
+            # Too many closing braces - remove from end
             excess = close_count - open_count
-            while excess > 0 and content.endswith('}'):
-                content = content[:-1]
+            while excess > 0 and content.rstrip().endswith('}'):
+                content = content.rstrip()[:-1]
                 excess -= 1
             return content
         
         if open_count > close_count:
             # Missing closing braces - add at end
             missing = open_count - close_count
-            content = content + ('}' * missing)
+            content = content.rstrip() + ('}' * missing)
             return content
         
         return content
@@ -1183,12 +1607,12 @@ Note: Tools fetch LIVE data from financial APIs
         language: str
     ):
         """Log Stage 1 results"""
-        self.logger.info(f"[PLANNING:S1] ✅ Classification Complete")
+        self.logger.info(f"[PLANNING:S1] Classification Complete")
         self.logger.info(f"[PLANNING:S1]   Type: {query_type}")
         self.logger.info(f"[PLANNING:S1]   Categories: {categories}")
         self.logger.info(f"[PLANNING:S1]   Symbols: {symbols}")
         self.logger.info(f"[PLANNING:S1]   Language: {language}")
-        self.logger.info(f"[PLANNING:S1]   Reasoning: {reasoning[:100]}...")
+        self.logger.info(f"[PLANNING:S1]   Reasoning: {reasoning}")
     
     def _get_elapsed_ms(self, start_time: datetime) -> int:
         """Get elapsed time in milliseconds"""

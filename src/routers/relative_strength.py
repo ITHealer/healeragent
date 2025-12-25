@@ -17,6 +17,14 @@ from src.agents.memory.memory_manager import MemoryManager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.helpers.language_detector import language_detector, DetectionMethod
 from src.services.background_tasks import trigger_summary_update_nowait            
+from src.helpers.llm_chat_helper import (
+    stream_with_heartbeat,
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 
 router = APIRouter()
 
@@ -74,9 +82,10 @@ async def relative_strength_chat(
         # 1. Get memory context
         context = ""
         memory_stats = {}
+        document_references = []
         if chat_request.session_id and user_id:
             try:
-                context, memory_stats = await memory_manager.get_relevant_context(
+                context, memory_stats, document_references = await memory_manager.get_relevant_context(
                     session_id=chat_request.session_id,
                     user_id=user_id,
                     current_query=chat_request.question_input,
@@ -195,44 +204,45 @@ async def relative_strength_chat_stream(
         except Exception as e:
             logger.error(f"Error saving question: {e}")
     
-    # Get contexts
-    chat_history = ""
-    if chat_request.session_id:
-        try:
-            chat_history = ChatMessageHistory.string_message_chat_history(
-                session_id=chat_request.session_id
-            )
-        except Exception as e:
-            logger.error(f"Error fetching history: {e}")
-    
-    # 1. Get memory context
-    context = ""
-    memory_stats = {}
-    if chat_request.session_id and user_id:
-        try:
-            context, memory_stats = await memory_manager.get_relevant_context(
-                session_id=chat_request.session_id,
-                user_id=user_id,
-                current_query=chat_request.question_input,
-                llm_provider=llm_provider,
-                max_short_term=5,
-                max_long_term=3
-            )
-        except Exception as e:
-            logger.error(f"Error getting memory context: {e}")
-    
-    enhanced_history = ""
-    if context:
-        enhanced_history = f"{context}\n\n"
-    if chat_history:
-        enhanced_history += f"[Conversation History]\n{chat_history}"
-    
     async def generate_stream():
         full_response = []
         benchmark = "SPY"
         lookback_periods = [21, 63, 126, 252]
         
         try:
+            # Get contexts
+            chat_history = ""
+            if chat_request.session_id:
+                try:
+                    chat_history = ChatMessageHistory.string_message_chat_history(
+                        session_id=chat_request.session_id
+                    )
+                except Exception as e:
+                    logger.error(f"Error fetching history: {e}")
+            
+            # 1. Get memory context
+            context = ""
+            memory_stats = {}
+            document_references = []
+            if chat_request.session_id and user_id:
+                try:
+                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
+                        session_id=chat_request.session_id,
+                        user_id=user_id,
+                        current_query=chat_request.question_input,
+                        llm_provider=llm_provider,
+                        max_short_term=5,
+                        max_long_term=3
+                    )
+                except Exception as e:
+                    logger.error(f"Error getting memory context: {e}")
+            
+            enhanced_history = ""
+            if context:
+                enhanced_history = f"{context}\n\n"
+            if chat_history:
+                enhanced_history += f"[Conversation History]\n{chat_history}"
+
             # Get RS data
             rs_handler = RelativeStrengthHandler()
             rs_result = await rs_handler.get_relative_strength(
@@ -241,10 +251,11 @@ async def relative_strength_chat_stream(
                 lookback_periods=lookback_periods
             )
             
-            # Stream LLM response                    
+            # Get API key
             api_key = ModelProviderFactory._get_api_key(chat_request.provider_type)
             
-            async for chunk in llm_helper.stream_rs_analysis_with_llm(
+            # Get LLM generator
+            llm_generator = llm_helper.stream_rs_analysis_with_llm(
                 symbol=chat_request.symbol,
                 benchmark=benchmark,
                 rs_data=rs_result,
@@ -253,17 +264,21 @@ async def relative_strength_chat_stream(
                 provider_type=chat_request.provider_type,
                 api_key=api_key,
                 chat_history=enhanced_history
-            ):
-                if chunk:
-                    full_response.append(chunk)
-                    yield f"{json.dumps({'content': chunk})}\n\n"
-                    # event_data = {
-                    #     "session_id": chat_request.session_id,
-                    #     "type": "chunk",
-                    #     "data": chunk
-                    # }
-                    # yield f"{json.dumps(event_data, ensure_ascii=False)}\n\n"
+            )
             
+            # Stream with heartbeat
+            async for event in stream_with_heartbeat(llm_generator, DEFAULT_HEARTBEAT_SEC):
+                if event["type"] == "content":
+                    full_response.append(event["chunk"])
+                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                elif event["type"] == "heartbeat":
+                    yield ": heartbeat\n\n"
+                elif event["type"] == "error":
+                    yield sse_error(event["error"])
+                    break
+                elif event["type"] == "done":
+                    break
+
             # Save complete response
             complete_response = ''.join(full_response)
             
@@ -309,26 +324,14 @@ async def relative_strength_chat_stream(
                     logger.error(f"Error saving: {e}")
             
             # Completion event
-            yield "[DONE]\n\n"
-            # completion_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "completion",
-            #     "data": "[DONE]",
-            #     # "memory_stats": tool_stats
-            # }
-            # yield f"{json.dumps(completion_data)}\n\n"
-            
+            yield sse_done()
+
         except Exception as e:
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
-            # error_data = {
-            #     "session_id": chat_request.session_id,
-            #     "type": "error",
-            #     "data": str(e)
-            # }
-            # yield f"{json.dumps(error_data)}\n\n"
+            yield sse_error(str(e))
+            yield sse_done()
     
     return StreamingResponse(
         generate_stream(),
-        media_type="text/event-stream"
+        media_type="text/event-stream",
+        headers=SSE_HEADERS
     )

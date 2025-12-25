@@ -19,13 +19,11 @@ class BasicResponseDelete(BaseModel):
     Message: str
     Data: Optional[dict | list | str] = None
 
-# =============================================================================
-# region Schema for Tools
-# =============================================================================
-# General Chat
+
 class GeneralChatBot(BaseModel):
     session_id: str
     question_input: str
+    chart_displayed: Optional[bool] = False
     target_language: Optional[str] = None
     model_name: str = Field(APIModelName.GPT41Nano, description="Model name")
     provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
@@ -39,47 +37,10 @@ class ComprehensiveAnalysisRequest(BaseModel):
     lookback_days: int = 252
     analyses: Optional[List[str]] = None
 
-class AnalysisResponsePayload(BaseModel):
-    session_id: Optional[str] = None
-    symbol: str
-    question_input: Optional[str]
-    target_language: Optional[str] = None
-    model_name: str = Field(APIModelName.GPT41Nano, description="Model name")
-    provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
-
-# Trending 
-class StockStringPayload(BaseModel):
-    session_id: str
-    question_input: Optional[str] = None
-    target_language: Optional[str] = None
-    gainers: List[Dict]
-    losers: Optional[List[Dict]] = None
-    actives: Optional[List[Dict]] = None
-    model_name: str
-    provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
-
-# Market Overview
-class MarketOverviewPayload(BaseModel):
-    session_id: Optional[str] = None
-    question_input: Optional[str] = None
-    target_language: Optional[str] = None
-    data: List[Dict]
-    model_name: str
-    provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
-
 class PromptRequest(BaseModel):
     prompt: str
     model_name: str
     provider_type: str
-
-# Heatmap
-class StockHeatmapPayload(BaseModel):
-    session_id: str = Field(None, description="Chat session ID")
-    question_input: str = Field("Show me the stock heatmap", description="User's question")
-    target_language: Optional[str] = None
-    model_name: str = Field("gpt-4.1-nano-2025-04-14", description="LLM model to use")
-    provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
-
 
 class ChatRequest(BaseModel):
     session_id: str

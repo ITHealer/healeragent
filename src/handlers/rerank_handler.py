@@ -31,7 +31,7 @@ class RerankHandler(LoggerMixin):
             self.model = ModelLoader.get_sentence_transformer(model_key)
             self.model_name = model_key
             
-        self.logger.info(f"Using reranker model: {self.model_name}")
+        # self.logger.info(f"Using reranker model: {self.model_name}")
         
         # Use the singleton tokenizer
         self.tokenizer = default_tokenizer

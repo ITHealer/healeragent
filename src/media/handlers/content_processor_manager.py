@@ -32,7 +32,7 @@ class ContentProcessorManager:
         self._processors: Dict[str, ContentProcessor] = {}
         self._lock = Lock()
         self._initialized = True
-        logger.info("ContentProcessorManager initialized")
+        logger.info("[ContentProcessorManager] Initialized successfully")
     
     def get_processor(
         self,

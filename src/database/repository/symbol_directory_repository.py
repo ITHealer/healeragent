@@ -363,6 +363,65 @@ class SymbolDirectoryRepository:
     # VALIDATION & SEARCH OPERATIONS
     # ========================================================================
     
+    def get_existing_symbols_batch(
+        self, 
+        symbols: List[str], 
+        asset_class: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Check existence of multiple symbols in bulk using SQL IN clause.
+        Optimized to query only relevant tables based on asset_class.
+        
+        Args:
+            symbols: List of symbols to check
+            asset_class: Optional filter ('stock', 'crypto' or None)
+            
+        Returns:
+            Dict mapping symbol -> asset_class
+        """
+        if not symbols:
+            return {}
+
+        # 1. Normalize symbols
+        normalized_symbols = list(set([s.upper() for s in symbols]))
+        found_map = {}
+        
+        # 2. Determine which tables to query
+        # Nếu asset_class là None -> Check cả hai
+        # Nếu asset_class là 'stock' -> Chỉ check Stock
+        # Nếu asset_class là 'crypto' -> Chỉ check Crypto
+        
+        should_check_stock = asset_class is None or asset_class == "stock"
+        should_check_crypto = asset_class is None or asset_class == "crypto"
+
+        try:
+            # --- QUERY STOCKS ---
+            if should_check_stock:
+                stock_stmt = select(Stock.symbol).where(
+                    Stock.symbol.in_(normalized_symbols)
+                )
+                existing_stocks = self.session.execute(stock_stmt).scalars().all()
+                
+                for s in existing_stocks:
+                    found_map[s] = "stock"
+
+            # --- QUERY CRYPTO ---
+            if should_check_crypto:
+                crypto_stmt = select(Cryptocurrency.symbol).where(
+                    Cryptocurrency.symbol.in_(normalized_symbols)
+                )
+                existing_cryptos = self.session.execute(crypto_stmt).scalars().all()
+                
+                for s in existing_cryptos:
+                    if s not in found_map:
+                        found_map[s] = "crypto"
+            
+            return found_map
+
+        except Exception as e:
+            logger.error(f"Error in batch symbol lookup: {str(e)}", exc_info=True)
+            return {}
+        
     def validate_symbol(
         self,
         symbol: str,

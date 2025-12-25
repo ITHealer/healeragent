@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     OLLAMA_ENDPOINT: str = Field(..., env='OLLAMA_ENDPOINT')
     OPENAI_API_KEY: str = Field("", env='OPENAI_API_KEY')
     GEMINI_API_KEY: str = Field("", env='GEMINI_API_KEY')
+    OPENROUTER_API_KEY: str = Field("", env='OPENROUTER_API_KEY')
 
     MODEL_DEFAULT: str = Field("", env='MODEL_DEFAULT')
     PROVIDER_DEFAULT: str = Field("", env='PROVIDER_DEFAULT')

@@ -11,7 +11,7 @@ from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.v2.tool_call_handler import tool_call
 
 
-router = APIRouter()
+router = APIRouter(prefix="/router")
 
 # Initialize Instance
 api_key_auth = APIKeyAuth()

@@ -45,7 +45,7 @@ class SessionManager(LoggerMixin):
             )
         )
         
-        self.logger.info(f"[SESSION MANAGER] Initialized with database: {self._mask_db_url(self.database_url)}")
+        # self.logger.info(f"[SESSION MANAGER] Initialized with database: {self._mask_db_url(self.database_url)}")
     
     def _get_database_url(self) -> str:
         """
@@ -116,7 +116,7 @@ class SessionManager(LoggerMixin):
             echo=False  # Set to True for SQL query logging
         )
         
-        self.logger.info(f"[SESSION MANAGER] Engine created with pool_size={pool_size}, max_overflow={max_overflow}")
+        # self.logger.info(f"[SESSION MANAGER] Engine created with pool_size={pool_size}, max_overflow={max_overflow}")
         
         return engine
     

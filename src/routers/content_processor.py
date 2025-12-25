@@ -15,7 +15,13 @@ from src.media.handlers.content_processor_manager import processor_manager
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.llm_helper import LLMGeneratorProvider
-from src.routers.llm_chat import analyze_conversation_importance
+from src.helpers.llm_chat_helper import (
+    analyze_conversation_importance,
+    SSE_HEADERS,
+    DEFAULT_HEARTBEAT_SEC,
+    sse_error,
+    sse_done
+)
 from src.services.background_tasks import trigger_summary_update_nowait
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ProviderType
@@ -417,41 +423,59 @@ async def process_content_stream(
             # Get processor
             processor = get_processor(data.model_name, data.provider_type)
             
-            # Process the URL
-            result = await processor.process_url(
-                url=str(data.url),
-                target_language=data.target_language,
-                print_progress=False
+            # Create task for long-running URL processing
+            process_task = asyncio.create_task(
+                processor.process_url(
+                    url=str(data.url),
+                    target_language=data.target_language,
+                    print_progress=False
+                )
             )
             
+            # Send heartbeat while waiting for processing to complete
+            result = None
+            while True:
+                done, _ = await asyncio.wait({process_task}, timeout=DEFAULT_HEARTBEAT_SEC)
+                
+                if done:
+                    # Task completed - get result
+                    try:
+                        result = process_task.result()
+                    except Exception as e:
+                        logger.error(f"Process URL error: {e}")
+                        yield sse_error(str(e))
+                        yield sse_done()
+                        return
+                    break
+                else:
+                    # Still processing - send heartbeat
+                    yield ": heartbeat\n\n"
+
             # Check for errors
             if result.get("status") == "error":
-                yield f"{json.dumps({'error': result.get('error', 'Processing failed')})}\n\n"
-                yield "[DONE]\n\n"
+                yield sse_error(result.get('error', 'Processing failed'))
+                yield sse_done()
                 return
             
             # Get the summary
             summary = result.get("summary", "")
             
             if not summary:
-                yield f"{json.dumps({'error': 'No summary generated'})}\n\n"
-                yield "[DONE]\n\n"
+                yield sse_error("No summary generated")
+                yield sse_done()
                 return
             
-            # Stream summary in chunks (simulate progressive generation)
             # Split by sentences for natural streaming
             import re
             sentences = re.split(r'(?<=[.!?])\s+', summary)
             
-            current_chunk = ""
             for sentence in sentences:
-                current_chunk = sentence + " "
-                
-                # Stream each sentence
-                yield f"{json.dumps({'content': current_chunk})}\n\n"
-                
-                # Small delay for natural streaming effect
-                await asyncio.sleep(0.1)
+                if sentence.strip():
+                    current_chunk = sentence.strip() + " "
+                    yield f"{json.dumps({'content': current_chunk}, ensure_ascii=False)}\n\n"
+                    
+                    # Small delay for natural streaming effect
+                    await asyncio.sleep(0.05)
             
             # Save to memory if enabled (after streaming complete)
             if data.session_id and user_id:
@@ -473,23 +497,46 @@ async def process_content_stream(
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             
-            # Send completion signal
-            yield "[DONE]\n\n"
+            # Save to chat history
+            if data.session_id and user_id:
+                try:
+                    question_id = chat_service.save_user_question(
+                        session_id=data.session_id,
+                        created_at=datetime.now(),
+                        created_by=user_id,
+                        content=f"Process {result.get('type', 'content')} from: {data.url}"
+                    )
+                    
+                    chat_service.save_assistant_response(
+                        session_id=data.session_id,
+                        created_at=datetime.now(),
+                        question_id=question_id,
+                        content=summary,
+                        response_time=0.1
+                    )
+                    
+                    trigger_summary_update_nowait(
+                        session_id=data.session_id,
+                        user_id=user_id
+                    )
+                except Exception as e:
+                    logger.error(f"Error saving to chat history: {e}")
             
+            # Send completion signal
+            yield sse_done()
+            
+        except asyncio.CancelledError:
+            logger.info(f"Content processing stream cancelled: {data.url}")
+            raise
         except Exception as e:
-            logger.error(f"Streaming error: {str(e)}")
-            yield f"{json.dumps({'error': str(e)})}\n\n"
-            yield "[DONE]\n\n"
+            logger.error(f"Streaming error: {str(e)}", exc_info=True)
+            yield sse_error(str(e))
+            yield sse_done()
     
     return StreamingResponse(
         generate_summary_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*"
-        }
+        headers=SSE_HEADERS
     )
 
 # Admin endpoints for cache management

@@ -1,0 +1,13 @@
+topologies:
+  stock_analysis:
+    exchange: "stock_analysis"
+    request_queue: "stock_analysis_request"
+    response_queue: "stock_analysis_response"
+    max_retries: 3
+  
+  # Example of a new topology you could add in the future
+  # user_notifications:
+  #   exchange: "notifications_exchange"
+  #   request_queue: "user_notification_request"
+  #   response_queue: "user_notification_response"
+  #   max_retries: 3

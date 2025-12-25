@@ -7,7 +7,7 @@ from typing import Optional
 
 def get_system_message_general_chat(
     enable_thinking: bool = True,
-    model_name: str = "gpt-4o-mini",
+    model_name: str = "gpt-4.1-nano",
     detected_language: str = "en"
 ) -> str:
     """
@@ -227,7 +227,7 @@ Now, analyze the user's query and respond based on the tool execution results pr
 def get_system_message_with_memory(
     core_memory: dict,
     enable_thinking: bool = True,
-    model_name: str = "gpt-4o-mini",
+    model_name: str = "gpt-4.1-nano",
     detected_language: str = "en"
 ) -> str:
     """

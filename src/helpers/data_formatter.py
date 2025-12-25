@@ -1153,110 +1153,189 @@ class FinancialDataFormatter:
         return "\n".join(sections)
     
 
+    # @staticmethod
+    # def format_income_statement(data: Dict[str, Any]) -> str:
+    #     """
+    #     Format income statement data for LLM
+        
+    #     Args:
+    #         data: Income statement data from GetIncomeStatementTool
+            
+    #     Returns:
+    #         Formatted text for LLM consumption
+    #     """
+    #     if not data:
+    #         return "No income statement data available"
+        
+    #     sections = []
+    #     symbol = data.get('symbol', 'N/A')
+    #     period_type = data.get('period_type', 'annual')
+        
+    #     sections.append(f"📊 INCOME STATEMENT - {symbol} ({period_type.upper()})")
+    #     sections.append("═" * 60)
+        
+    #     latest = data.get('latest_period', {})
+        
+    #     if not latest:
+    #         return "No income statement periods available"
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Header Info
+    #     # ═══════════════════════════════════════════════════════════
+    #     sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
+    #     sections.append(f"**Fiscal Period:** {latest.get('period', 'N/A')} {latest.get('calendar_year', '')}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Revenue & Cost
+    #     # ═══════════════════════════════════════════════════════════
+    #     revenue = latest.get('revenue', 0)
+    #     cost_of_revenue = latest.get('cost_of_revenue', 0)
+    #     gross_profit = latest.get('gross_profit', 0)
+    #     gross_margin = latest.get('gross_profit_ratio', 0)
+        
+    #     sections.append(f"\n**💰 Revenue & Cost:**")
+    #     if revenue:
+    #         sections.append(f"- Revenue: ${revenue:,.0f}")
+    #     if cost_of_revenue:
+    #         sections.append(f"- Cost of Revenue: ${cost_of_revenue:,.0f}")
+    #     if gross_profit:
+    #         sections.append(f"- Gross Profit: ${gross_profit:,.0f} ({gross_margin*100:.1f}% margin)")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Operating Performance
+    #     # ═══════════════════════════════════════════════════════════
+    #     operating_expenses = latest.get('operating_expenses', 0)
+    #     rd_expenses = latest.get('rd_expenses', 0)
+    #     operating_income = latest.get('operating_income', 0)
+    #     operating_margin = latest.get('operating_income_ratio', 0)
+    #     ebitda = latest.get('ebitda', 0)
+        
+    #     sections.append(f"\n**🏭 Operating Performance:**")
+    #     if operating_expenses:
+    #         sections.append(f"- Operating Expenses: ${operating_expenses:,.0f}")
+    #     if rd_expenses:
+    #         sections.append(f"- R&D Expenses: ${rd_expenses:,.0f}")
+    #     if operating_income:
+    #         sections.append(f"- Operating Income: ${operating_income:,.0f} ({operating_margin*100:.1f}% margin)")
+    #     if ebitda:
+    #         sections.append(f"- EBITDA: ${ebitda:,.0f}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Net Income
+    #     # ═══════════════════════════════════════════════════════════
+    #     income_before_tax = latest.get('income_before_tax', 0)
+    #     income_tax = latest.get('income_tax_expense', 0)
+    #     net_income = latest.get('net_income', 0)
+    #     net_margin = latest.get('net_income_ratio', 0)
+        
+    #     sections.append(f"\n**💵 Net Income:**")
+    #     if income_before_tax:
+    #         sections.append(f"- Income Before Tax: ${income_before_tax:,.0f}")
+    #     if income_tax:
+    #         sections.append(f"- Income Tax Expense: ${income_tax:,.0f}")
+    #     if net_income:
+    #         sections.append(f"- Net Income: ${net_income:,.0f} ({net_margin*100:.1f}% margin)")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Earnings Per Share
+    #     # ═══════════════════════════════════════════════════════════
+    #     eps = latest.get('eps', 0)
+    #     eps_diluted = latest.get('eps_diluted', 0)
+        
+    #     sections.append(f"\n**📈 Earnings Per Share:**")
+    #     if eps:
+    #         sections.append(f"- EPS (Basic): ${eps:.2f}")
+    #     if eps_diluted:
+    #         sections.append(f"- EPS (Diluted): ${eps_diluted:.2f}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Historical Comparison
+    #     # ═══════════════════════════════════════════════════════════
+    #     periods = data.get('periods', [])
+    #     if len(periods) > 1:
+    #         sections.append(f"\n**📊 Historical Trend ({len(periods)} periods):**")
+            
+    #         # Show recent periods
+    #         for idx, period in enumerate(periods[:3]):
+    #             date = period.get('date', 'N/A')
+    #             rev = period.get('revenue', 0)
+    #             ni = period.get('net_income', 0)
+    #             sections.append(f"  {idx+1}. {date}: Revenue ${rev:,.0f}, Net Income ${ni:,.0f}")
+        
+    #     return "\n".join(sections)
+
     @staticmethod
     def format_income_statement(data: Dict[str, Any]) -> str:
         """
-        Format income statement data for LLM
-        
-        Args:
-            data: Income statement data from GetIncomeStatementTool
-            
-        Returns:
-            Formatted text for LLM consumption
+        Format Income Statement
+        ✅ FIXED: Removed dependency on 'latest_period', reads directly from root keys
         """
         if not data:
             return "No income statement data available"
         
         sections = []
         symbol = data.get('symbol', 'N/A')
-        period_type = data.get('period_type', 'annual')
+        period_type = data.get('period', 'annual') # Key is 'period' in new schema
         
         sections.append(f"📊 INCOME STATEMENT - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
         
-        latest = data.get('latest_period', {})
-        
-        if not latest:
-            return "No income statement periods available"
-        
         # ═══════════════════════════════════════════════════════════
-        # Header Info
+        # Check Data Availability (New Logic)
         # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
-        sections.append(f"**Fiscal Period:** {latest.get('period', 'N/A')} {latest.get('calendar_year', '')}")
+        # Check if we have basic metrics at root level
+        if 'revenue' not in data and 'net_income' not in data:
+             return f"No financial data available for {symbol}"
+
+        # ═══════════════════════════════════════════════════════════
+        # Revenue & Cost (Read directly from root)
+        # ═══════════════════════════════════════════════════════════
+        revenue = data.get('revenue', 0)
+        # Note: Cost might not be in root if we didn't explicitly put it there in the tool fix, 
+        # but Revenue is guaranteed. Let's assume we want key metrics first.
+        revenue_growth = data.get('revenue_growth', 0)
         
-        # ═══════════════════════════════════════════════════════════
-        # Revenue & Cost
-        # ═══════════════════════════════════════════════════════════
-        revenue = latest.get('revenue', 0)
-        cost_of_revenue = latest.get('cost_of_revenue', 0)
-        gross_profit = latest.get('gross_profit', 0)
-        gross_margin = latest.get('gross_profit_ratio', 0)
-        
-        sections.append(f"\n**💰 Revenue & Cost:**")
+        sections.append(f"\n**💰 Revenue & Profitability:**")
         if revenue:
             sections.append(f"- Revenue: ${revenue:,.0f}")
-        if cost_of_revenue:
-            sections.append(f"- Cost of Revenue: ${cost_of_revenue:,.0f}")
-        if gross_profit:
-            sections.append(f"- Gross Profit: ${gross_profit:,.0f} ({gross_margin*100:.1f}% margin)")
-        
+        if revenue_growth:
+            emoji = "📈" if revenue_growth > 0 else "📉"
+            sections.append(f"- Growth: {emoji} {revenue_growth:+.2f}%")
+
         # ═══════════════════════════════════════════════════════════
-        # Operating Performance
+        # Margins (From nested dictionary)
         # ═══════════════════════════════════════════════════════════
-        operating_expenses = latest.get('operating_expenses', 0)
-        rd_expenses = latest.get('rd_expenses', 0)
-        operating_income = latest.get('operating_income', 0)
-        operating_margin = latest.get('operating_income_ratio', 0)
-        ebitda = latest.get('ebitda', 0)
-        
-        sections.append(f"\n**🏭 Operating Performance:**")
-        if operating_expenses:
-            sections.append(f"- Operating Expenses: ${operating_expenses:,.0f}")
-        if rd_expenses:
-            sections.append(f"- R&D Expenses: ${rd_expenses:,.0f}")
-        if operating_income:
-            sections.append(f"- Operating Income: ${operating_income:,.0f} ({operating_margin*100:.1f}% margin)")
-        if ebitda:
-            sections.append(f"- EBITDA: ${ebitda:,.0f}")
-        
+        margins = data.get('profit_margins', {})
+        if isinstance(margins, dict):
+            gross_margin = margins.get('gross', 0)
+            op_margin = margins.get('operating', 0)
+            net_margin = margins.get('net', 0)
+            
+            if gross_margin: sections.append(f"- Gross Margin: {gross_margin*100:.1f}%")
+            if op_margin: sections.append(f"- Operating Margin: {op_margin*100:.1f}%")
+            if net_margin: sections.append(f"- Net Margin: {net_margin*100:.1f}%")
+
         # ═══════════════════════════════════════════════════════════
-        # Net Income
+        # Net Income & EPS (Read directly from root)
         # ═══════════════════════════════════════════════════════════
-        income_before_tax = latest.get('income_before_tax', 0)
-        income_tax = latest.get('income_tax_expense', 0)
-        net_income = latest.get('net_income', 0)
-        net_margin = latest.get('net_income_ratio', 0)
+        net_income = data.get('net_income', 0)
+        eps = data.get('eps', 0)
         
         sections.append(f"\n**💵 Net Income:**")
-        if income_before_tax:
-            sections.append(f"- Income Before Tax: ${income_before_tax:,.0f}")
-        if income_tax:
-            sections.append(f"- Income Tax Expense: ${income_tax:,.0f}")
         if net_income:
-            sections.append(f"- Net Income: ${net_income:,.0f} ({net_margin*100:.1f}% margin)")
-        
-        # ═══════════════════════════════════════════════════════════
-        # Earnings Per Share
-        # ═══════════════════════════════════════════════════════════
-        eps = latest.get('eps', 0)
-        eps_diluted = latest.get('eps_diluted', 0)
-        
-        sections.append(f"\n**📈 Earnings Per Share:**")
+            sections.append(f"- Net Income: ${net_income:,.0f}")
         if eps:
-            sections.append(f"- EPS (Basic): ${eps:.2f}")
-        if eps_diluted:
-            sections.append(f"- EPS (Diluted): ${eps_diluted:.2f}")
+            sections.append(f"- EPS: ${eps:.2f}")
         
         # ═══════════════════════════════════════════════════════════
-        # Historical Comparison
+        # Historical Comparison (From 'statements' list)
         # ═══════════════════════════════════════════════════════════
-        periods = data.get('periods', [])
-        if len(periods) > 1:
-            sections.append(f"\n**📊 Historical Trend ({len(periods)} periods):**")
+        statements = data.get('statements', [])
+        if len(statements) > 1:
+            sections.append(f"\n**📊 Historical Trend ({len(statements)} periods):**")
             
             # Show recent periods
-            for idx, period in enumerate(periods[:3]):
+            for idx, period in enumerate(statements[:3]):
                 date = period.get('date', 'N/A')
                 rev = period.get('revenue', 0)
                 ni = period.get('net_income', 0)
@@ -1543,204 +1622,295 @@ class FinancialDataFormatter:
         
         return "\n".join(sections)
     
+    # @staticmethod
+    # def format_financial_ratios(data: Dict[str, Any]) -> str:
+    #     """
+    #     Format financial ratios data for LLM
+        
+    #     Args:
+    #         data: Financial ratios data from GetFinancialRatiosTool
+            
+    #     Returns:
+    #         Formatted text for LLM consumption
+    #     """
+    #     if not data:
+    #         return "No financial ratios data available"
+        
+    #     sections = []
+    #     symbol = data.get('symbol', 'N/A')
+    #     period_type = data.get('period_type', 'annual')
+        
+    #     sections.append(f"📊 FINANCIAL RATIOS - {symbol} ({period_type.upper()})")
+    #     sections.append("═" * 60)
+        
+    #     latest = data.get('latest_period', {})
+        
+    #     if not latest:
+    #         return "No financial ratios periods available"
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Header Info
+    #     # ═══════════════════════════════════════════════════════════
+    #     sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # LIQUIDITY RATIOS
+    #     # ═══════════════════════════════════════════════════════════
+    #     current_ratio = latest.get('current_ratio', 0)
+    #     quick_ratio = latest.get('quick_ratio', 0)
+    #     cash_ratio = latest.get('cash_ratio', 0)
+        
+    #     sections.append(f"\n**💧 Liquidity Ratios:**")
+    #     if current_ratio:
+    #         status = "✓ Strong" if current_ratio >= 2.0 else "⚠️ Weak" if current_ratio < 1.0 else "○ Adequate"
+    #         sections.append(f"- Current Ratio: {current_ratio:.2f} {status}")
+    #     if quick_ratio:
+    #         status = "✓ Strong" if quick_ratio >= 1.0 else "⚠️ Weak"
+    #         sections.append(f"- Quick Ratio: {quick_ratio:.2f} {status}")
+    #     if cash_ratio:
+    #         sections.append(f"- Cash Ratio: {cash_ratio:.2f}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # PROFITABILITY RATIOS
+    #     # ═══════════════════════════════════════════════════════════
+    #     gross_margin = latest.get('gross_profit_margin', 0)
+    #     operating_margin = latest.get('operating_profit_margin', 0)
+    #     net_margin = latest.get('net_profit_margin', 0)
+    #     ebitda_margin = latest.get('ebitda_margin', 0)
+    #     roe = latest.get('return_on_equity', 0)
+    #     roa = latest.get('return_on_assets', 0)
+    #     roic = latest.get('return_on_capital_employed', 0)
+        
+    #     sections.append(f"\n**💰 Profitability Ratios:**")
+    #     if gross_margin:
+    #         sections.append(f"- Gross Profit Margin: {gross_margin*100:.1f}%")
+    #     if operating_margin:
+    #         sections.append(f"- Operating Profit Margin: {operating_margin*100:.1f}%")
+    #     if net_margin:
+    #         sections.append(f"- Net Profit Margin: {net_margin*100:.1f}%")
+    #     if ebitda_margin:
+    #         sections.append(f"- EBITDA Margin: {ebitda_margin*100:.1f}%")
+        
+    #     sections.append(f"\n  Return Metrics:")
+    #     if roe:
+    #         status = "✓ Excellent" if roe >= 0.15 else "○ Good" if roe >= 0.10 else "⚠️ Weak"
+    #         sections.append(f"  - Return on Equity (ROE): {roe*100:.1f}% {status}")
+    #     if roa:
+    #         sections.append(f"  - Return on Assets (ROA): {roa*100:.1f}%")
+    #     if roic:
+    #         sections.append(f"  - Return on Capital Employed: {roic*100:.1f}%")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # LEVERAGE RATIOS
+    #     # ═══════════════════════════════════════════════════════════
+    #     debt_equity = latest.get('debt_equity_ratio', 0)
+    #     debt_ratio = latest.get('debt_ratio', 0)
+    #     interest_coverage = latest.get('interest_coverage', 0)
+        
+    #     sections.append(f"\n**⚖️ Leverage Ratios:**")
+    #     if debt_equity:
+    #         status = "✓ Low leverage" if debt_equity < 0.5 else "⚠️ High leverage" if debt_equity > 2.0 else "○ Moderate"
+    #         sections.append(f"- Debt/Equity Ratio: {debt_equity:.2f} {status}")
+    #     if debt_ratio:
+    #         sections.append(f"- Debt Ratio: {debt_ratio:.2f}")
+    #     if interest_coverage:
+    #         status = "✓ Strong" if interest_coverage >= 3.0 else "⚠️ Weak"
+    #         sections.append(f"- Interest Coverage: {interest_coverage:.2f}x {status}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # VALUATION RATIOS
+    #     # ═══════════════════════════════════════════════════════════
+    #     pe_ratio = latest.get('price_earnings_ratio', 0)
+    #     pb_ratio = latest.get('price_to_book_ratio', 0)
+    #     ps_ratio = latest.get('price_to_sales_ratio', 0)
+    #     peg_ratio = latest.get('price_earnings_to_growth_ratio', 0)
+    #     ev_ebitda = latest.get('enterprise_value_multiple', 0)
+        
+    #     sections.append(f"\n**📈 Valuation Ratios:**")
+    #     if pe_ratio:
+    #         sections.append(f"- P/E Ratio: {pe_ratio:.2f}")
+    #     if pb_ratio:
+    #         sections.append(f"- P/B Ratio: {pb_ratio:.2f}")
+    #     if ps_ratio:
+    #         sections.append(f"- P/S Ratio: {ps_ratio:.2f}")
+    #     if peg_ratio:
+    #         status = "✓ Undervalued" if 0 < peg_ratio < 1 else "⚠️ Overvalued" if peg_ratio > 2 else "○ Fair"
+    #         sections.append(f"- PEG Ratio: {peg_ratio:.2f} {status}")
+    #     if ev_ebitda:
+    #         sections.append(f"- EV/EBITDA: {ev_ebitda:.2f}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # EFFICIENCY RATIOS
+    #     # ═══════════════════════════════════════════════════════════
+    #     asset_turnover = latest.get('asset_turnover', 0)
+    #     inventory_turnover = latest.get('inventory_turnover', 0)
+    #     receivables_turnover = latest.get('receivables_turnover', 0)
+    #     days_sales = latest.get('days_sales_outstanding', 0)
+    #     days_inventory = latest.get('days_inventory_outstanding', 0)
+    #     cash_conversion = latest.get('cash_conversion_cycle', 0)
+        
+    #     sections.append(f"\n**⚙️ Efficiency Ratios:**")
+    #     if asset_turnover:
+    #         sections.append(f"- Asset Turnover: {asset_turnover:.2f}x")
+    #     if inventory_turnover:
+    #         sections.append(f"- Inventory Turnover: {inventory_turnover:.2f}x")
+    #     if receivables_turnover:
+    #         sections.append(f"- Receivables Turnover: {receivables_turnover:.2f}x")
+        
+    #     sections.append(f"\n  Operating Cycle:")
+    #     if days_sales:
+    #         sections.append(f"  - Days Sales Outstanding: {days_sales:.0f} days")
+    #     if days_inventory:
+    #         sections.append(f"  - Days Inventory Outstanding: {days_inventory:.0f} days")
+    #     if cash_conversion:
+    #         status = "✓ Efficient" if cash_conversion < 60 else "⚠️ Slow"
+    #         sections.append(f"  - Cash Conversion Cycle: {cash_conversion:.0f} days {status}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # DIVIDEND METRICS
+    #     # ═══════════════════════════════════════════════════════════
+    #     dividend_yield = latest.get('dividend_yield', 0)
+    #     payout_ratio = latest.get('payout_ratio', 0)
+        
+    #     if dividend_yield or payout_ratio:
+    #         sections.append(f"\n**💵 Dividend Metrics:**")
+    #         if dividend_yield:
+    #             sections.append(f"- Dividend Yield: {dividend_yield*100:.2f}%")
+    #         if payout_ratio:
+    #             status = "✓ Sustainable" if payout_ratio < 0.6 else "⚠️ High"
+    #             sections.append(f"- Payout Ratio: {payout_ratio*100:.1f}% {status}")
+        
+    #     # ═══════════════════════════════════════════════════════════
+    #     # Overall Financial Health Summary
+    #     # ═══════════════════════════════════════════════════════════
+    #     sections.append(f"\n**🏥 Financial Health Summary:**")
+        
+    #     health_score = 0
+    #     max_score = 0
+        
+    #     # Check liquidity
+    #     if current_ratio:
+    #         max_score += 1
+    #         if current_ratio >= 1.5:
+    #             health_score += 1
+    #             sections.append("✓ Strong liquidity position")
+        
+    #     # Check profitability
+    #     if roe:
+    #         max_score += 1
+    #         if roe >= 0.10:
+    #             health_score += 1
+    #             sections.append("✓ Good return on equity")
+        
+    #     # Check leverage
+    #     if debt_equity:
+    #         max_score += 1
+    #         if debt_equity < 1.0:
+    #             health_score += 1
+    #             sections.append("✓ Conservative debt levels")
+        
+    #     # Check interest coverage
+    #     if interest_coverage:
+    #         max_score += 1
+    #         if interest_coverage >= 3.0:
+    #             health_score += 1
+    #             sections.append("✓ Strong debt service capability")
+        
+    #     if max_score > 0:
+    #         health_pct = (health_score / max_score) * 100
+    #         sections.append(f"\n**Overall Health Score: {health_pct:.0f}% ({health_score}/{max_score} criteria met)**")
+        
+    #     return "\n".join(sections)
+
     @staticmethod
     def format_financial_ratios(data: Dict[str, Any]) -> str:
         """
-        Format financial ratios data for LLM
-        
-        Args:
-            data: Financial ratios data from GetFinancialRatiosTool
-            
-        Returns:
-            Formatted text for LLM consumption
+        Format Financial Ratios
+        ✅ FIXED: Reads from grouped dictionaries (valuation_ratios, etc.) instead of 'latest_period'
         """
         if not data:
             return "No financial ratios data available"
         
         sections = []
         symbol = data.get('symbol', 'N/A')
-        period_type = data.get('period_type', 'annual')
+        period_type = data.get('period', 'annual')
         
         sections.append(f"📊 FINANCIAL RATIOS - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
         
-        latest = data.get('latest_period', {})
+        # Check groups existence
+        val = data.get('valuation_ratios', {})
+        prof = data.get('profitability_ratios', {})
+        liq = data.get('liquidity_ratios', {})
+        lev = data.get('leverage_ratios', {})
+        eff = data.get('efficiency_ratios', {})
+        div = data.get('dividend_metrics', {})
         
-        if not latest:
-            return "No financial ratios periods available"
-        
+        if not val and not prof:
+             return "No financial ratios periods available"
+
+        # Helper to format float safely
+        def fmt(value, suffix=""):
+            try:
+                if value is None: return "N/A"
+                return f"{float(value):.2f}{suffix}"
+            except: return "N/A"
+
         # ═══════════════════════════════════════════════════════════
-        # Header Info
+        # VALUATION RATIOS
         # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
-        
-        # ═══════════════════════════════════════════════════════════
-        # LIQUIDITY RATIOS
-        # ═══════════════════════════════════════════════════════════
-        current_ratio = latest.get('current_ratio', 0)
-        quick_ratio = latest.get('quick_ratio', 0)
-        cash_ratio = latest.get('cash_ratio', 0)
-        
-        sections.append(f"\n**💧 Liquidity Ratios:**")
-        if current_ratio:
-            status = "✓ Strong" if current_ratio >= 2.0 else "⚠️ Weak" if current_ratio < 1.0 else "○ Adequate"
-            sections.append(f"- Current Ratio: {current_ratio:.2f} {status}")
-        if quick_ratio:
-            status = "✓ Strong" if quick_ratio >= 1.0 else "⚠️ Weak"
-            sections.append(f"- Quick Ratio: {quick_ratio:.2f} {status}")
-        if cash_ratio:
-            sections.append(f"- Cash Ratio: {cash_ratio:.2f}")
+        sections.append(f"\n**📈 Valuation Ratios:**")
+        if val:
+            sections.append(f"- P/E Ratio: {fmt(val.get('pe_ratio'))}")
+            sections.append(f"- P/B Ratio: {fmt(val.get('pb_ratio'))}")
+            sections.append(f"- PEG Ratio: {fmt(val.get('peg_ratio'))}")
+            sections.append(f"- EV/EBITDA: {fmt(val.get('ev_ebitda'))}")
         
         # ═══════════════════════════════════════════════════════════
         # PROFITABILITY RATIOS
         # ═══════════════════════════════════════════════════════════
-        gross_margin = latest.get('gross_profit_margin', 0)
-        operating_margin = latest.get('operating_profit_margin', 0)
-        net_margin = latest.get('net_profit_margin', 0)
-        ebitda_margin = latest.get('ebitda_margin', 0)
-        roe = latest.get('return_on_equity', 0)
-        roa = latest.get('return_on_assets', 0)
-        roic = latest.get('return_on_capital_employed', 0)
-        
         sections.append(f"\n**💰 Profitability Ratios:**")
-        if gross_margin:
-            sections.append(f"- Gross Profit Margin: {gross_margin*100:.1f}%")
-        if operating_margin:
-            sections.append(f"- Operating Profit Margin: {operating_margin*100:.1f}%")
-        if net_margin:
-            sections.append(f"- Net Profit Margin: {net_margin*100:.1f}%")
-        if ebitda_margin:
-            sections.append(f"- EBITDA Margin: {ebitda_margin*100:.1f}%")
-        
-        sections.append(f"\n  Return Metrics:")
-        if roe:
-            status = "✓ Excellent" if roe >= 0.15 else "○ Good" if roe >= 0.10 else "⚠️ Weak"
-            sections.append(f"  - Return on Equity (ROE): {roe*100:.1f}% {status}")
-        if roa:
-            sections.append(f"  - Return on Assets (ROA): {roa*100:.1f}%")
-        if roic:
-            sections.append(f"  - Return on Capital Employed: {roic*100:.1f}%")
-        
+        if prof:
+            # Convert decimal to %
+            def fmt_pct(val): 
+                try: return f"{float(val)*100:.1f}%" if val is not None else "N/A"
+                except: return "N/A"
+
+            sections.append(f"- ROE: {fmt_pct(prof.get('roe'))}")
+            sections.append(f"- ROA: {fmt_pct(prof.get('roa'))}")
+            sections.append(f"- Net Margin: {fmt_pct(prof.get('net_margin'))}")
+            sections.append(f"- Gross Margin: {fmt_pct(prof.get('gross_margin'))}")
+
         # ═══════════════════════════════════════════════════════════
-        # LEVERAGE RATIOS
+        # LIQUIDITY & LEVERAGE
         # ═══════════════════════════════════════════════════════════
-        debt_equity = latest.get('debt_equity_ratio', 0)
-        debt_ratio = latest.get('debt_ratio', 0)
-        interest_coverage = latest.get('interest_coverage', 0)
-        
-        sections.append(f"\n**⚖️ Leverage Ratios:**")
-        if debt_equity:
-            status = "✓ Low leverage" if debt_equity < 0.5 else "⚠️ High leverage" if debt_equity > 2.0 else "○ Moderate"
-            sections.append(f"- Debt/Equity Ratio: {debt_equity:.2f} {status}")
-        if debt_ratio:
-            sections.append(f"- Debt Ratio: {debt_ratio:.2f}")
-        if interest_coverage:
-            status = "✓ Strong" if interest_coverage >= 3.0 else "⚠️ Weak"
-            sections.append(f"- Interest Coverage: {interest_coverage:.2f}x {status}")
-        
+        sections.append(f"\n**⚖️ Health & Liquidity:**")
+        if liq:
+            sections.append(f"- Current Ratio: {fmt(liq.get('current_ratio'))}")
+            sections.append(f"- Quick Ratio: {fmt(liq.get('quick_ratio'))}")
+        if lev:
+            sections.append(f"- Debt/Equity: {fmt(lev.get('debt_to_equity'))}")
+            sections.append(f"- Interest Coverage: {fmt(lev.get('interest_coverage'))}x")
+
         # ═══════════════════════════════════════════════════════════
-        # VALUATION RATIOS
+        # DIVIDENDS (Optional)
         # ═══════════════════════════════════════════════════════════
-        pe_ratio = latest.get('price_earnings_ratio', 0)
-        pb_ratio = latest.get('price_to_book_ratio', 0)
-        ps_ratio = latest.get('price_to_sales_ratio', 0)
-        peg_ratio = latest.get('price_earnings_to_growth_ratio', 0)
-        ev_ebitda = latest.get('enterprise_value_multiple', 0)
-        
-        sections.append(f"\n**📈 Valuation Ratios:**")
-        if pe_ratio:
-            sections.append(f"- P/E Ratio: {pe_ratio:.2f}")
-        if pb_ratio:
-            sections.append(f"- P/B Ratio: {pb_ratio:.2f}")
-        if ps_ratio:
-            sections.append(f"- P/S Ratio: {ps_ratio:.2f}")
-        if peg_ratio:
-            status = "✓ Undervalued" if 0 < peg_ratio < 1 else "⚠️ Overvalued" if peg_ratio > 2 else "○ Fair"
-            sections.append(f"- PEG Ratio: {peg_ratio:.2f} {status}")
-        if ev_ebitda:
-            sections.append(f"- EV/EBITDA: {ev_ebitda:.2f}")
-        
+        if div and div.get('yield'):
+             sections.append(f"\n**💵 Dividends:**")
+             sections.append(f"- Yield: {float(div.get('yield', 0))*100:.2f}%")
+
         # ═══════════════════════════════════════════════════════════
-        # EFFICIENCY RATIOS
+        # Overall Health Summary (Simple logic)
         # ═══════════════════════════════════════════════════════════
-        asset_turnover = latest.get('asset_turnover', 0)
-        inventory_turnover = latest.get('inventory_turnover', 0)
-        receivables_turnover = latest.get('receivables_turnover', 0)
-        days_sales = latest.get('days_sales_outstanding', 0)
-        days_inventory = latest.get('days_inventory_outstanding', 0)
-        cash_conversion = latest.get('cash_conversion_cycle', 0)
+        score = 0
+        if prof.get('roe', 0) and prof.get('roe') > 0.15: score += 1
+        if prof.get('net_margin', 0) and prof.get('net_margin') > 0.15: score += 1
+        if lev.get('debt_to_equity', 10) and lev.get('debt_to_equity') < 1.0: score += 1
+        if liq.get('current_ratio', 0) and liq.get('current_ratio') > 1.5: score += 1
         
-        sections.append(f"\n**⚙️ Efficiency Ratios:**")
-        if asset_turnover:
-            sections.append(f"- Asset Turnover: {asset_turnover:.2f}x")
-        if inventory_turnover:
-            sections.append(f"- Inventory Turnover: {inventory_turnover:.2f}x")
-        if receivables_turnover:
-            sections.append(f"- Receivables Turnover: {receivables_turnover:.2f}x")
-        
-        sections.append(f"\n  Operating Cycle:")
-        if days_sales:
-            sections.append(f"  - Days Sales Outstanding: {days_sales:.0f} days")
-        if days_inventory:
-            sections.append(f"  - Days Inventory Outstanding: {days_inventory:.0f} days")
-        if cash_conversion:
-            status = "✓ Efficient" if cash_conversion < 60 else "⚠️ Slow"
-            sections.append(f"  - Cash Conversion Cycle: {cash_conversion:.0f} days {status}")
-        
-        # ═══════════════════════════════════════════════════════════
-        # DIVIDEND METRICS
-        # ═══════════════════════════════════════════════════════════
-        dividend_yield = latest.get('dividend_yield', 0)
-        payout_ratio = latest.get('payout_ratio', 0)
-        
-        if dividend_yield or payout_ratio:
-            sections.append(f"\n**💵 Dividend Metrics:**")
-            if dividend_yield:
-                sections.append(f"- Dividend Yield: {dividend_yield*100:.2f}%")
-            if payout_ratio:
-                status = "✓ Sustainable" if payout_ratio < 0.6 else "⚠️ High"
-                sections.append(f"- Payout Ratio: {payout_ratio*100:.1f}% {status}")
-        
-        # ═══════════════════════════════════════════════════════════
-        # Overall Financial Health Summary
-        # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**🏥 Financial Health Summary:**")
-        
-        health_score = 0
-        max_score = 0
-        
-        # Check liquidity
-        if current_ratio:
-            max_score += 1
-            if current_ratio >= 1.5:
-                health_score += 1
-                sections.append("✓ Strong liquidity position")
-        
-        # Check profitability
-        if roe:
-            max_score += 1
-            if roe >= 0.10:
-                health_score += 1
-                sections.append("✓ Good return on equity")
-        
-        # Check leverage
-        if debt_equity:
-            max_score += 1
-            if debt_equity < 1.0:
-                health_score += 1
-                sections.append("✓ Conservative debt levels")
-        
-        # Check interest coverage
-        if interest_coverage:
-            max_score += 1
-            if interest_coverage >= 3.0:
-                health_score += 1
-                sections.append("✓ Strong debt service capability")
-        
-        if max_score > 0:
-            health_pct = (health_score / max_score) * 100
-            sections.append(f"\n**Overall Health Score: {health_pct:.0f}% ({health_score}/{max_score} criteria met)**")
-        
+        health_status = "Excellent" if score == 4 else "Good" if score >= 2 else "Neutral"
+        sections.append(f"\n**🏥 Quick Health Check:** {health_status} ({score}/4 checks passed)")
+
         return "\n".join(sections)
     
     @staticmethod
@@ -2593,6 +2763,140 @@ class FinancialDataFormatter:
     
 
     @staticmethod
+    def format_stock_performance(data: Dict[str, Any]) -> str:
+        """
+        Format stock performance data (Atomic Tool)
+        Structure: { 'timeframes': {'1_day': ...}, 'momentum_trend': ... }
+        """
+        if not data:
+            return "No performance data available"
+
+        symbol = data.get('symbol', 'Unknown')
+        timeframes = data.get('timeframes', {})
+        
+        # Header
+        sections = []
+        trend = data.get('momentum_trend', 'neutral').replace('_', ' ').title()
+        
+        # Emoji cho trend
+        trend_emoji = "🚀" if "Up" in trend else "🔻" if "Down" in trend else "➡️"
+        
+        sections.append(f"🚀 PERFORMANCE - {symbol}")
+        sections.append("═" * 60)
+        sections.append(f"**Momentum Trend:** {trend_emoji} {trend}")
+        sections.append("")
+
+        if not timeframes:
+            return "\n".join(sections) + "\nNo timeframe data found."
+
+        # Định nghĩa thứ tự hiển thị mong muốn
+        display_order = [
+            ('1_day', '1 Day'),
+            ('1_week', '1 Week'),
+            ('1_month', '1 Month'),
+            ('3_months', '3 Months'),
+            ('6_months', '6 Months'),
+            ('ytd', 'Year to Date'),
+            ('1_year', '1 Year'),
+            ('3_years', '3 Years'),
+            ('5_years', '5 Years')
+        ]
+
+        rows = []
+        for key, label in display_order:
+            if key in timeframes:
+                metric = timeframes[key]
+                # Hỗ trợ cả cấu trúc cũ (trực tiếp) và mới (nested dict)
+                if isinstance(metric, dict):
+                    pct = metric.get('return_percent', 0)
+                else:
+                    pct = float(metric)
+
+                # Format màu sắc
+                emoji = "🟢" if pct >= 0 else "🔴"
+                rows.append(f"{emoji} {label.ljust(12)}: {pct:+.2f}%")
+
+        sections.append("\n".join(rows))
+        
+        # Best/Worst (Optional)
+        best = data.get('best_timeframe')
+        worst = data.get('worst_timeframe')
+        if best and worst:
+            sections.append("")
+            sections.append(f"🏆 Best: {best.replace('_', ' ').title()} ({data.get('best_return', 0):+.2f}%)")
+            sections.append(f"⚠️ Worst: {worst.replace('_', ' ').title()} ({data.get('worst_return', 0):+.2f}%)")
+
+        return "\n".join(sections)
+    
+
+    @staticmethod
+    def format_price_targets(data: Dict[str, Any]) -> str:
+        """
+        Format analyst price targets & ratings
+        ✅ UPDATED: Supports breakdown, median target, and rich formatting
+        """
+        if not data:
+            return "No analyst targets available"
+
+        symbol = data.get('symbol', 'Unknown')
+        
+        # 1. Header
+        sections = []
+        sections.append(f"🎯 PRICE TARGETS - {symbol}")
+        sections.append("═" * 60)
+
+        # 2. Consensus Overview
+        consensus = data.get('consensus_target', 0)
+        current = data.get('current_price')
+        upside = data.get('upside_potential_pct', 0)
+        
+        # Chọn emoji dựa trên upside
+        trend = "🚀" if upside > 15 else "📈" if upside > 0 else "📉"
+        
+        sections.append(f"**Consensus Target:** ${consensus:,.2f} {trend}")
+        if current:
+            sections.append(f"**Current Price:** ${current:,.2f}")
+        
+        if upside is not None:
+            sections.append(f"**Upside Potential:** {upside:+.2f}%")
+
+        # 3. Analyst Ratings (Rich Data)
+        avg_rating = data.get('average_rating', 'N/A')
+        count = data.get('analyst_count', 0)
+        
+        sections.append(f"\n**👨‍💼 Analyst Sentiment:**")
+        sections.append(f"- Rating: **{avg_rating}** ({count} analysts)")
+        
+        # Breakdown chi tiết (nếu có)
+        breakdown = data.get('rating_breakdown', {})
+        if breakdown and isinstance(breakdown, dict):
+            # Tạo thanh hiển thị phân bổ: [Strong Buy: 15, Buy: 10...]
+            parts = []
+            if breakdown.get('strong_buy'): parts.append(f"Strong Buy: {breakdown['strong_buy']}")
+            if breakdown.get('buy'): parts.append(f"Buy: {breakdown['buy']}")
+            if breakdown.get('hold'): parts.append(f"Hold: {breakdown['hold']}")
+            if breakdown.get('sell'): parts.append(f"Sell: {breakdown['sell']}")
+            if breakdown.get('strong_sell'): parts.append(f"Strong Sell: {breakdown['strong_sell']}")
+            
+            if parts:
+                sections.append(f"- Breakdown: [{', '.join(parts)}]")
+
+        # 4. Target Range Detail
+        low = data.get('low_target', 0)
+        high = data.get('high_target', 0)
+        median = data.get('median_target') # Tool mới có trường này
+        
+        sections.append(f"\n**🎯 Target Range:**")
+        range_str = f"Low: ${low:,.2f}"
+        if median:
+            range_str += f"  |  Median: ${median:,.2f}"
+        range_str += f"  |  High: ${high:,.2f}"
+        
+        sections.append(range_str)
+
+        return "\n".join(sections)
+    
+    @staticmethod
     def _format_generic_data(tool_name: str, data: Dict[str, Any]) -> str:
         """
         Fallback formatter for tools without specific format method
@@ -2662,8 +2966,8 @@ class FinancialDataFormatter:
         FORMATTER_MAP = {
             # ═══ PRICE & PERFORMANCE (3 tools) ═══
             'getStockPrice': FinancialDataFormatter.format_price_data,
-            'getStockPerformance': FinancialDataFormatter.format_price_data,
-            'getPriceTargets': FinancialDataFormatter.format_price_data,
+            'getStockPerformance': FinancialDataFormatter.format_stock_performance,
+            'getPriceTargets': FinancialDataFormatter.format_price_targets,
             
             # ═══ TECHNICAL ANALYSIS (4 tools) ═══
             'getTechnicalIndicators': FinancialDataFormatter.format_technical_indicators_data,
@@ -2696,6 +3000,9 @@ class FinancialDataFormatter:
             'getMarketBreadth': FinancialDataFormatter.format_market_breadth,  # ✅ NEW!
             'getStockHeatmap': FinancialDataFormatter.format_stock_heatmap,  # ✅ NEW!
             'getMarketNews': FinancialDataFormatter.format_news_data,  # Reuse existing
+            'getTopGainers': FinancialDataFormatter.format_market_movers,
+            'getTopLosers': FinancialDataFormatter.format_market_movers,
+            'getMostActives': FinancialDataFormatter.format_market_movers,
             
             # ═══ SCREENING (1 tool) ═══
             'stockScreener': FinancialDataFormatter.format_screener_results,  # ✅ NEW!

@@ -1,22 +1,3 @@
-# File: src/agents/tools/technical/get_support_resistance.py
-
-"""
-GetSupportResistanceTool - Atomic Tool for Support/Resistance Levels
-
-Responsibility: Tính toán các mức support và resistance quan trọng
-- Pivot points (Classic method: P, R1/R2/R3, S1/S2/S3)
-- Swing highs/lows (local maxima/minima với clustering)
-- Key moving average levels (dynamic S/R)
-
-KHÔNG BAO GỒM:
-- ❌ Current price (use getStockPrice)
-- ❌ Technical indicators (use getTechnicalIndicators)
-- ❌ Volume analysis (use getVolumeProfile)
-
-Data Source: Self-calculated from FMP historical data
-Calculation Methods: Pivot Points + Swing High/Low Detection
-"""
-
 import httpx
 import logging
 import numpy as np

@@ -1,5 +1,3 @@
-# File: src/agents/tools/fundamentals/_financial_base.py
-
 """
 Base class for all fundamental analysis tools
 

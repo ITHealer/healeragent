@@ -5,6 +5,7 @@ import os
 import asyncio
 import logging
 from pathlib import Path
+import re  # Added re explicitly for regex operations
 
 from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, AIMessage
@@ -15,6 +16,7 @@ import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
 # Import existing tools
+# Import các công cụ tìm kiếm và xử lý nội dung từ thư viện có sẵn
 from src.news_agent.tools.tavily_tools import tavily_extract_content
 from src.news_agent.tools.tavily_tools import (
     tavily_search, 
@@ -24,6 +26,7 @@ from src.news_agent.tools.tavily_tools import (
 )
 
 # Import content processor for article/video processing
+# Import bộ xử lý nội dung để tách văn bản từ bài viết hoặc video
 from src.handlers.content_processor import ContentProcessor, ContentTypeDetector
 
 # ========================
@@ -34,6 +37,7 @@ LOG_DIR.mkdir(exist_ok=True)
 
 def setup_logger(name: str, log_file: str, level=logging.INFO):
     """Setup a logger with file and console handlers"""
+    # Cấu hình logger để ghi log ra file và console
     logger = logging.getLogger(name)
     logger.setLevel(level)
     
@@ -58,6 +62,7 @@ def setup_logger(name: str, log_file: str, level=logging.INFO):
     return logger
 
 # Setup component loggers
+# Khởi tạo các logger cho từng thành phần
 tavily_logger = setup_logger('tavily', 'tavily_searches.log')
 processor_logger = setup_logger('content_processor', 'content_processing.log')
 agent_logger = setup_logger('news_agent', 'agent_workflow.log')
@@ -65,11 +70,13 @@ error_logger = setup_logger('errors', 'errors.log', logging.ERROR)
 
 
 # Create output directory for summaries
+# Tạo thư mục đầu ra cho các file tóm tắt
 OUTPUT_DIR = "news_crawl_logs"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 # DEFAULT FINANCIAL TOPICS
+# Danh sách các chủ đề tài chính mặc định
 default_news_topics = """
 MARKET OVERVIEW:
   - S&P 500, Nasdaq, Dow Jones daily performance
@@ -120,6 +127,7 @@ TRUSTED FINANCIAL SOURCES:
 
 class NewsIntelligenceState(MessagesState):
     """State with content processor tracking"""
+    # Định nghĩa trạng thái của quy trình LangGraph
     search_count: int = 0
     max_searches: int = 5
     final_summaries: List[Dict[str, Any]] = []
@@ -138,6 +146,7 @@ class NewsIntelligenceState(MessagesState):
 class NewsContentProcessor:
     def __init__(self, api_key: str, model_name: str = "gpt-4.1-nano", provider_type: str = "openai"):
         """Initialize unified processor with provider support"""
+        # Khởi tạo bộ xử lý nội dung với hỗ trợ đa nhà cung cấp LLM
         self.api_key = api_key
         self.model_name = model_name
         self.provider_type = provider_type
@@ -178,22 +187,8 @@ class NewsContentProcessor:
     ) -> Optional[Dict[str, Any]]:
         """
         Process URL and return unified format output
-        
-        Args:
-            url: URL to process
-            target_language: Target language for translation
-            processing_method: "content_processor" or "tavily"
-        
-        Returns dict with standard fields:
-        - title: Article title
-        - url: Original URL
-        - content: Brief summary/snippet (200-300 chars)
-        - full_content: Full extracted content
-        - source: Domain
-        - published_date: Date if available
-        - score: Relevance score (0-1)
-        - processing_method: How it was processed
         """
+        # Xử lý URL và trả về định dạng thống nhất
         
         if not url or not url.startswith("http"):
             self.logger.warning(f"Invalid URL: {url}")
@@ -225,6 +220,7 @@ class NewsContentProcessor:
         target_language: str
     ) -> Optional[Dict[str, Any]]:
         """Process using content processor and format output"""
+        # Xử lý bằng ContentProcessor (sâu hơn)
         
         try:
             self.logger.info(f"Processing with content_processor: {url}")
@@ -270,7 +266,8 @@ class NewsContentProcessor:
             if content_type == "video" and result.get("video_info"):
                 unified_result["video_info"] = result["video_info"]
             
-            self.logger.info(f"✓ Successfully processed with content_processor: {url}")
+            # Removed icon checkmark
+            self.logger.info(f"Successfully processed with content_processor: {url}")
             return unified_result
             
         except Exception as e:
@@ -285,6 +282,7 @@ class NewsContentProcessor:
         target_language: str
     ) -> Optional[Dict[str, Any]]:
         """Process using Tavily extract and format output"""
+        # Xử lý bằng Tavily extract (nhanh hơn)
         
         try:
             self.logger.info(f"Processing with tavily_extract: {url}")
@@ -320,7 +318,8 @@ class NewsContentProcessor:
                 "target_language": target_language
             }
             
-            self.logger.info(f"✓ Successfully processed with tavily: {url}")
+            # Removed icon checkmark
+            self.logger.info(f"Successfully processed with tavily: {url}")
             return unified_result
             
         except Exception as e:
@@ -335,6 +334,7 @@ class NewsContentProcessor:
         processing_method: str = "tavily"  
     ) -> List[Dict[str, Any]]:
         """Process multiple URLs and return unified format"""
+        # Xử lý hàng loạt URL
         
         results = []
         
@@ -359,6 +359,7 @@ class NewsContentProcessor:
     
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL"""
+        # Trích xuất tên miền từ URL
         from urllib.parse import urlparse
         try:
             parsed = urlparse(url)
@@ -371,7 +372,8 @@ async def news_intelligence_agent(state: NewsIntelligenceState) -> dict:
     """Agent with model/provider support"""
     
     agent_logger.info(f"News Agent - Step {state['search_count'] + 1}/{state['max_searches']}")
-    print(f"\n{'='*50}\n🤖 News Agent - Step {state['search_count'] + 1}\n{'='*50}")
+    # Removed robot icon
+    print(f"\n{'='*50}\nNews Agent - Step {state['search_count'] + 1}\n{'='*50}")
     
     model = state.get('model', 'gpt-4.1-nano')
     provider_type = state.get('provider_type', 'openai')
@@ -456,12 +458,14 @@ Call tavily_search now with the suggested query.
     messages = state["messages"]
     invocation_messages = [HumanMessage(content=system_prompt)] + messages
     
-    print(f"🔍 Searching: {suggested_query[:80]}...")
+    # Removed search icon
+    print(f"Searching: {suggested_query[:80]}...")
     
     response = llm_with_tools.invoke(invocation_messages)
     new_search_count = state['search_count'] + 1
     
-    print(f"✓ Search complete. Iteration: {new_search_count}")
+    # Removed checkmark icon
+    print(f"Search complete. Iteration: {new_search_count}")
     
     return {
         "messages": messages + [response],
@@ -472,7 +476,8 @@ Call tavily_search now with the suggested query.
 async def process_content_node(state: NewsIntelligenceState) -> dict:
     """Process content - reuse Tavily search data instead of re-fetching"""
     
-    print("\n📊 Processing News Content...")
+    # Removed graph icon
+    print("\nProcessing News Content...")
     agent_logger.info("Starting unified content processing")
     
     api_key = os.getenv("OPENAI_API_KEY")
@@ -483,9 +488,9 @@ async def process_content_node(state: NewsIntelligenceState) -> dict:
     processing_method = state.get('processing_method', 'tavily')
     model = state.get('model', 'gpt-4.1-nano')
     provider_type = state.get('provider_type', 'openai')
-    # strict_mode = state.get('strict_processing_mode', True)
     
-    print(f"📌 Processing: method={processing_method}, model={model}, provider={provider_type}")
+    # Removed pin icon
+    print(f"Processing: method={processing_method}, model={model}, provider={provider_type}")
     
     url_to_tavily_data = {}  # Store mapping
     urls_to_process = []
@@ -518,10 +523,12 @@ async def process_content_node(state: NewsIntelligenceState) -> dict:
     new_urls = [url for url in urls_to_process if url not in state.get('processed_urls', [])]
     
     if new_urls:
-        print(f"🔄 Processing {len(new_urls)} URLs")
+        # Removed refresh icon
+        print(f"Processing {len(new_urls)} URLs")
 
         if processing_method == "tavily":
-            print("  📌 Using Tavily search data (no re-fetch)")
+            # Removed pin icon
+            print("  Using Tavily search data (no re-fetch)")
             
             for idx, url in enumerate(new_urls):
                 tavily_data = url_to_tavily_data.get(url)
@@ -549,10 +556,12 @@ async def process_content_node(state: NewsIntelligenceState) -> dict:
                 state['content_processor_results'].append(unified_result)
                 state['processed_urls'].append(url)
                 
-                print(f"  ✓ [{idx+1}] tavily_search: {unified_result['title'][:50]}...")
+                # Removed checkmark icon
+                print(f"  [{idx+1}] tavily_search: {unified_result['title'][:50]}...")
         
         elif processing_method == "content_processor":
-            print("  📌 Using content_processor for deep extraction")
+            # Removed pin icon
+            print("  Using content_processor for deep extraction")
             
             unified_processor = NewsContentProcessor(
                 api_key=api_key,
@@ -570,7 +579,8 @@ async def process_content_node(state: NewsIntelligenceState) -> dict:
                 if result and not result.get('error'):
                     state['content_processor_results'].append(result)
                     state['processed_urls'].append(url)
-                    print(f"  ✓ [{idx+1}] content_processor: {result['title'][:50]}...")
+                    # Removed checkmark icon
+                    print(f"  [{idx+1}] content_processor: {result['title'][:50]}...")
                 else:
                     error_msg = result.get('error', 'Unknown error') if result else 'Processing failed'
                     print(f"[{idx+1}] ERROR: {error_msg}")
@@ -591,21 +601,24 @@ async def process_content_node(state: NewsIntelligenceState) -> dict:
                             "target_language": state.get('target_language', 'en')
                         }
                         state['content_processor_results'].append(fallback_result)
-                        print(f"  ⟲ [{idx+1}] Fallback to Tavily: {fallback_result['title'][:50]}...")
+                        # Removed fallback/reload icon
+                        print(f"  Fallback to Tavily: {fallback_result['title'][:50]}...")
         
         else:
             print(f"Unknown processing method: {processing_method}")
     
     else:
-        print("📌 No new URLs to process")
+        # Removed pin icon
+        print("No new URLs to process")
     
     return state
 
 
 async def synthesis_agent(state: NewsIntelligenceState) -> dict:
     """synthesis with professional investor-focused format"""
-
-    print(f"\n{'='*50}\n🔬 Professional News Synthesis\n{'='*50}")
+    
+    # Removed microscope icon
+    print(f"\n{'='*50}\nProfessional News Synthesis\n{'='*50}")
     agent_logger.info("Starting enhanced news synthesis")
 
     model = state.get('model', 'gpt-4.1-nano')
@@ -627,7 +640,8 @@ async def synthesis_agent(state: NewsIntelligenceState) -> dict:
     all_articles = state.get('content_processor_results', [])
     
     if not all_articles:
-        print("⚠️ No articles found")
+        # Removed warning icon
+        print("No articles found")
         return {"final_summaries": []}
     
     # Deduplicate
@@ -665,7 +679,7 @@ async def synthesis_agent(state: NewsIntelligenceState) -> dict:
         if not content:
             continue
         
-        # Generate professional formatted summary
+        # Generate professional formatted summary (NO ICONS IN PROMPT)
         summary_prompt = f"""
 You are a senior financial analyst creating a comprehensive news digest for sophisticated investors.
 Analyze this article and create a PROFESSIONAL INVESTMENT-FOCUSED summary in {target_lang_name}.
@@ -684,23 +698,23 @@ Content: {content[:4000]}
 
 Create a structured summary in {target_lang_name} following this EXACT format:
 
-## 📊 [Translate "HEADLINE" to {target_lang_name}]
+## [Translate "HEADLINE" to {target_lang_name}]
 [Create a clear, factual headline - NO clickbait, 10-15 words max]
 
-## 📅 [Translate "SOURCE INFO" to {target_lang_name}]
+## [Translate "SOURCE INFO" to {target_lang_name}]
 [Source Name] • [YYYY-MM-DD] • [Author if available]
 
-## ⚡ [Translate "TL;DR" to {target_lang_name}] 
+## [Translate "TL;DR" to {target_lang_name}] 
 [Core value/impact in 1-2 concise sentences - what investors MUST know]
 
-## 🎯 [Translate "KEY POINTS" to {target_lang_name}]
+## [Translate "KEY POINTS" to {target_lang_name}]
 • **Point 1**: [Key fact with **bold numbers** like **$2.3B** or **+15.4%**]
 • **Point 2**: [Another crucial point with **bold metrics**]
 • **Point 3**: [Third point if significant]
 • **Point 4**: [Fourth point if needed]
 [Maximum 6 bullet points, each under 20 words]
 
-## 💹 [Translate "MARKET IMPACT" to {target_lang_name}]
+## [Translate "MARKET IMPACT" to {target_lang_name}]
 
 ### [Translate "Equities" to {target_lang_name}]
 • **Immediate**: [How stocks react today/tomorrow]
@@ -717,25 +731,25 @@ Create a structured summary in {target_lang_name} following this EXACT format:
 • **Dollar**: [USD/DXY impact]
 • **Commodities**: [Gold/Oil if relevant]
 
-## 🏷️ [Translate "TICKERS & SECTORS" to {target_lang_name}]
+## [Translate "TICKERS & SECTORS" to {target_lang_name}]
 **Mentioned**: [AAPL, NVDA, BTC, ETH, SPY, etc.]
 **Sectors**: [Technology, Finance, Energy, etc.]
 
-## 📈 [Translate "SENTIMENT & RISK" to {target_lang_name}]
-**Market Sentiment**: [Bullish 🟢 / Neutral 🟡 / Bearish 🔴]
+## [Translate "SENTIMENT & RISK" to {target_lang_name}]
+**Market Sentiment**: [Bullish / Neutral / Bearish]
 **Confidence Level**: [High/Medium/Low]
 **Key Risks**: [Main uncertainty or risk factor]
 
-## 👁️ [Translate "WATCHLIST" to {target_lang_name}] (Not investment advice)
+## [Translate "WATCHLIST" to {target_lang_name}] (Not investment advice)
 1. **Watch**: [Specific level/event to monitor]
 2. **Track**: [Data release or catalyst]
 3. **Alert**: [Price level or indicator]
 [Maximum 5 items]
 
-## 💬 [Translate "NOTABLE QUOTE" to {target_lang_name}]
+## [Translate "NOTABLE QUOTE" to {target_lang_name}]
 "{"{"}[Most impactful quote under 25 words]{"}"}" - [Source Name]
 
-## 🔗 [Translate "SOURCES" to {target_lang_name}]
+## [Translate "SOURCES" to {target_lang_name}]
 • Original: {article['url']}
 
 IMPORTANT RULES:
@@ -744,16 +758,18 @@ IMPORTANT RULES:
 3. Be specific with tickers and price levels
 4. NO generic statements - only actionable insights
 5. Format dates as YYYY-MM-DD
-6. If article mentions video content, add "📹 Video Insights" section
+6. If article mentions video content, add "Video Insights" section
 7. Write everything in {target_lang_name}
 8. Focus on what matters for trading/investing decisions
+9. DO NOT use emojis or icons in the output.
 
 Create the summary now in {target_lang_name}:"""
         
         try:
             response = await llm.ainvoke(summary_prompt)
             formatted_summary = response.content
-            print(f"  ✓ Generated professional summary")
+            # Removed checkmark icon
+            # print(f"  Generated professional summary")
             
             # Parse the formatted summary to extract structured data
             structured_data = parse_formatted_summary(formatted_summary, article)
@@ -812,20 +828,24 @@ Create the summary now in {target_lang_name}:"""
     # with open(summary_path, 'w', encoding='utf-8') as f:
     #     json.dump(final_summaries, f, indent=2, ensure_ascii=False)
     
-    print(f"\n💾 Saved {len(final_summaries)} professional summaries")
-    print(f"🌐 HTML: {html_path}")
+    # Removed disk icon
+    # print(f"\nSaved {len(final_summaries)} professional summaries")
+    # # Removed globe icon
+    # print(f"HTML: {html_path}")
     
     # Print summary statistics
-    print("\n📈 Processing Statistics:")
-    print(f"  - Total articles: {len(final_summaries)}")
-    print(f"  - With structured data: {sum(1 for s in final_summaries if s.get('structured_data'))}")
-    print(f"  - Videos included: {sum(1 for s in final_summaries if s.get('has_video'))}")
+    # Removed chart icon
+    # print("\nProcessing Statistics:")
+    # print(f"  - Total articles: {len(final_summaries)}")
+    # print(f"  - With structured data: {sum(1 for s in final_summaries if s.get('structured_data'))}")
+    # print(f"  - Videos included: {sum(1 for s in final_summaries if s.get('has_video'))}")
     
     return {"final_summaries": final_summaries}
 
 
 def route_after_agent(state: NewsIntelligenceState) -> Literal["tools", "process_content", "synthesis"]:
     """Router for workflow"""
+    # Điều hướng sau khi Agent thực thi
     print("Router: Deciding next step...")
     
     if state['search_count'] >= state['max_searches']:
@@ -845,6 +865,7 @@ def route_after_agent(state: NewsIntelligenceState) -> Literal["tools", "process
 
 def deduplicate_news_items(items: List[Dict[str, Any]], threshold: float = 0.85) -> List[Dict[str, Any]]:
     """Deduplicate news items using semantic similarity"""
+    # Loại bỏ tin trùng lặp dựa trên độ tương đồng ngữ nghĩa
     if not items or len(items) <= 1: 
         return items
     
@@ -891,6 +912,7 @@ def deduplicate_news_items(items: List[Dict[str, Any]], threshold: float = 0.85)
 
 def parse_formatted_summary(formatted_text: str, article: Dict) -> Dict[str, Any]:
     """Parse the formatted summary into structured data"""
+    # Phân tích chuỗi tóm tắt thành dữ liệu có cấu trúc (REGEX UPDATED FOR NO ICONS)
     
     structured = {
         "formatted_summary": formatted_text,
@@ -898,26 +920,26 @@ def parse_formatted_summary(formatted_text: str, article: Dict) -> Dict[str, Any
     }
     
     # Extract sections using regex
-    import re
+    # Regex đã được cập nhật để không tìm các icon như ⚡, 🎯, etc.
     
     # Extract TL;DR
-    tldr_match = re.search(r'##\s*⚡\s*TL;DR.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL)
+    tldr_match = re.search(r'##\s*TL;DR.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL | re.IGNORECASE)
     if tldr_match:
         structured["tldr"] = tldr_match.group(1).strip()
     
     # Extract key points
-    key_points_match = re.search(r'##\s*🎯\s*KEY POINTS.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL)
+    key_points_match = re.search(r'##\s*KEY POINTS.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL | re.IGNORECASE)
     if key_points_match:
         points = re.findall(r'•\s*(.*?)(?=\n|$)', key_points_match.group(1))
         structured["key_points"] = [p.strip() for p in points]
     
-    # Extract sentiment
+    # Extract sentiment (Matches words only, no icons)
     sentiment_match = re.search(r'\*\*Market Sentiment\*\*:\s*\[(.*?)\]', formatted_text)
     if sentiment_match:
         sentiment_text = sentiment_match.group(1)
-        if "Bullish" in sentiment_text or "🟢" in sentiment_text:
+        if "Bullish" in sentiment_text:
             structured["sentiment"] = "bullish"
-        elif "Bearish" in sentiment_text or "🔴" in sentiment_text:
+        elif "Bearish" in sentiment_text:
             structured["sentiment"] = "bearish"
         else:
             structured["sentiment"] = "neutral"
@@ -929,7 +951,7 @@ def parse_formatted_summary(formatted_text: str, article: Dict) -> Dict[str, Any
         structured["tickers"] = [t.strip() for t in tickers_text.split(',')]
     
     # Extract watchlist items
-    watchlist_match = re.search(r'##\s*👁️\s*WATCHLIST.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL)
+    watchlist_match = re.search(r'##\s*WATCHLIST.*?\n(.*?)(?=##|\Z)', formatted_text, re.DOTALL | re.IGNORECASE)
     if watchlist_match:
         watchlist_items = re.findall(r'\d+\.\s*\*\*(.*?)\*\*:\s*(.*?)(?=\n|$)', watchlist_match.group(1))
         structured["watchlist"] = [{"action": item[0], "detail": item[1].strip()} for item in watchlist_items]
@@ -947,29 +969,30 @@ def parse_formatted_summary(formatted_text: str, article: Dict) -> Dict[str, Any
 
 def create_fallback_summary(article: Dict, target_language: str) -> Dict[str, Any]:
     """Create a basic structured summary as fallback"""
+    # Tạo tóm tắt dự phòng (loại bỏ icon)
     
     summary_text = f"""
-## 📊 {article['title']}
+## {article['title']}
 
-## 📅 SOURCE INFO
+## SOURCE INFO
 {article['source']} • {article.get('published_date', 'Today')}
 
-## ⚡ TL;DR
-{article.get('content', '')[:150]}...
+## TL;DR
+{article.get('content', '')[:300]}...
 
-## 🎯 KEY POINTS
+## KEY POINTS
 • Article from {article['source']}
 • Processing method: {article['processing_method']}
 • Content type: {article['content_type']}
 
-## 💹 MARKET IMPACT
+## MARKET IMPACT
 Market impact analysis not available in fallback mode.
 
-## 📈 SENTIMENT & RISK
-**Market Sentiment**: [Neutral 🟡]
+## SENTIMENT & RISK
+**Market Sentiment**: [Neutral]
 **Confidence Level**: Low (fallback mode)
 
-## 🔗 SOURCES
+## SOURCES
 • Original: {article['url']}
 """
     
@@ -983,6 +1006,7 @@ Market impact analysis not available in fallback mode.
 
 async def generate_market_overview(summaries: List[Dict], target_language: str, llm) -> Dict[str, Any]:
     """Generate an overall market overview from multiple summaries"""
+    # Tạo tổng quan thị trường từ nhiều bài tóm tắt
     
     # Collect all sentiments and tickers
     all_sentiments = []
@@ -1021,7 +1045,7 @@ async def generate_market_overview(summaries: List[Dict], target_language: str, 
     
     target_lang_name = language_names.get(target_language, "English")
     
-    # Create overview prompt - FULLY IN TARGET LANGUAGE
+    # Create overview prompt - FULLY IN TARGET LANGUAGE - NO ICONS
     overview_prompt = f"""
 Create a COMPREHENSIVE MARKET OVERVIEW summarizing {len(summaries)} news articles.
 Write EVERYTHING in {target_lang_name}, including all headers, titles, and content.
@@ -1034,24 +1058,25 @@ IMPORTANT: Write ALL text in {target_lang_name}, including:
 - The title "MARKET OVERVIEW" should be translated to {target_lang_name}
 - All section headers must be in {target_lang_name}
 - All content must be in {target_lang_name}
+- DO NOT use emojis or icons.
 
 Create the overview following this format (translate each section header to {target_lang_name}):
 
-# 🌍 [Translate "MARKET OVERVIEW" to {target_lang_name}]
+# [Translate "MARKET OVERVIEW" to {target_lang_name}]
 
-## 📊 [Translate "Market Pulse" to {target_lang_name}]
+## [Translate "Market Pulse" to {target_lang_name}]
 [2-3 sentences on overall market direction in {target_lang_name}]
 
-## 🔥 [Translate "Top Movers & Themes" to {target_lang_name}]
+## [Translate "Top Movers & Themes" to {target_lang_name}]
 - [Major trend with tickers in {target_lang_name}]
 - [Second trend in {target_lang_name}]
 - [Third trend in {target_lang_name}]
 
-## ⚠️ [Translate "Key Risks" to {target_lang_name}]
+## [Translate "Key Risks" to {target_lang_name}]
 - [Main risk factor in {target_lang_name}]
 - [Secondary risk in {target_lang_name}]
 
-## 📅 [Translate "What to Watch" to {target_lang_name}]
+## [Translate "What to Watch" to {target_lang_name}]
 - [Key event/data in {target_lang_name}]
 - [Important level in {target_lang_name}]
 
@@ -1114,6 +1139,7 @@ Write everything in {target_lang_name}:"""
 
 def generate_html_report(summaries: List[Dict], output_path: str, target_language: str):
     """Generate an HTML report for better readability"""
+    # Tạo báo cáo HTML (đã loại bỏ icon trong giao diện)
     
     html_content = """
 <!DOCTYPE html>
@@ -1278,9 +1304,9 @@ def generate_html_report(summaries: List[Dict], output_path: str, target_languag
         
         html_content += formatted_html
         
-        # Add source link if not overview
+        # Add source link if not overview (Icon removed)
         if not is_overview and summary.get('url'):
-            html_content += f'<p><a href="{summary["url"]}" target="_blank">🔗 Read Original Article</a></p>'
+            html_content += f'<p><a href="{summary["url"]}" target="_blank">Read Original Article</a></p>'
         
         html_content += '</div>'
     
@@ -1296,11 +1322,13 @@ def generate_html_report(summaries: List[Dict], output_path: str, target_languag
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
     
-    print(f"📝 HTML report saved to: {output_path}")    
+    # Removed memo icon
+    print(f"HTML report saved to: {output_path}")    
 
 # Build workflow
 def create_news_workflow():
     """Create workflow"""
+    # Tạo luồng xử lý (workflow)
     
     tools = [tavily_search, tavily_extract_content, tavily_crawl, tavily_map_site]
     tool_node = ToolNode(tools)

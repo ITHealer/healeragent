@@ -1,15 +1,3 @@
-"""
-Improved Redis Cache Helper with Retry Logic and Better Connection Management
-
-File: src/helpers/redis_cache.py
-
-This file provides fixes for:
-1. Connection timeout issues
-2. Connection pool exhaustion  
-3. "Task exception was never retrieved" errors
-4. Better graceful degradation when Redis is unavailable
-"""
-
 import json
 import asyncio
 from typing import Optional, Any, List, Type, TypeVar, AsyncGenerator
@@ -25,15 +13,10 @@ from src.utils.logger.set_up_log_dataFMP import setup_logger
 logger = setup_logger(__name__, log_level=logging.INFO)
 T = TypeVar("T", bound=BaseModel)
 
-
-# =============================================================================
-# CONFIGURATION - INCREASED TIMEOUTS AND RETRY SETTINGS
-# =============================================================================
-
-# Timeout settings (increased from 5 to handle network latency)
+# Timeout settings 
 REDIS_CONNECT_TIMEOUT = 10  # seconds - was 5
 REDIS_SOCKET_TIMEOUT = 10   # seconds
-REDIS_CLOSE_TIMEOUT = 3     # seconds - for graceful close
+REDIS_CLOSE_TIMEOUT = 8     # seconds - for graceful close
 
 # Connection pool settings
 REDIS_MAX_CONNECTIONS = 50  # Max concurrent connections
@@ -77,8 +60,8 @@ async def _create_redis_connection(
             socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
             socket_timeout=REDIS_SOCKET_TIMEOUT,
             max_connections=REDIS_MAX_CONNECTIONS,
-            retry_on_timeout=True,  # ✅ NEW: Auto retry on timeout
-            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL  # ✅ NEW: Health check
+            retry_on_timeout=True,  
+            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
         )
         return client
     except Exception as e:

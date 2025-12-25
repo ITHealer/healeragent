@@ -24,7 +24,7 @@ from src.models.equity import APIResponse, APIResponseData
 # ============================================================================
 # ROUTER SETUP
 # ============================================================================
-router = APIRouter()
+router = APIRouter(prefix="/company-search")
 
 logger = LoggerMixin().logger
 # Get service instance

@@ -166,7 +166,7 @@ class CollectionManagementService(LoggerMixin):
                         
                         # Check if user is admin (would need user role service)
                         # This is simplified - in real code you'd check admin status
-                        from handlers.user_authorization_handler import UserRoleService
+                        from src.handlers.user_authorization_handler import UserRoleService
                         user_role_service = UserRoleService()
                         return user_role_service.is_admin(user_id, organization_id)
                 

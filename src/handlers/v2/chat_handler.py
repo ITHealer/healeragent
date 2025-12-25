@@ -1,28 +1,3 @@
-# File: src/handlers/v2/chat_handler.py
-"""
-Chat Handler V2 - 7 Phase Pipeline with Working Memory
-
-Architecture based on Claude AI / ChatGPT patterns:
-- Working Memory for task-specific state (scratchpad)
-- Core Memory for long-term user info
-- Context Compaction for long conversations
-- 31 Atomic Tools with semantic planning
-
-Phases:
-1. Load Context (core memory, summary, recent chat, working memory)
-2. Planning (3-stage semantic planning with working memory)
-3. Memory Search (recall, archival if needed)
-4. Tool Execution (save results to working memory)
-5. Context Assembly (NO LLM - organize data for response)
-6. Response Generation (1 LLM call)
-7. Post-processing (save, memory update, clear working memory)
-
-LLM Calls per Request: ~3-5 total
-- Phase 2: 1-2 (classify + plan)
-- Phase 6: 1 (response generation)
-- Phase 7: 0-1 (background memory update)
-"""
-
 import time
 import asyncio
 from datetime import datetime
@@ -42,8 +17,6 @@ from src.helpers.context_assembler import ContextAssembler
 from src.agents.memory.core_memory import CoreMemory
 from src.agents.memory.recursive_summary import RecursiveSummaryManager
 from src.agents.memory.memory_update_agent import MemoryUpdateAgent
-
-# Working Memory - NEW
 from src.agents.memory.working_memory_integration import (
     WorkingMemoryIntegration,
     setup_working_memory_for_request,
@@ -72,8 +45,6 @@ from src.utils.config import settings
 class ChatHandler(LoggerMixin):
     """
     Main Chat Handler with 7-Phase Pipeline and Working Memory
-    
-    Architecture (Claude AI/ChatGPT Pattern):
     ┌─────────────────────────────────────────────────────────────┐
     │  Phase 1: Context Loading (Memory + History + Compaction)   │
     │  Phase 2: Planning (3-stage semantic + working memory)      │
@@ -83,12 +54,6 @@ class ChatHandler(LoggerMixin):
     │  Phase 6: LLM Response Generation                           │
     │  Phase 7: Post-Processing (Background)                      │
     └─────────────────────────────────────────────────────────────┘
-    
-    Key Features:
-    - Working Memory as scratchpad for current task state
-    - NO Replanning Agent (uses simple retry with backoff)
-    - LLM in Phase 6 handles all analysis
-    - Multilingual support (no hardcoded keywords)
     """
     
     # Configuration flags
@@ -112,11 +77,9 @@ class ChatHandler(LoggerMixin):
             self.tool_registry = get_registry()
             tool_count = len(self.tool_registry.get_all_tools())
             categories = list(self.tool_registry.get_summary()['categories'].keys())
-            self.logger.info(
-                f"✅ Tool Registry: {tool_count} tools in {len(categories)} categories"
-            )
+
         except Exception as e:
-            self.logger.error(f"❌ Failed to load registry: {e}")
+            self.logger.error(f"Failed to load registry: {e}")
             self.tool_registry = None
         
         # ====================================================================
@@ -166,8 +129,6 @@ class ChatHandler(LoggerMixin):
         self.chat_service = ChatService()
         self.session_repo = SessionRepository()
         self.insights_extractor = AnalysisInsightsExtractor()
-        
-        self.logger.info("✅ ChatHandler initialized with Working Memory support")
     
     # ========================================================================
     # MAIN ENTRY POINT
@@ -279,7 +240,9 @@ class ChatHandler(LoggerMixin):
                     context_data=context_data,
                     provider_type=provider_type,
                     model_name=model_name,
-                    wm_integration=wm_integration
+                    wm_integration=wm_integration,
+                    user_id=user_id, 
+                    session_id=session_id
                 )
             
             # ================================================================
@@ -406,7 +369,7 @@ class ChatHandler(LoggerMixin):
             needs_compact, stats = self.context_manager.compressor.should_compact(messages)
             
             if needs_compact:
-                self.logger.info(f"[{flow_id}] ⚠️ Context at {stats.usage_percent:.1f}% - Compacting...")
+                self.logger.info(f"[{flow_id}] Context at {stats.usage_percent:.1f}% - Compacting...")
                 
                 # Extract symbols to preserve
                 symbols_to_preserve = current_symbols or self._extract_symbols_heuristic(recent_chat)
@@ -421,7 +384,7 @@ class ChatHandler(LoggerMixin):
                         {"role": m["role"], "content": m["content"]}
                         for m in compaction_result.preserved_messages
                     ]
-                    self.logger.info(f"[{flow_id}] ✅ Compacted: {compaction_result.tokens_saved} tokens saved")
+                    self.logger.info(f"[{flow_id}] Compacted: {compaction_result.tokens_saved} tokens saved")
         
         phase_time = time.time() - phase_start
         self.logger.info(f"[{flow_id}] [PHASE 1] Complete ({phase_time:.2f}s)")
@@ -590,7 +553,9 @@ class ChatHandler(LoggerMixin):
         context_data: Dict[str, Any],
         provider_type: str,
         model_name: str,
-        wm_integration: WorkingMemoryIntegration
+        wm_integration: WorkingMemoryIntegration,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Execute tools and save results to Working Memory
@@ -631,7 +596,9 @@ class ChatHandler(LoggerMixin):
             system_language=plan_data['language'],
             provider_type=provider_type,
             model_name=model_name,
-            flow_id=flow_id
+            flow_id=flow_id,
+            user_id=int(user_id) if user_id else None, 
+            session_id=session_id
         )
         
         task_results = execution_result['task_results']
@@ -875,6 +842,9 @@ IMPORTANT: Analyze ONLY these symbol(s). Do NOT confuse with history!
         phase_start = time.time()
         self.logger.info(f"[{flow_id}] [PHASE 7] Post-Processing...")
         
+        # Get Working Memory context BEFORE clearing
+        working_memory_context = wm_integration.get_context_for_memory_update()
+        
         # Save conversation
         try:
             question_id = self.chat_service.save_user_question(
@@ -915,7 +885,8 @@ IMPORTANT: Analyze ONLY these symbol(s). Do NOT confuse with history!
                 response=response,
                 organization_id=organization_id,
                 provider_type=provider_type,
-                model_name=model_name
+                model_name=model_name,
+                working_memory_context=working_memory_context
             )
         )
         
@@ -923,7 +894,7 @@ IMPORTANT: Analyze ONLY these symbol(s). Do NOT confuse with history!
         if self.think_service:
             stats = self.think_service.get_think_stats()
             if stats['total_calls'] > 0:
-                self.logger.info(f"[{flow_id}] 🧠 Think Tool: {stats['total_calls']} calls")
+                self.logger.info(f"[{flow_id}] Think Tool: {stats['total_calls']} calls")
         
         total_time = time.time() - flow_start
         self.logger.info(f"[{flow_id}] ========== FLOW COMPLETE ({total_time:.2f}s) ==========")
@@ -1211,7 +1182,8 @@ SYMBOLS (comma-separated):"""
         response: str,
         organization_id: Optional[str],
         provider_type: str,
-        model_name: str
+        model_name: str,
+        working_memory_context: Optional[str] = None 
     ):
         """
         Background memory updates
@@ -1224,6 +1196,7 @@ SYMBOLS (comma-separated):"""
                 user_id=user_id,
                 user_message=query,
                 assistant_message=response,
+                working_memory_context=working_memory_context,
                 model_name=model_name,
                 provider_type=provider_type
             )
