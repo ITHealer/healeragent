@@ -527,8 +527,8 @@ class MemoryManager(LoggerMixin):
             # Determine collection
             collection_name = f"archival_{user_id}" if user_id else "global_knowledge"
             
-            # Use memory manager's semantic search
-            memories = await self.memory_manager.search_relevant_memory(
+            # Use semantic search (self is MemoryManager)
+            memories = await self.search_relevant_memory(
                 query=query,
                 collection_name=collection_name,
                 top_k=limit
