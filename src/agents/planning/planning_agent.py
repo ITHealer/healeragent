@@ -13,6 +13,10 @@ from src.agents.planning.task_models import (
     TaskPriority,
     TaskStatus,
 )
+from src.prompts.planning_prompts import (
+    get_planning_prompt_builder,
+    PlanningPromptBuilder
+)
 
 try:
     from src.agents.tools import get_registry
@@ -83,7 +87,10 @@ class PlanningAgent(LoggerMixin):
         # Initialize providers
         self.llm_provider = LLMGeneratorProvider()
         self.api_key = ModelProviderFactory._get_api_key(self.provider_type)
-        
+
+        # Initialize prompt builder
+        self.prompt_builder = get_planning_prompt_builder()
+
         # Initialize tool registry
         self.tool_registry = None
         if ATOMIC_TOOLS_AVAILABLE:
@@ -405,119 +412,16 @@ class PlanningAgent(LoggerMixin):
         core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for basic models with Working Memory"""
-        
         history_text = self._format_history_for_prompt(history, max_messages=4)
-        date_context = self._get_current_date_context()
-        
-        # Build working memory section
-        wm_section = ""
-        if working_memory_context:
-            wm_section = f"""
-WORKING MEMORY (current task state, symbols from previous turns):
-{working_memory_context}
 
-Use this context to understand ongoing tasks and symbol references.
-"""
-        
-        core_memory_section = ""
-        if core_memory:
-            human_block = core_memory.get('human', '')
-            if human_block:
-                # Limit to prevent token overflow
-                human_truncated = human_block[:1000] if len(human_block) > 1000 else human_block
-                core_memory_section = f"""
-USER PROFILE (from Core Memory):
-{human_truncated}
+        prompt = self.prompt_builder.build_classify_prompt(
+            query=query,
+            history_text=history_text,
+            capability="basic",
+            working_memory_context=working_memory_context,
+            core_memory=core_memory
+        )
 
-SYMBOL RESOLUTION FROM USER PROFILE:
-When user says:
-- "my stocks", "các cổ phiếu của tôi", "cổ phiếu yêu thích" → extract symbols from watchlist/portfolio above
-- "tài khoản", "portfolio" → use portfolio symbols
-- References to investments without specific tickers → check user profile
-
-If symbols are found in user profile, include them in the "symbols" output.
-"""
-            
-        prompt = f"""{date_context}
-
-You are a financial query analyzer. Analyze the query semantically.
-
-CURRENT QUERY: {query}
-
-RECENT CONVERSATION:
-{history_text}
-{wm_section}
-{core_memory_section}
-
-YOUR TASK:
-1. Understand what the user is asking about (semantic analysis)
-2. Extract stock symbols if mentioned (explicit or referenced)
-3. Determine which tool categories are needed
-4. Detect the response language
-
-CRITICAL: CONVERSATIONAL DETECTION
-TRUE conversational messages are ONLY:
-- Greetings: hello, hi, xin chào, chào bạn
-- Thanks: thanks, cảm ơn, thank you, ok cảm ơn
-- Bye: goodbye, tạm biệt
-- Simple acknowledgments without any request
-
-IMPORTANT: These are NOT conversational:
-- Asking about past conversations → memory_recall
-- "What did we discuss?" → memory_recall  
-- "What stock did I analyze?" → memory_recall
-- "Tôi vừa hỏi gì?" → memory_recall
-- "Chúng ta đã nói gì về X?" → memory_recall
-
-3. SCREENER: Finding stocks by criteria
-    - If user is looking for stocks that meet certain conditions
-    - Examples:
-        * "Find me stocks haveing market cap > $10B"
-        * "Find me tech stocks with P/E < 20"
-        * "Find me stocks with high dividend yield"
-        * "Find me stocks with high beta"
-    Load "discovery" and other relevant categories such as "fundamentals", "technical", "risk", "price", "news", etc.
-    
-SYMBOL EXTRACTION RULES:
-- Look for uppercase stock tickers: AAPL, MSFT, NVDA, CRM, BTC, ETH
-- Check for reference words that point to previous context
-- Check Working Memory for current symbols in context (or symbols from previous turns)
-- If user refers to "it", "that stock", etc., use symbols from context
-
-CATEGORIES (select based on user intent):
-- price: Stock prices, quotes, performance data
-- technical: Technical indicators, chart patterns, RSI, MACD
-- fundamentals: P/E ratio, financials, earnings, revenue
-- news: News, events, announcements, calendar
-- market: Market overview, indices, trending stocks, top gainers/losers
-- risk: Risk assessment, volatility, stop loss suggestions
-- crypto: Cryptocurrency data (BTC, ETH, etc.)
-- discovery: Stock screening, finding stocks by criteria
-- memory: Recall past conversations, what was discussed, what symbols were mentioned before
-
-QUERY TYPES:
-- stock_specific: Query about specific stock(s)
-- screener: Finding stocks by criteria
-- market_level: Market overview, indices
-- conversational: ONLY greetings, thanks, bye (NO other categories)
-- memory_recall: Asking about past conversations, previous analysis, what was discussed → MUST select "memory" category
-- task_continuation: Continuing a previous task
-
-CRITICAL RULES:
-1. If query asks "what did we discuss", "what stock", "vừa hỏi gì", "đã nói gì" → query_type: "memory_recall", categories: ["memory"]
-2. memory_recall ALWAYS needs categories: ["memory"]
-3. conversational ONLY for greetings/thanks/bye with categories: []
-
-OUTPUT JSON ONLY:
-{{
-  "query_type": "...",
-  "categories": [...],
-  "symbols": [...],
-  "reasoning": "Brief explanation",
-  "response_language": "vi|en"
-}}
-"""
-        
         return await self._call_llm_json(prompt, "Stage1")
     
     async def _classify_intermediate(
@@ -528,98 +432,16 @@ OUTPUT JSON ONLY:
         core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for intermediate models with Working Memory"""
-        
         history_text = self._format_history_for_prompt(history, max_messages=6)
-        date_context = self._get_current_date_context()
-        
-        wm_section = ""
-        if working_memory_context:
-            wm_section = f"""
-<working_memory>
-{working_memory_context}
-</working_memory>
-"""
-        core_memory_section = ""
-        if core_memory:
-            human_block = core_memory.get('human', '')
-            if human_block:
-                human_truncated = human_block[:1000] if len(human_block) > 1000 else human_block
-                core_memory_section = f"""
-<user_profile>
-{human_truncated}
-</user_profile>
 
-<user_profile_instructions>
-Use this to understand user's watchlist, portfolio, and preferences.
-When user references "my stocks", "cổ phiếu của tôi", "favorites" → extract symbols from profile.
-</user_profile_instructions>
-"""
-            
-        prompt = f"""{date_context}
+        prompt = self.prompt_builder.build_classify_prompt(
+            query=query,
+            history_text=history_text,
+            capability="intermediate",
+            working_memory_context=working_memory_context,
+            core_memory=core_memory
+        )
 
-<task>Semantic financial query analysis with context awareness</task>
-
-<query>{query}</query>
-
-<history>
-{history_text}
-</history>
-{wm_section}
-{core_memory_section}
-
-<instructions>
-Analyze the query semantically to understand user intent.
-
-CRITICAL: CONVERSATIONAL vs MEMORY_RECALL
-- Conversational: ONLY greetings (hello, hi, xin chào), thanks (cảm ơn), bye (tạm biệt)
-- Memory Recall: Asking about past conversations, previous analysis, what was discussed
-
-MEMORY RECALL INDICATORS (select categories: ["memory"]):
-- "What did we discuss about X?"
-- "What stock did I ask about?"
-- "Tôi vừa hỏi gì?", "Chúng ta đã nói gì?"
-- "Do you remember our conversation about..."
-- "What symbols did I mention?"
-- Any question about past conversation content
-
-If user asks about previous conversations → query_type: "memory_recall", categories: ["memory"]
-
-STEP 1: Context Check
-- Check Working Memory for current task state
-- Check if this is a continuation of previous query
-- Identify symbols from all sources (query, history, working memory)
-
-STEP 2: Symbol Detection
-- Find explicit stock tickers (uppercase: AAPL, MSFT, NVDA)
-- Detect reference words pointing to context
-- Use symbols from Working Memory if user references "it", "that", etc.
-
-STEP 3: Intent Classification
-- stock_specific: About specific stocks
-- screener: Finding stocks by criteria
-- market_level: Market overview
-- conversational: ONLY greeting/thanks/bye (categories: [])
-- memory_recall: Questions about past conversations (categories: ["memory"])
-- task_continuation: Continuing previous task
-
-STEP 4: Category Selection
-Select based on user intent:
-- price, technical, fundamentals, news, market, risk, crypto, discovery
-- memory: For recalling past conversations, what was discussed
-</instructions>
-
-<output>
-Return JSON:
-{{
-  "query_type": "...",
-  "categories": [...],
-  "symbols": [...],
-  "reasoning": "Semantic analysis explanation",
-  "response_language": "vi|en"
-}}
-</output>
-"""
-        
         return await self._call_llm_json(prompt, "Stage1")
     
     async def _classify_advanced(
@@ -630,111 +452,16 @@ Return JSON:
         core_memory: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Classification for advanced models with CoT and Working Memory"""
-        
         history_text = self._format_history_for_prompt(history, max_messages=6)
-        date_context = self._get_current_date_context()
-        
-        wm_section = ""
-        if working_memory_context:
-            wm_section = f"""
-<working_memory>
-{working_memory_context}
-</working_memory>
-"""
-        core_memory_section = ""
-        if core_memory:
-            human_block = core_memory.get('human', '')
-            if human_block:
-                human_truncated = human_block[:1200] if len(human_block) > 1200 else human_block
-                core_memory_section = f"""
-<user_profile source="core_memory">
-{human_truncated}
-</user_profile>
-"""
-        prompt = f"""{date_context}
 
-<role>Advanced financial query analyzer with context awareness</role>
+        prompt = self.prompt_builder.build_classify_prompt(
+            query=query,
+            history_text=history_text,
+            capability="advanced",
+            working_memory_context=working_memory_context,
+            core_memory=core_memory
+        )
 
-<input>
-<query>{query}</query>
-<history>
-{history_text}
-</history>
-{wm_section}
-{core_memory_section}
-</input>
-
-<instructions>
-Think step-by-step to analyze this query semantically.
-
-CRITICAL FIRST CHECK - DISTINGUISH CAREFULLY:
-1. CONVERSATIONAL (categories: []):
-Is this a simple conversational message?
-- Greetings: hello, hi, xin chào
-- Thanks: thanks, cảm ơn, ok cảm ơn  
-- Bye: goodbye, tạm biệt
-- General chat without financial request
-
-2. MEMORY_RECALL (categories: ["memory"]):
-   - Any question about past conversations
-   - Examples:
-     * "What did we discuss?"
-     * "What stock did I ask about?"
-     * "Tôi vừa hỏi gì?", "Tôi vừa phân tích cổ phiếu nào?"
-     * "Chúng ta đã nói gì về X?"
-     * "Do you remember when we talked about..."
-     * "Kiểm tra lại cuộc trò chuyện trước"
-
-3. SCREENER: Finding stocks by criteria
-    - If user is looking for stocks that meet certain conditions
-    - Examples:
-        * "Find me stocks haveing market cap > $10B"
-        * "Find me tech stocks with P/E < 20"
-        * "Find me stocks with high dividend yield"
-        * "Find me stocks with high beta"
-    Load "discovery" and other relevant categories such as "fundamentals", "technical", "risk", "price", "news", etc.
-
-If user asks about PREVIOUS CONVERSATIONS → memory_recall, NOT conversational!
-
-REASONING PROCESS:
-1. Is this asking about past conversations? → memory_recall with categories: ["memory"]
-2. Is this a continuation of a previous task? Check Working Memory.
-3. What is the user semantically asking about?
-4. Are there explicit stock symbols?
-5. Are there reference words pointing to history or working memory?
-6. What is the underlying intent?
-7. Which tool categories are ACTUALLY needed?
-
-CATEGORIES:
-- price: Stock prices, quotes, performance
-- technical: Technical indicators, chart patterns
-- fundamentals: Financial ratios, earnings
-- news: News, events, calendar
-- market: Market overview, indices, trending stocks, top gainers, top losers, top active
-- risk: Risk assessment, volatility
-- crypto: Cryptocurrency
-- discovery: Stock screening
-- memory: Recall past conversations, what was discussed before
-</instructions>
-
-<output_format>
-First think in [THOUGHT] block, then output JSON:
-
-[THOUGHT]
-... your reasoning ...
-[/THOUGHT]
-```json
-{{
-  "query_type": "stock_specific|screener|market_level|conversational|memory_recall|task_continuation",
-  "categories": ["price", ...],
-  "symbols": ["SYMBOL", ...],
-  "reasoning": "Brief explanation",
-  "response_language": "vi|en"
-}}
-```
-</output_format>
-"""
-        
         return await self._call_llm_json(prompt, "Stage1")
     
     # ========================================================================
@@ -807,50 +534,16 @@ First think in [THOUGHT] block, then output JSON:
     ) -> Dict[str, Any]:
         """
         Thinking layer: Validate if tools are actually needed
-        
+
         Prevents false negatives where LLM says "no tools" for financial queries
         """
-        date_context = self._get_current_date_context()
-        
-        prompt = f"""{date_context}
-
-Validate if external tools are needed for this query.
-
-QUERY: "{query}"
-CLASSIFICATION:
-- Type: {query_type}
-- Categories: {categories}
-- Symbols: {symbols}
-- Reasoning: {reasoning}
-
-CRITICAL KNOWLEDGE:
-You are an AI with a knowledge cutoff. You CANNOT provide:
-- Real-time stock prices
-- Current financial data
-- Recent news
-- Live technical indicators
-- Current market state
-- Past conversation history (need memory tools)
-
-DECISION RULES:
-1. Greeting/Thanks/General Chat → NO tools (just respond naturally)
-2. memory_recall (asking about past conversations) → YES tools (need searchConversationHistory)
-3. Price/quote request with SYMBOL → YES tools (MUST fetch real-time)
-4. Financial analysis with SYMBOL → YES tools (MUST fetch data)
-5. Stock screening → YES tools ((MUST fetch data)
-6. Market overview request → YES tools (MUST fetch current state)
-
-IMPORTANT: 
-- Simple greetings like "thanks", "ok cảm ơn" do NOT need tools!
-- BUT questions like "what did we discuss?" NEED memory tools!
-
-OUTPUT JSON:
-{{
-  "need_tools": true/false,
-  "final_intent": "Clear description of user intent",
-  "reason": "Why tools are or aren't needed"
-}}
-"""
+        prompt = self.prompt_builder.build_thinking_prompt(
+            query=query,
+            query_type=query_type,
+            categories=categories,
+            symbols=symbols,
+            reasoning=reasoning
+        )
         
         try:
             result = await self._call_llm_json(prompt, "Thinking")
@@ -888,184 +581,21 @@ OUTPUT JSON:
     ) -> Dict[str, Any]:
         """
         Stage 3: Create detailed task plan
-        
+
         Shows COMPLETE tool schemas to LLM for accurate planning
         """
-        date_context = self._get_current_date_context()
-        
         tools_text = self._format_tools_for_prompt(available_tools)
-        
         self.logger.info(f"[PLANNING:S3] Tools for LLM: {len(available_tools)}")
-        
-        prompt = f"""{date_context}
 
-<role>Task planner for financial AI assistant. Create execution plans using the available tools.</role>
+        prompt = self.prompt_builder.build_plan_prompt(
+            query=query,
+            query_type=query_type,
+            symbols=symbols,
+            response_language=response_language,
+            validated_intent=validated_intent,
+            tools_text=tools_text
+        )
 
-<input>
-Current Query: {query}
-Type: {query_type}
-Symbols: {symbols if symbols else "None - may need screening"}
-Language: {response_language}
-Intent: {validated_intent}
-</input>
-
-<available_tools>
-{tools_text}
-</available_tools>
-
-<planning_rules>
-1. Use EXACT tool names from available_tools
-2. Match params to tool schema
-3. Strategy: "parallel" for independent tasks, "sequential" for dependent
-4. For tools with "requires_symbol": include {{"symbol": "TICKER"}} in params
-5. For tools without symbol requirement: use appropriate params or {{}}
-6. Each task should be focused and simple
-7. Include all necessary tools for complete analysis
-8. CRYPTO SYMBOL RULE: DO NOT strip the "USD" suffix - it's required for crypto API calls (e.g., "BTCUSD", "ETHUSD")
-
-CRITICAL - SEQUENTIAL DEPENDENCIES:
-When query_type is "screener" or other category and needs follow-up analysis:
-1. Task 1: Run stockScreener (returns symbols) - NO dependencies
-2. Task 2+: 
-   - Use placeholder: "symbol": "<FROM_TASK_1>"
-   - MUST include: "dependencies": [1]
-   
-The placeholder <FROM_TASK_N> will be replaced with actual symbols at execution time.
-If you use a placeholder, you MUST include the corresponding dependency!
-
-WRONG (placeholder without dependency):
-{{"tool_name": "getFinancialRatios", "params": {{"symbol": "<FROM_TASK_1>"}}}}
-"dependencies": []  ← WRONG!
-
-CORRECT (placeholder WITH dependency):
-{{"tool_name": "getFinancialRatios", "params": {{"symbol": "<FROM_TASK_1>"}}}}
-"dependencies": [1]  ← CORRECT!
-</planning_rules>
-
-<tool_category_guide>
-| Category | Tool Pattern | Params Example |
-|----------|--------------|----------------|
-| price | getStockPrice, getStockQuote | {{"symbol": "AAPL"}} |
-| technical | getTechnicalIndicators | {{"symbol": "AAPL", "indicators": ["RSI","MACD"]}} |
-| fundamentals | getFinancialRatios, getGrowthMetrics | {{"symbol": "AAPL"}} |
-| news | getStockNews | {{"symbol": "AAPL", "limit": 5}} |
-| market | getMarketMovers, getSectorPerformance | {{"mover_type": "gainers"}} or {{}} |
-| discovery | stockScreener | {{"sector": "Technology", "country": "US", "limit": 15}} |
-| crypto | getCryptoPrice, getCryptoTechnicals | {{"symbol": "BTC"}} |
-| risk | getRiskMetrics | {{"symbol": "AAPL"}} |
-| memory | searchConversationHistory | {{"query": "...", "limit": 5}} |
-</tool_category_guide>
-
-<screener_mapping>
-When using stockScreener, map user criteria:
-- "công nghệ" / "technology" / "tech" → sector: "Technology"
-- "tài chính" / "financial" → sector: "Financial Services"
-- "y tế" / "healthcare" → sector: "Healthcare"
-- "năng lượng" / "energy" → sector: "Energy"
-- "Mỹ" / "US" / "America" → country: "US"
-- "Việt Nam" / "VN" → country: "VN"
-</screener_mapping>
-
-<examples>
-Example 1 - Screener (discovery):
-Query: "tìm cổ phiếu công nghệ Mỹ"
-Type: screener
-Tools: stockScreener
-```json
-{{"query_intent":"Screen US tech stocks","strategy":"sequential","estimated_complexity":"moderate","symbols":[],"response_language":"vi","reasoning":"Stock screening by sector and country","tasks":[{{"id":1,"description":"Screen US Technology stocks","tools_needed":[{{"tool_name":"stockScreener","params":{{"sector":"Technology","country":"US","is_actively_trading":true,"limit":15}}}}],"expected_data":["symbols","stocks"],"priority":"high","dependencies":[]}}]}}
-```
-
-Example 2 - Price (single symbol):
-Query: "giá AAPL"
-Type: stock_specific
-Tools: getStockPrice
-```json
-{{"query_intent":"Get AAPL price","strategy":"parallel","estimated_complexity":"simple","symbols":["AAPL"],"response_language":"vi","reasoning":"Single price query","tasks":[{{"id":1,"description":"Get AAPL current price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"AAPL"}}}}],"expected_data":["price","change","volume"],"priority":"high","dependencies":[]}}]}}
-```
-
-Example 3 - Crypto Analysis (Keep FULL symbol):
-Query: "Phân tích kỹ thuật BTCUSD"
-Type: stock_specific
-Tools: getCryptoPrice, getCryptoTechnicals
-```json
-{{"query_intent":"Technical analysis for BTCUSD","strategy":"parallel","estimated_complexity":"moderate","symbols":["BTCUSD"],"response_language":"vi","reasoning":"Crypto analysis needs price and technicals - use FULL symbol BTCUSD","tasks":[{{"id":1,"description":"Get BTC current price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"BTCUSD"}}}}],"expected_data":["price","change"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get BTC technical indicators","tools_needed":[{{"tool_name":"getCryptoTechnicals","params":{{"symbol":"BTCUSD","timeframe":"1hour"}}}}],"expected_data":["RSI","MACD","trend"],"priority":"high","dependencies":[]}}]}}
-```
-
-Example 4 - Technical Analysis:
-Query: "phân tích kỹ thuật NVDA"
-Type: stock_specific
-Tools: getStockPrice, getTechnicalIndicators
-```json
-{{"query_intent":"NVDA technical analysis","strategy":"parallel","estimated_complexity":"moderate","symbols":["NVDA"],"response_language":"vi","reasoning":"Need price and technical indicators","tasks":[{{"id":1,"description":"Get NVDA price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"NVDA"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get NVDA technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"NVDA"}}}}],"expected_data":["RSI","MACD","SMA"],"priority":"high","dependencies":[]}}]}}
-```
-
-Example 5 - Full Analysis (multiple categories):
-Query: "phân tích toàn diện MSFT"
-Type: stock_specific
-Tools: getStockPrice, getTechnicalIndicators, getFinancialRatios, getStockNews
-```json
-{{"query_intent":"Comprehensive MSFT analysis","strategy":"parallel","estimated_complexity":"complex","symbols":["MSFT"],"response_language":"vi","reasoning":"Full analysis needs price, technicals, fundamentals, news","tasks":[{{"id":1,"description":"Get MSFT price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"MSFT"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get MSFT technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"MSFT"}}}}],"expected_data":["RSI","MACD"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get MSFT financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"MSFT"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}},{{"id":4,"description":"Get MSFT news","tools_needed":[{{"tool_name":"getStockNews","params":{{"symbol":"MSFT","limit":5}}}}],"expected_data":["news"],"priority":"medium","dependencies":[]}}]}}
-```
-
-Example 6 - Market Overview:
-Query: "thị trường hôm nay thế nào"
-Type: market_level
-Tools: getSectorPerformance, getTopGainers, getTopLosers, getTopActive
-```json
-{{"query_intent":"Today's market overview","strategy":"parallel","estimated_complexity":"moderate","symbols":[],"response_language":"vi","reasoning":"Market overview needs sector performance and top movers","tasks":[{{"id":1,"description":"Get sector performance","tools_needed":[{{"tool_name":"getSectorPerformance","params":{{}}}}],"expected_data":["sectors"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get top gainers","tools_needed":[{{"tool_name":"getTopGainers","params":{{"limit":5}}}}],"expected_data":["gainers"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get top losers","tools_needed":[{{"tool_name":"getTopLosers","params":{{"limit":5}}}}],"expected_data":["losers"],"priority":"high","dependencies":[]}},{{"id":4,"description":"Get top active stocks","tools_needed":[{{"tool_name":"getTopActive","params":{{"limit":5}}}}],"expected_data":["active_stocks"],"priority":"medium","dependencies":[]}}]}}
-```
-
-Example 7 - Crypto:
-Query: "giá BTC và ETH"
-Type: stock_specific
-Tools: getCryptoPrice
-```json
-{{"query_intent":"Get BTC and ETH prices","strategy":"parallel","estimated_complexity":"simple","symbols":["BTC","ETH"],"response_language":"vi","reasoning":"Crypto price query","tasks":[{{"id":1,"description":"Get BTC price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"BTC"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get ETH price","tools_needed":[{{"tool_name":"getCryptoPrice","params":{{"symbol":"ETH"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}}]}}
-```
-
-Example 8 - Compare stocks:
-Query: "so sánh AAPL và MSFT"
-Type: stock_specific
-Tools: getStockPrice, getFinancialRatios
-```json
-{{"query_intent":"Compare AAPL vs MSFT","strategy":"parallel","estimated_complexity":"moderate","symbols":["AAPL","MSFT"],"response_language":"vi","reasoning":"Compare needs price and fundamentals for both","tasks":[{{"id":1,"description":"Get AAPL price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"AAPL"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get MSFT price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"MSFT"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get AAPL financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"AAPL"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}},{{"id":4,"description":"Get MSFT financials","tools_needed":[{{"tool_name":"getFinancialRatios","params":{{"symbol":"MSFT"}}}}],"expected_data":["PE","ROE"],"priority":"medium","dependencies":[]}}]}}
-```
-
-Example 9 - Risk Analysis:
-Query: "đánh giá rủi ro TSLA"
-Type: stock_specific  
-Tools: getStockPrice, getRiskMetrics, getTechnicalIndicators
-```json
-{{"query_intent":"TSLA risk assessment","strategy":"parallel","estimated_complexity":"moderate","symbols":["TSLA"],"response_language":"vi","reasoning":"Risk analysis needs price, risk metrics, and volatility indicators","tasks":[{{"id":1,"description":"Get TSLA price","tools_needed":[{{"tool_name":"getStockPrice","params":{{"symbol":"TSLA"}}}}],"expected_data":["price"],"priority":"high","dependencies":[]}},{{"id":2,"description":"Get TSLA risk metrics","tools_needed":[{{"tool_name":"getRiskMetrics","params":{{"symbol":"TSLA"}}}}],"expected_data":["beta","volatility"],"priority":"high","dependencies":[]}},{{"id":3,"description":"Get TSLA technicals","tools_needed":[{{"tool_name":"getTechnicalIndicators","params":{{"symbol":"TSLA"}}}}],"expected_data":["RSI","ATR"],"priority":"medium","dependencies":[]}}]}}
-```
-</examples>
-
-<dependency_rules>
-WHEN TO USE DEPENDENCIES:
-- query_type="screener" AND user wants analysis → SEQUENTIAL with <FROM_TASK_N>
-- query_type="stock_specific" with known symbols → PARALLEL, no dependencies
-- query_type="market_level" → PARALLEL, no dependencies
-
-PLACEHOLDER SYNTAX:
-- Use "<FROM_TASK_1>" when Task N depends on Task 1's output
-- The number matches the dependency task's id
-- TaskExecutor will expand this to actual symbols from screener results
-</dependency_rules>
-
-<output_format>
-OUTPUT JSON ONLY:
-{{
-  "query_intent": "{validated_intent}",
-  "strategy": "parallel|sequential",
-  "estimated_complexity": "simple|moderate|complex",
-  "symbols": {json.dumps(symbols) if symbols else "[]"},
-  "response_language": "{response_language}",
-  "reasoning": "Brief explanation of the plan",
-  "tasks": [...]
-}}
-</output_format>
-"""
-        
         return await self._call_llm_json(prompt, "Stage3")
     
     def _format_tools_for_prompt(

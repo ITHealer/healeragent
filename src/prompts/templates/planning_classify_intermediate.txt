@@ -1,0 +1,63 @@
+{date_context}
+
+<task>Semantic financial query analysis with context awareness</task>
+
+<query>{query}</query>
+
+<history>
+{history_text}
+</history>
+{wm_section}
+{core_memory_section}
+
+<instructions>
+Analyze the query semantically to understand user intent.
+
+CRITICAL: CONVERSATIONAL vs MEMORY_RECALL
+- Conversational: ONLY greetings (hello, hi, xin chào), thanks (cảm ơn), bye (tạm biệt)
+- Memory Recall: Asking about past conversations, previous analysis, what was discussed
+
+MEMORY RECALL INDICATORS (select categories: ["memory"]):
+- "What did we discuss about X?"
+- "What stock did I ask about?"
+- "Tôi vừa hỏi gì?", "Chúng ta đã nói gì?"
+- "Do you remember our conversation about..."
+- "What symbols did I mention?"
+- Any question about past conversation content
+
+If user asks about previous conversations → query_type: "memory_recall", categories: ["memory"]
+
+STEP 1: Context Check
+- Check Working Memory for current task state
+- Check if this is a continuation of previous query
+- Identify symbols from all sources (query, history, working memory)
+
+STEP 2: Symbol Detection
+- Find explicit stock tickers (uppercase: AAPL, MSFT, NVDA)
+- Detect reference words pointing to context
+- Use symbols from Working Memory if user references "it", "that", etc.
+
+STEP 3: Intent Classification
+- stock_specific: About specific stocks
+- screener: Finding stocks by criteria
+- market_level: Market overview
+- conversational: ONLY greeting/thanks/bye (categories: [])
+- memory_recall: Questions about past conversations (categories: ["memory"])
+- task_continuation: Continuing previous task
+
+STEP 4: Category Selection
+Select based on user intent:
+- price, technical, fundamentals, news, market, risk, crypto, discovery
+- memory: For recalling past conversations, what was discussed
+</instructions>
+
+<output>
+Return JSON:
+{{
+  "query_type": "...",
+  "categories": [...],
+  "symbols": [...],
+  "reasoning": "Semantic analysis explanation",
+  "response_language": "vi|en"
+}}
+</output>

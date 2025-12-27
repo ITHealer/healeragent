@@ -1,0 +1,38 @@
+{date_context}
+
+Validate if external tools are needed for this query.
+
+QUERY: "{query}"
+CLASSIFICATION:
+- Type: {query_type}
+- Categories: {categories}
+- Symbols: {symbols}
+- Reasoning: {reasoning}
+
+CRITICAL KNOWLEDGE:
+You are an AI with a knowledge cutoff. You CANNOT provide:
+- Real-time stock prices
+- Current financial data
+- Recent news
+- Live technical indicators
+- Current market state
+- Past conversation history (need memory tools)
+
+DECISION RULES:
+1. Greeting/Thanks/General Chat → NO tools (just respond naturally)
+2. memory_recall (asking about past conversations) → YES tools (need searchConversationHistory)
+3. Price/quote request with SYMBOL → YES tools (MUST fetch real-time)
+4. Financial analysis with SYMBOL → YES tools (MUST fetch data)
+5. Stock screening → YES tools (MUST fetch data)
+6. Market overview request → YES tools (MUST fetch current state)
+
+IMPORTANT:
+- Simple greetings like "thanks", "ok cảm ơn" do NOT need tools!
+- BUT questions like "what did we discuss?" NEED memory tools!
+
+OUTPUT JSON:
+{{
+  "need_tools": true/false,
+  "final_intent": "Clear description of user intent",
+  "reason": "Why tools are or aren't needed"
+}}

@@ -1,0 +1,82 @@
+{date_context}
+
+<role>Advanced financial query analyzer with context awareness</role>
+
+<input>
+<query>{query}</query>
+<history>
+{history_text}
+</history>
+{wm_section}
+{core_memory_section}
+</input>
+
+<instructions>
+Think step-by-step to analyze this query semantically.
+
+CRITICAL FIRST CHECK - DISTINGUISH CAREFULLY:
+1. CONVERSATIONAL (categories: []):
+Is this a simple conversational message?
+- Greetings: hello, hi, xin chào
+- Thanks: thanks, cảm ơn, ok cảm ơn
+- Bye: goodbye, tạm biệt
+- General chat without financial request
+
+2. MEMORY_RECALL (categories: ["memory"]):
+   - Any question about past conversations
+   - Examples:
+     * "What did we discuss?"
+     * "What stock did I ask about?"
+     * "Tôi vừa hỏi gì?", "Tôi vừa phân tích cổ phiếu nào?"
+     * "Chúng ta đã nói gì về X?"
+     * "Do you remember when we talked about..."
+     * "Kiểm tra lại cuộc trò chuyện trước"
+
+3. SCREENER: Finding stocks by criteria
+    - If user is looking for stocks that meet certain conditions
+    - Examples:
+        * "Find me stocks haveing market cap > $10B"
+        * "Find me tech stocks with P/E < 20"
+        * "Find me stocks with high dividend yield"
+        * "Find me stocks with high beta"
+    Load "discovery" and other relevant categories such as "fundamentals", "technical", "risk", "price", "news", etc.
+
+If user asks about PREVIOUS CONVERSATIONS → memory_recall, NOT conversational!
+
+REASONING PROCESS:
+1. Is this asking about past conversations? → memory_recall with categories: ["memory"]
+2. Is this a continuation of a previous task? Check Working Memory.
+3. What is the user semantically asking about?
+4. Are there explicit stock symbols?
+5. Are there reference words pointing to history or working memory?
+6. What is the underlying intent?
+7. Which tool categories are ACTUALLY needed?
+
+CATEGORIES:
+- price: Stock prices, quotes, performance
+- technical: Technical indicators, chart patterns
+- fundamentals: Financial ratios, earnings
+- news: News, events, calendar
+- market: Market overview, indices, trending stocks, top gainers, top losers, top active
+- risk: Risk assessment, volatility
+- crypto: Cryptocurrency
+- discovery: Stock screening
+- memory: Recall past conversations, what was discussed before
+</instructions>
+
+<output_format>
+First think in [THOUGHT] block, then output JSON:
+
+[THOUGHT]
+... your reasoning ...
+[/THOUGHT]
+```json
+{{
+  "query_type": "stock_specific|screener|market_level|conversational|memory_recall|task_continuation",
+  "categories": ["price", ...],
+  "symbols": ["SYMBOL", ...],
+  "reasoning": "Brief explanation",
+  "response_language": "vi|en"
+}}
+```
+</output_format>
