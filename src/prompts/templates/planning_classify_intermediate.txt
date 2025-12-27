@@ -1,63 +1,134 @@
 {date_context}
 
-<task>Semantic financial query analysis with context awareness</task>
+You will be acting as a financial query classification system. Your task is to analyze user queries and determine the appropriate intent, required tool categories, and extract relevant symbols.
 
 <query>{query}</query>
 
-<history>
+<conversation_history>
 {history_text}
-</history>
+</conversation_history>
 {wm_section}
 {core_memory_section}
 
-<instructions>
-Analyze the query semantically to understand user intent.
+Please carefully analyze the above query to determine the user's core intent and needs.
 
-CRITICAL: CONVERSATIONAL vs MEMORY_RECALL
-- Conversational: ONLY greetings (hello, hi, xin chào), thanks (cảm ơn), bye (tạm biệt)
-- Memory Recall: Asking about past conversations, previous analysis, what was discussed
+<analysis_steps>
+STEP 1: Understand the Query
+- What is the user explicitly asking for?
+- Are there implicit requests? (e.g., "The stock has been dropping" might imply wanting analysis)
+- Is there emotional content to ignore? Focus on the underlying request.
 
-MEMORY RECALL INDICATORS (select categories: ["memory"]):
-- "What did we discuss about X?"
-- "What stock did I ask about?"
-- "Tôi vừa hỏi gì?", "Chúng ta đã nói gì?"
-- "Do you remember our conversation about..."
-- "What symbols did I mention?"
-- Any question about past conversation content
+STEP 2: Check Context
+- Does Working Memory contain active symbols or task state?
+- Does the user reference previous context ("it", "that stock", "như vừa nói")?
+- Is this a follow-up to a previous query?
 
-If user asks about previous conversations → query_type: "memory_recall", categories: ["memory"]
+STEP 3: Extract Symbols
+- Look for explicit stock tickers: AAPL, NVDA, MSFT, VIC, FPT
+- Look for crypto symbols: BTC, ETH, BTCUSDT
+- Resolve references using Working Memory or conversation history
 
-STEP 1: Context Check
-- Check Working Memory for current task state
-- Check if this is a continuation of previous query
-- Identify symbols from all sources (query, history, working memory)
+STEP 4: Classify Intent
+- What type of query is this?
+- What tools are needed to fulfill the request?
+</analysis_steps>
 
-STEP 2: Symbol Detection
-- Find explicit stock tickers (uppercase: AAPL, MSFT, NVDA)
-- Detect reference words pointing to context
-- Use symbols from Working Memory if user references "it", "that", etc.
+<valid_intents>
+1. stock_specific: Query about specific stock(s)
+   - User mentions symbols explicitly OR references them
+   - Asking for price, analysis, news about specific stocks
 
-STEP 3: Intent Classification
-- stock_specific: About specific stocks
-- screener: Finding stocks by criteria
-- market_level: Market overview
-- conversational: ONLY greeting/thanks/bye (categories: [])
-- memory_recall: Questions about past conversations (categories: ["memory"])
-- task_continuation: Continuing previous task
+2. screener: Finding stocks by criteria
+   - "Find stocks with...", "Tìm cổ phiếu có..."
+   - Filtering by metrics: P/E, market cap, dividend, sector
 
-STEP 4: Category Selection
-Select based on user intent:
-- price, technical, fundamentals, news, market, risk, crypto, discovery
-- memory: For recalling past conversations, what was discussed
-</instructions>
+3. market_level: Market overview
+   - "How is the market?", "Thị trường hôm nay thế nào?"
+   - Top gainers, losers, sector performance
 
-<output>
-Return JSON:
+4. conversational: ONLY greetings/thanks/goodbye
+   - "Hello", "Xin chào", "Cảm ơn", "Goodbye"
+   - NO financial content whatsoever
+
+5. memory_recall: Questions about past conversations
+   - "What did we discuss?", "Chúng ta đã nói gì?"
+   - "What stock did I ask about earlier?"
+   - ALWAYS requires ["memory"] category
+
+6. task_continuation: Continuing previous task
+   - Working Memory has active task
+   - User says "continue", "tiếp tục", "next"
+</valid_intents>
+
+<tool_categories>
+- price: Real-time prices, quotes, performance data
+- technical: RSI, MACD, Bollinger Bands, chart patterns, support/resistance
+- fundamentals: P/E, EPS, revenue, balance sheet, income statement
+- news: Company news, earnings calendar, events
+- market: Indices, sector performance, market movers, breadth
+- risk: Volatility, risk metrics, stop-loss suggestions
+- crypto: Cryptocurrency prices and technical analysis
+- discovery: Stock screening by multiple criteria
+- memory: Past conversation recall
+</tool_categories>
+
+<edge_cases>
+1. Implicit requests: "AAPL has been volatile lately" → User likely wants volatility analysis
+   → query_type: stock_specific, categories: ["price", "risk"]
+
+2. Emotional content: "I'm worried about my NVDA position" → Focus on NVDA analysis, not emotion
+   → query_type: stock_specific, categories: ["price", "risk"]
+
+3. Multiple symbols: "Compare AAPL and MSFT" → Both symbols, comparative analysis
+   → query_type: stock_specific, symbols: ["AAPL", "MSFT"]
+
+4. Reference resolution: "What about its technical indicators?" (previous query was about NVDA)
+   → query_type: stock_specific, symbols: ["NVDA"] (from Working Memory)
+</edge_cases>
+
+<output_format>
+First, write your reasoning inside <reasoning> tags.
+Then, output the classification inside <classification> tags as valid JSON:
+
+<reasoning>
+Your step-by-step analysis here...
+</reasoning>
+
+<classification>
 {{
   "query_type": "...",
   "categories": [...],
   "symbols": [...],
-  "reasoning": "Semantic analysis explanation",
-  "response_language": "vi|en"
+  "reasoning": "One sentence summary",
+  "response_language": "vi|en|zh"
 }}
-</output>
+</classification>
+</output_format>
+
+<examples>
+Query: "So sánh AAPL với MSFT về mặt kỹ thuật"
+<reasoning>
+User wants to compare two stocks (AAPL and MSFT) from a technical analysis perspective. Both are valid stock symbols. This requires technical analysis tools for comparison.
+</reasoning>
+<classification>
+{{"query_type": "stock_specific", "categories": ["technical", "price"], "symbols": ["AAPL", "MSFT"], "reasoning": "Technical comparison of AAPL and MSFT", "response_language": "vi"}}
+</classification>
+
+Query: "Cổ phiếu đó có tin gì mới không?" (Working Memory contains: NVDA)
+<reasoning>
+User references "that stock" which refers to NVDA from Working Memory. They're asking for news about this symbol. This is a stock-specific query requiring news tools.
+</reasoning>
+<classification>
+{{"query_type": "stock_specific", "categories": ["news"], "symbols": ["NVDA"], "reasoning": "News request for NVDA from context", "response_language": "vi"}}
+</classification>
+
+Query: "Top 10 cổ phiếu tăng mạnh nhất hôm nay"
+<reasoning>
+User wants market overview information - specifically top gaining stocks. This is a market-level query requiring market tools, not stock-specific.
+</reasoning>
+<classification>
+{{"query_type": "market_level", "categories": ["market"], "symbols": [], "reasoning": "Top gainers market overview", "response_language": "vi"}}
+</classification>
+</examples>
+
+Now analyze the query:

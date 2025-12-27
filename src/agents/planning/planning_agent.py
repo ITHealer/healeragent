@@ -535,7 +535,8 @@ class PlanningAgent(LoggerMixin):
         """
         Thinking layer: Validate if tools are actually needed
 
-        Prevents false negatives where LLM says "no tools" for financial queries
+        Uses Anthropic-style structured output with <reasoning> and <decision> tags.
+        Prevents false negatives where LLM says "no tools" for financial queries.
         """
         prompt = self.prompt_builder.build_thinking_prompt(
             query=query,
@@ -544,19 +545,19 @@ class PlanningAgent(LoggerMixin):
             symbols=symbols,
             reasoning=reasoning
         )
-        
+
         try:
-            result = await self._call_llm_json(prompt, "Thinking")
-            
+            result = await self._call_llm_json_thinking(prompt)
+
             if "need_tools" not in result:
                 result["need_tools"] = query_type not in ["conversational", "memory_recall"]
             if "final_intent" not in result:
                 result["final_intent"] = query
             if "reason" not in result:
                 result["reason"] = "Validated"
-            
+
             return result
-            
+
         except Exception as e:
             self.logger.error(f"[PLANNING:THINK] Error: {e}")
             return {
@@ -564,6 +565,64 @@ class PlanningAgent(LoggerMixin):
                 "final_intent": query,
                 "reason": "Fallback validation"
             }
+
+    async def _call_llm_json_thinking(self, prompt: str) -> Dict[str, Any]:
+        """
+        Call LLM for thinking validation with <decision> tag parsing.
+
+        Supports format:
+        <reasoning>...</reasoning>
+        <decision>{"need_tools": true, ...}</decision>
+        """
+        import re
+
+        params = {
+            "model_name": self.model_name,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a financial assistant validator. "
+                        "Analyze if tools are needed and provide structured output with "
+                        "<reasoning> tags followed by <decision> tags containing valid JSON."
+                    )
+                },
+                {"role": "user", "content": prompt}
+            ],
+            "provider_type": self.provider_type,
+            "api_key": self.api_key,
+            "enable_thinking": False,
+            "max_tokens": 800
+        }
+
+        if self.capability != ModelCapability.ADVANCED:
+            params["temperature"] = 0.1
+
+        response = await self.llm_provider.generate_response(**params)
+        content = response.get("content", "") if isinstance(response, dict) else str(response)
+        content = content.strip()
+
+        # Extract reasoning for logging
+        reasoning_text = self._extract_reasoning(content)
+        if reasoning_text:
+            self.logger.debug(f"[Thinking] Reasoning: {reasoning_text[:150]}...")
+
+        # Try to extract from <decision> tags
+        decision_match = re.search(
+            r'<decision[^>]*>(.*?)</decision>',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        if decision_match:
+            json_str = decision_match.group(1).strip()
+        else:
+            # Fallback: try <classification> or direct JSON
+            json_str = self._extract_classification_json(content)
+
+        # Clean up and parse
+        json_str = self._fix_json_braces(json_str)
+        return json.loads(json_str)
     
     # ========================================================================
     # STAGE 3: CREATE TASK PLAN
@@ -751,7 +810,11 @@ Note: Tools fetch LIVE data from financial APIs
     ) -> Dict[str, Any]:
         """
         Call LLM and parse JSON response with retry logic
-        
+
+        Supports Anthropic-style structured output:
+        - <reasoning>...</reasoning>
+        - <classification>JSON</classification>
+
         Args:
             prompt: The prompt to send
             stage: Stage name for logging
@@ -759,19 +822,29 @@ Note: Tools fetch LIVE data from financial APIs
         """
         content = ""
         last_error = None
-        
+
         for attempt in range(max_retries + 1):
             try:
                 # Set appropriate max_tokens based on stage
                 max_tokens = 2000 if stage == "Stage3" else 1000
-                
+
+                # Use different system prompts based on stage
+                if stage == "Stage1":
+                    system_content = (
+                        "You are a financial query classification system. "
+                        "Analyze queries semantically and provide structured output with "
+                        "<reasoning> tags followed by <classification> tags containing valid JSON."
+                    )
+                else:
+                    system_content = (
+                        "You are a financial assistant. Return ONLY valid JSON, "
+                        "no markdown, no explanation."
+                    )
+
                 params = {
                     "model_name": self.model_name,
                     "messages": [
-                        {
-                            "role": "system", 
-                            "content": "You are a financial assistant. Return ONLY valid JSON, no markdown, no explanation."
-                        },
+                        {"role": "system", "content": system_content},
                         {"role": "user", "content": prompt}
                     ],
                     "provider_type": self.provider_type,
@@ -779,19 +852,27 @@ Note: Tools fetch LIVE data from financial APIs
                     "enable_thinking": False,
                     "max_tokens": max_tokens
                 }
-                
+
                 if self.capability != ModelCapability.ADVANCED:
                     params["temperature"] = 0.1
-                
+
                 response = await self.llm_provider.generate_response(**params)
-                
+
                 content = response.get("content", "") if isinstance(response, dict) else str(response)
                 content = content.strip()
-                
-                # Remove thought blocks
+
+                # Extract reasoning for logging (Anthropic format)
+                reasoning_text = self._extract_reasoning(content)
+                if reasoning_text and stage == "Stage1":
+                    self.logger.debug(f"[{stage}] LLM Reasoning: {reasoning_text[:200]}...")
+
+                # Extract JSON from Anthropic-style structured output
+                content = self._extract_classification_json(content)
+
+                # Remove thought blocks (legacy format)
                 if "[/THOUGHT]" in content:
                     _, content = content.split("[/THOUGHT]", 1)
-                
+
                 # Remove markdown
                 if "```json" in content:
                     content = content.split("```json")[1].split("```")[0]
@@ -799,13 +880,13 @@ Note: Tools fetch LIVE data from financial APIs
                     parts = content.split("```")
                     if len(parts) >= 2:
                         content = parts[1]
-                
+
                 content = content.strip()
-                
+
                 # Fix JSON issues
                 content = self._fix_json_braces(content)
                 content = self._fix_truncated_json(content, stage)
-                
+
                 return json.loads(content)
                 
             except json.JSONDecodeError as e:
@@ -1040,10 +1121,89 @@ Note: Tools fetch LIVE data from financial APIs
     # ALSO UPDATE _fix_json_braces to be more robust:
     # ============================================================================
 
+    def _extract_reasoning(self, content: str) -> str:
+        """
+        Extract reasoning from Anthropic-style <reasoning> tags.
+
+        Args:
+            content: Raw LLM response
+
+        Returns:
+            Reasoning text or empty string if not found
+        """
+        import re
+
+        # Match <reasoning>...</reasoning>
+        reasoning_match = re.search(
+            r'<reasoning[^>]*>(.*?)</reasoning>',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        if reasoning_match:
+            return reasoning_match.group(1).strip()
+
+        return ""
+
+    def _extract_classification_json(self, content: str) -> str:
+        """
+        Extract JSON from Anthropic-style <classification> tags.
+
+        Handles multiple formats:
+        1. <classification>{"key": "value"}</classification>
+        2. <classification>```json{"key": "value"}```</classification>
+        3. Direct JSON (no tags)
+
+        Args:
+            content: Raw LLM response
+
+        Returns:
+            Extracted JSON string
+        """
+        import re
+
+        # Try to extract from <classification> tags first
+        classification_match = re.search(
+            r'<classification[^>]*>(.*?)</classification>',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        if classification_match:
+            extracted = classification_match.group(1).strip()
+            # Remove markdown if present inside classification
+            if "```json" in extracted:
+                extracted = extracted.split("```json")[1].split("```")[0]
+            elif "```" in extracted:
+                parts = extracted.split("```")
+                if len(parts) >= 2:
+                    extracted = parts[1]
+            return extracted.strip()
+
+        # Try <intent> tags (Anthropic ticket routing format)
+        intent_match = re.search(
+            r'<intent[^>]*>(.*?)</intent>',
+            content,
+            re.DOTALL | re.IGNORECASE
+        )
+
+        if intent_match:
+            # If we have an intent tag, the content might be a simple value or JSON
+            intent_value = intent_match.group(1).strip()
+            # Check if it's JSON
+            if intent_value.startswith('{'):
+                return intent_value
+            # Otherwise, it's a simple classification, wrap in JSON
+            return f'{{"query_type": "{intent_value}"}}'
+
+        # No tags found, return original content
+        # (might be direct JSON or legacy format)
+        return content
+
     def _fix_json_braces(self, content: str) -> str:
         """
         Fix mismatched braces in JSON response
-        
+
         Common LLM errors:
         - Extra trailing braces: {}}} → {}
         - Missing closing braces

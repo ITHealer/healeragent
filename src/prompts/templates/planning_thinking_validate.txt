@@ -1,38 +1,53 @@
 {date_context}
 
-Validate if external tools are needed for this query.
+<task>Validate if external tools are needed for this query</task>
 
-QUERY: "{query}"
-CLASSIFICATION:
-- Type: {query_type}
-- Categories: {categories}
-- Symbols: {symbols}
-- Reasoning: {reasoning}
+<classification_result>
+Query: "{query}"
+Type: {query_type}
+Categories: {categories}
+Symbols: {symbols}
+Initial Reasoning: {reasoning}
+</classification_result>
 
-CRITICAL KNOWLEDGE:
-You are an AI with a knowledge cutoff. You CANNOT provide:
-- Real-time stock prices
-- Current financial data
-- Recent news
+<knowledge_limitations>
+As an AI, you CANNOT access:
+- Real-time stock prices or quotes
+- Current financial data (P/E, earnings, etc.)
+- Recent news or events
 - Live technical indicators
 - Current market state
 - Past conversation history (need memory tools)
+</knowledge_limitations>
 
-DECISION RULES:
-1. Greeting/Thanks/General Chat → NO tools (just respond naturally)
-2. memory_recall (asking about past conversations) → YES tools (need searchConversationHistory)
-3. Price/quote request with SYMBOL → YES tools (MUST fetch real-time)
-4. Financial analysis with SYMBOL → YES tools (MUST fetch data)
-5. Stock screening → YES tools (MUST fetch data)
-6. Market overview request → YES tools (MUST fetch current state)
+<decision_rules>
+1. Conversational (greeting/thanks/bye) → need_tools: false
+2. Memory recall (asking about past conversations) → need_tools: true (requires memory tools)
+3. Stock price/analysis with symbols → need_tools: true (requires real-time data)
+4. Stock screening → need_tools: true (requires data search)
+5. Market overview → need_tools: true (requires current data)
+6. Definition/concept questions → need_tools: false (can answer from knowledge)
+</decision_rules>
 
-IMPORTANT:
-- Simple greetings like "thanks", "ok cảm ơn" do NOT need tools!
-- BUT questions like "what did we discuss?" NEED memory tools!
+<reasoning_required>
+Think carefully:
+1. What specific information does the user need?
+2. Can I provide this from my training data?
+3. Would accessing external tools improve accuracy?
+</reasoning_required>
 
-OUTPUT JSON:
+<output_format>
+First provide your reasoning, then output decision in JSON:
+
+<reasoning>
+[Your analysis of whether tools are needed]
+</reasoning>
+
+<decision>
 {{
   "need_tools": true/false,
   "final_intent": "Clear description of user intent",
-  "reason": "Why tools are or aren't needed"
+  "reason": "Concise explanation"
 }}
+</decision>
+</output_format>
