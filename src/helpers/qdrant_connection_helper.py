@@ -19,14 +19,30 @@ LATE_INTERACTION_TEXT_EMBEDDING_MODEL="colbert-ir/colbertv2.0"
 BM25_EMBEDDING_MODEL="Qdrant/bm25"
 
 class QdrantConnection(LoggerMixin):
+    """
+    Qdrant connection helper with optimized settings.
+
+    Note: Timeout reduced from 600s to 60s to fail fast instead of blocking.
+    For heavy operations, consider increasing timeout or using async patterns.
+    """
+
+    # Reduced timeout to prevent blocking - was 600s
+    QDRANT_TIMEOUT = 60
+
     def __init__(self, embedding_func: HuggingFaceEmbeddings | None = embedding_function):
         super().__init__()
-        self.client = QdrantClient(url=settings.QDRANT_ENDPOINT, timeout=600)
+        self.client = QdrantClient(
+            url=settings.QDRANT_ENDPOINT,
+            timeout=self.QDRANT_TIMEOUT,
+            prefer_grpc=True,  # gRPC is faster than HTTP
+        )
         self.embedding_function = embedding_func
 
         self.text_embedding_model = text_embedding_model
         self.late_interaction_text_embedding_model = late_interaction_text_embedding_model
         self.bm25_embedding_model = bm25_embedding_model
+
+        self.logger.info(f"[QDRANT] Initialized with timeout={self.QDRANT_TIMEOUT}s")
 
 
     async def add_data(self, 

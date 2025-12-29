@@ -8,9 +8,11 @@ from src.database.models.stock_schemas import StockPrice
 from src.utils.logger.custom_logging import LoggerMixin
 import aiohttp
 from src.utils.config import settings
+from src.utils.http_client_pool import get_http_client_manager
+from src.utils.async_wrappers import run_in_thread, get_yfinance_history
 from dotenv import load_dotenv
 
-load_dotenv() 
+load_dotenv()
 FMP_API_KEY = settings.FMP_API_KEY
 
 class MarketData(LoggerMixin):
@@ -18,6 +20,13 @@ class MarketData(LoggerMixin):
     def __init__(self):
         super().__init__()
         self.db = get_postgres_db()
+        self._http_manager = None
+
+    async def _get_http_manager(self):
+        """Lazy init HTTP client manager"""
+        if self._http_manager is None:
+            self._http_manager = await get_http_client_manager()
+        return self._http_manager
     
 
     async def get_historical_data_lookback(self, ticker: str, lookback_days: int = 365) -> Dict[str, Any]:
@@ -35,14 +44,15 @@ class MarketData(LoggerMixin):
             # Calculate start_date and end_date based on lookback_days
             end_date = datetime.datetime.now()
             start_date = end_date - datetime.timedelta(days=lookback_days)
-          
+
             # Format dates for yfinance
             end_date_str = end_date.strftime('%Y-%m-%d')
             start_date_str = start_date.strftime('%Y-%m-%d')
-            
+
             self.logger.info(f"Fetching data for {ticker} for the last {lookback_days} days ({start_date_str} to {end_date_str})")
-            stock = yf.Ticker(ticker)
-            data = stock.history(start=start_date_str, end=end_date_str)
+
+            # Use async wrapper to avoid blocking event loop
+            data = await get_yfinance_history(ticker, start=start_date_str, end=end_date_str)
 
             if data.empty:
                 raise ValueError(f"No data returned for {ticker}")
@@ -95,12 +105,14 @@ class MarketData(LoggerMixin):
             api_key = FMP_API_KEY # Accessing API key via instance attribute
 
             url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{ticker}?from={start_date_str}&to={end_date_str}&apikey={api_key}"
-            
-            timeout = aiohttp.ClientTimeout(total=30)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(url) as response:
-                    response.raise_for_status() 
-                    api_data = await response.json()
+
+            # Use connection pool instead of creating new session each time
+            http_manager = await self._get_http_manager()
+            async with http_manager.rate_limited_request():
+                async with http_manager.get_aiohttp_session() as session:
+                    async with session.get(url) as response:
+                        response.raise_for_status()
+                        api_data = await response.json()
 
             if not isinstance(api_data, dict) or "historical" not in api_data:
                 error_message = api_data.get("Error Message", f"Unexpected response structure from FMP for {ticker}.") if isinstance(api_data, dict) else f"Unexpected response type from FMP for {ticker}."
@@ -195,8 +207,8 @@ class MarketData(LoggerMixin):
         """
         try:
             self.logger.info(f"Fetching data for {ticker} from {start_date} to {end_date}")
-            stock = yf.Ticker(ticker)
-            data = stock.history(start=start_date, end=end_date)
+            # Use async wrapper to avoid blocking event loop
+            data = await get_yfinance_history(ticker, start=start_date, end=end_date)
 
             if data.empty:
                 raise ValueError(f"No data returned for {ticker}")
