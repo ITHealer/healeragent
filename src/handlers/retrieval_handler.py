@@ -98,12 +98,12 @@ class SearchRetrieval(LoggerMixin):
         if type(query) == dict:
             query = query.get('query')
 
-        try:            
-            # Check if collection exists
-            if not self.qdrant_client.client.collection_exists(collection_name=collection_name):
+        try:
+            # Check if collection exists (using async wrapper to avoid blocking)
+            if not await self.qdrant_client.collection_exists_async(collection_name):
                 self.logger.warning(f"[RETRIEVE] Collection {collection_name} does not exist")
                 return []
-            
+
             # Retrieve documents
             self.logger.info(f"[RETRIEVE] - STARTING RETRIEVAL: '{query}' in collection: {collection_name}")
             docs = await self.qdrant_client.hybrid_search(query=query, collection_name=collection_name)
@@ -152,12 +152,12 @@ class SearchRetrieval(LoggerMixin):
         Returns:
             Optional[List[Document]]: Retrieved and reranked documents
         """
-        try:            
-            # Check if collection exists
-            if not self.qdrant_client.client.collection_exists(collection_name=collection_name):
+        try:
+            # Check if collection exists (using async wrapper to avoid blocking)
+            if not await self.qdrant_client.collection_exists_async(collection_name):
                 self.logger.warning(f"[MEMORY RETRIEVE] Collection {collection_name} does not exist")
                 return []
-            
+
             # Retrieve documents
             self.logger.info(f"[MEMORY RETRIEVE] - STARTING RETRIEVAL: '{query}' in collection: {collection_name}")
             docs = await self.qdrant_client.hybrid_search(query=query, collection_name=collection_name)

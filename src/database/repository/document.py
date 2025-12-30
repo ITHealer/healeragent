@@ -5,6 +5,7 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from src.database import get_postgres_db
 from src.helpers.qdrant_connection_helper import QdrantConnection
+from src.agents.memory.memory_manager import get_qdrant_connection
 from src.utils.config import settings
 from src.utils.constants import TypeDatabase
 from src.utils.logger.custom_logging import LoggerMixin
@@ -13,7 +14,8 @@ from src.utils.logger.custom_logging import LoggerMixin
 class FileProcessingVecDB(LoggerMixin):
     def __init__(self):
         super().__init__()
-        self.qdrant_client = QdrantConnection()
+        # Use singleton to avoid creating multiple connections that block event loop
+        self.qdrant_client = get_qdrant_connection()
 
     async def delete_document_by_file_name(self, 
                      file_name: str,
@@ -27,12 +29,13 @@ class FileProcessingVecDB(LoggerMixin):
         else:
             self.logger.info('event=delete-document-in-vector-database '
                         'message="Start delete ..."')
-            
+
             if type_db == TypeDatabase.Qdrant.value:
-                if not self.qdrant_client.client.collection_exists(collection_name=collection_name):
+                # Use async wrapper to avoid blocking event loop
+                if not await self.qdrant_client.collection_exists_async(collection_name):
                     self.logger.warning(f"Collection {collection_name} does not exist, skipping delete operation")
                     return
-                    
+
                 await self.qdrant_client.delete_document_by_file_name(
                     document_name=file_name, 
                     collection_name=collection_name,
@@ -52,14 +55,15 @@ class FileProcessingVecDB(LoggerMixin):
         else: 
             self.logger.info('event=delete-document-in-vector-database '
                         'message="Start delete ..."')
-            
+
             if type_db == TypeDatabase.Qdrant.value:
-                if not self.qdrant_client.client.collection_exists(collection_name=collection_name):
+                # Use async wrapper to avoid blocking event loop
+                if not await self.qdrant_client.collection_exists_async(collection_name):
                     self.logger.warning(f"Collection {collection_name} does not exist, skipping delete operation")
                     return
-                    
+
                 await self.qdrant_client.delete_document_by_batch_ids(
-                    document_ids=document_ids, 
+                    document_ids=document_ids,
                     collection_name=collection_name,
                     organization_id=organization_id
                 )

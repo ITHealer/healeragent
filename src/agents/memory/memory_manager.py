@@ -118,8 +118,9 @@ class MemoryManager(LoggerMixin):
     async def ensure_memory_collection(self, collection_name: str):
         """Ensure a single memory collection exists with the expected configuration"""
         try:
-            if not self.qdrant_conn.client.collection_exists(collection_name=collection_name):
-                is_created = self.qdrant_conn._create_collection(collection_name=collection_name)
+            # Use async wrapper to avoid blocking event loop
+            if not await self.qdrant_conn.collection_exists_async(collection_name):
+                is_created = await self.qdrant_conn._create_collection_async(collection_name=collection_name)
                 if is_created:
                     self.logger.info(f"Created memory collection with hybrid search support: {collection_name}")
                 else:
@@ -342,13 +343,13 @@ class MemoryManager(LoggerMixin):
             List[Dict]: List of relevant memories with content and metadata
         """
         try:
-            # Check and create collection if not exists
-            if not self.qdrant_conn.client.collection_exists(collection_name=collection_name):
+            # Check and create collection if not exists (using async wrapper)
+            if not await self.qdrant_conn.collection_exists_async(collection_name):
                 self.logger.info(f"Collection {collection_name} does not exist, creating it...")
                 # Create collection
                 await self.ensure_memory_collection(collection_name)
                 return []
-            
+
             # Use qdrant retrieval to search
             results = await self.retrieval.qdrant_retrieval(
                 query=query,
@@ -387,9 +388,10 @@ class MemoryManager(LoggerMixin):
         for memory_type in ["short", "long"]:
             collection_name = self.get_memory_collection_name(session_id, user_id, memory_type)
             try:
-                if self.qdrant_conn.client.collection_exists(collection_name=collection_name):
-                    collection_info = self.qdrant_conn.client.get_collection(collection_name)
-                    
+                # Use async wrappers to avoid blocking event loop
+                if await self.qdrant_conn.collection_exists_async(collection_name):
+                    collection_info = await self.qdrant_conn.get_collection_async(collection_name)
+
                     stats[f"{memory_type}_term"] = {
                         "collection_name": collection_name,
                         "vectors_count": collection_info.vectors_count,
@@ -410,7 +412,7 @@ class MemoryManager(LoggerMixin):
                     "status": "error",
                     "error": str(e)
                 }
-        
+
         return stats
     
 
@@ -426,56 +428,57 @@ class MemoryManager(LoggerMixin):
         """
         try:
             short_collection = self.get_memory_collection_name(session_id, user_id, "short")
-            
-            # Check if collection exists
-            if not self.qdrant_conn.client.collection_exists(collection_name=short_collection):
+
+            # Check if collection exists (using async wrapper)
+            if not await self.qdrant_conn.collection_exists_async(short_collection):
                 self.logger.info(f"Collection {short_collection} does not exist, nothing to cleanup")
                 return
-            
-            # Get all points from collection
-            points = self.qdrant_conn.client.scroll(
+
+            # Get all points from collection (using async wrapper)
+            scroll_result = await self.qdrant_conn.scroll_async(
                 collection_name=short_collection,
                 limit=1000
-            )[0]
-            
+            )
+            points = scroll_result[0]
+
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
             points_to_delete = []
-            
+
             for point in points:
                 timestamp_str = point.payload.get("metadata", {}).get("timestamp", "")
                 if timestamp_str:
                     timestamp = datetime.fromisoformat(timestamp_str)
-                    
+
                     if timestamp < cutoff_date:
                         # Check importance before deletion
                         importance = point.payload.get("metadata", {}).get("importance_score", 0)
                         if importance >= self.long_term_threshold:
                             # Move to long-term memory
                             long_collection = self.get_memory_collection_name(session_id, user_id, "long")
-                            
+
                             # Create document from point
                             doc = Document(
                                 page_content=point.payload.get("page_content", ""),
                                 metadata=point.payload.get("metadata", {})
                             )
-                            
+
                             # Add to long-term
                             await self.qdrant_conn.add_data(
                                 documents=[doc],
                                 collection_name=long_collection
                             )
-                            
+
                         # Mark for deletion from short-term
                         points_to_delete.append(point.id)
-            
-            # Delete old points
+
+            # Delete old points (using async wrapper)
             if points_to_delete:
-                self.qdrant_conn.client.delete(
+                await self.qdrant_conn.delete_async(
                     collection_name=short_collection,
                     points_selector=points_to_delete
                 )
                 self.logger.info(f"Cleaned up {len(points_to_delete)} old memories from {short_collection}")
-            
+
         except Exception as e:
             self.logger.error(f"Error cleaning up memories: {e}")
 

@@ -24,7 +24,7 @@ from src.helpers.llm_helper import LLMGenerator, LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.qdrant_connection_helper import QdrantConnection
 from src.helpers.prompt_template_helper import ContextualizeQuestionHistoryTemplate, QuestionAnswerTemplate
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import MemoryManager, get_qdrant_connection
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
 from src.utils.config import settings
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -115,9 +115,9 @@ class ChatHandler(LoggerMixin):
                         file_management.delete_file_record(doc_id, organization_id)
                         deleted_items["documents"].append(doc_id)
                     
-                    # Delete documents from vector store
-                    qdrant_client = QdrantConnection()
-                    
+                    # Delete documents from vector store (use singleton to avoid blocking)
+                    qdrant_client = get_qdrant_connection()
+
                     await qdrant_client.delete_document_by_batch_ids(
                         document_ids=doc_ids,
                         collection_name=collection_name,
@@ -436,11 +436,13 @@ class ChatHandler(LoggerMixin):
             # Step 2: Get document context
             document_context = ""
             context_docs = []
-            qdrant_client = QdrantConnection()
+            # Use singleton to avoid creating new connections that block event loop
+            qdrant_client = get_qdrant_connection()
 
             if collection_name:
                 try:
-                    if qdrant_client.client.collection_exists(collection_name=collection_name):
+                    # Use async wrapper to avoid blocking event loop
+                    if await qdrant_client.collection_exists_async(collection_name):
                         context_docs = await self.search_retrieval.qdrant_retrieval(
                             query=retrieval_query,  # Use appropriate query based on reply status
                             collection_name=collection_name,
