@@ -5,17 +5,23 @@ from typing import List, Dict, Any, Optional, Tuple
 
 from src.database import get_postgres_db
 from src.helpers.qdrant_connection_helper import QdrantConnection
-from src.agents.memory.memory_manager import get_qdrant_connection
 from src.utils.config import settings
 from src.utils.constants import TypeDatabase
 from src.utils.logger.custom_logging import LoggerMixin
+
+
+def _get_qdrant_connection_lazy():
+    """Lazy import to avoid circular dependency"""
+    from src.agents.memory.memory_manager import get_qdrant_connection
+    return get_qdrant_connection()
 
 
 class FileProcessingVecDB(LoggerMixin):
     def __init__(self):
         super().__init__()
         # Use singleton to avoid creating multiple connections that block event loop
-        self.qdrant_client = get_qdrant_connection()
+        # Lazy import to avoid circular import
+        self.qdrant_client = _get_qdrant_connection_lazy()
 
     async def delete_document_by_file_name(self, 
                      file_name: str,

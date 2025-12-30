@@ -24,10 +24,16 @@ from src.helpers.llm_helper import LLMGenerator, LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.qdrant_connection_helper import QdrantConnection
 from src.helpers.prompt_template_helper import ContextualizeQuestionHistoryTemplate, QuestionAnswerTemplate
-from src.agents.memory.memory_manager import MemoryManager, get_qdrant_connection
+from src.agents.memory.memory_manager import MemoryManager
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
 from src.utils.config import settings
 from src.helpers.language_detector import language_detector, DetectionMethod
+
+
+def _get_qdrant_connection_lazy():
+    """Lazy import to avoid circular dependency"""
+    from src.agents.memory.memory_manager import get_qdrant_connection
+    return get_qdrant_connection()
 
 
 # Initialize the chat service
@@ -116,7 +122,7 @@ class ChatHandler(LoggerMixin):
                         deleted_items["documents"].append(doc_id)
                     
                     # Delete documents from vector store (use singleton to avoid blocking)
-                    qdrant_client = get_qdrant_connection()
+                    qdrant_client = _get_qdrant_connection_lazy()
 
                     await qdrant_client.delete_document_by_batch_ids(
                         document_ids=doc_ids,
@@ -437,7 +443,7 @@ class ChatHandler(LoggerMixin):
             document_context = ""
             context_docs = []
             # Use singleton to avoid creating new connections that block event loop
-            qdrant_client = get_qdrant_connection()
+            qdrant_client = _get_qdrant_connection_lazy()
 
             if collection_name:
                 try:
