@@ -228,8 +228,14 @@ class QdrantConnection(LoggerMixin):
             **kwargs
         )
 
-    async def create_payload_index_async(self, collection_name: str, field_name: str, field_schema: str):
-        """Non-blocking create payload index"""
+    async def create_payload_index_async(self, collection_name: str, field_name: str, field_schema):
+        """Non-blocking create payload index
+
+        Args:
+            collection_name: Name of collection
+            field_name: Field to index
+            field_schema: Schema type - use models.PayloadSchemaType.INTEGER, models.PayloadSchemaType.KEYWORD, etc.
+        """
         return await self._run_sync_in_executor(
             self.client.create_payload_index,
             collection_name=collection_name,
@@ -284,7 +290,7 @@ class QdrantConnection(LoggerMixin):
         await self.create_payload_index_async(
             collection_name=collection_name,
             field_name="metadata.index",
-            field_schema="integer",
+            field_schema=models.PayloadSchemaType.INTEGER,
         )
 
         # Create index for organization_id to support efficient searching
@@ -292,7 +298,7 @@ class QdrantConnection(LoggerMixin):
             await self.create_payload_index_async(
                 collection_name=collection_name,
                 field_name="metadata.organization_id",
-                field_schema="keyword",
+                field_schema=models.PayloadSchemaType.KEYWORD,
             )
 
         return True
