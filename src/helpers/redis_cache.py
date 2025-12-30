@@ -132,7 +132,11 @@ async def get_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             return response_model.model_validate_json(cached_json_string)
             
     except asyncio.TimeoutError:
@@ -220,7 +224,11 @@ async def get_list_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for list key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             list_of_dicts = json.loads(cached_json_string)
             return [item_response_model.model_validate(item) for item in list_of_dicts]
             
@@ -315,7 +323,11 @@ async def get_paginated_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for paginated key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             return response_model.model_validate_json(cached_json_string)
             
     except asyncio.TimeoutError:

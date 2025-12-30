@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 import httpx
+import numpy as np
 
 from src.agents.tools.base import BaseTool, ToolOutput, ToolSchema, ToolParameter
 from src.helpers.redis_cache import get_redis_client_llm
@@ -168,9 +169,14 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
         try:
             redis_client = await get_redis_client_llm()
             if redis_client:
-                cached_bytes = await redis_client.get(cache_key)
-                if cached_bytes:
-                    return json.loads(cached_bytes.decode('utf-8'))
+                cached_data = await redis_client.get(cache_key)
+                if cached_data:
+                    # Handle both bytes and str (depending on decode_responses setting)
+                    if isinstance(cached_data, bytes):
+                        cached_str = cached_data.decode('utf-8')
+                    else:
+                        cached_str = cached_data
+                    return json.loads(cached_str)
         except Exception as e:
             self.logger.warning(f"[CACHE] Read error: {e}")
         return None
@@ -245,22 +251,13 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
                     }
                 )
             
-            # Fetch RSI
-            rsi_data = await self._fetch_indicator(symbol, api_timeframe, "rsi", 14)
-            
-            # Fetch MACD
-            macd_data = await self._fetch_indicator(symbol, api_timeframe, "macd")
-            
-            # Fetch SMA
-            sma_20 = await self._fetch_indicator(symbol, api_timeframe, "sma", 20)
-            sma_50 = await self._fetch_indicator(symbol, api_timeframe, "sma", 50)
-            
-            # Fetch EMA
-            ema_20 = await self._fetch_indicator(symbol, api_timeframe, "ema", 20)
-            
+            # Calculate all indicators locally from OHLCV data
+            # (FMP API doesn't support technical_indicator endpoint for crypto)
+            indicators = await self._calculate_all_indicators(symbol, api_timeframe)
+
             # Get current price
             current_price = await self._fetch_current_price(symbol)
-            
+
             # Compile results
             result_data = {
                 "symbol": symbol,
@@ -269,22 +266,13 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
                 "timeframe": timeframe,
                 "api_timeframe": api_timeframe,
                 "current_price": current_price,
-                "indicators": {
-                    "rsi": {
-                        "value": rsi_data.get("rsi") if rsi_data else None,
-                        "period": 14,
-                        "interpretation": self._interpret_rsi(rsi_data.get("rsi") if rsi_data else None)
-                    },
-                    "macd": macd_data if macd_data else {
-                        "macd": None,
-                        "signal": None,
-                        "histogram": None
-                    },
-                    "sma_20": sma_20.get("sma") if sma_20 else None,
-                    "sma_50": sma_50.get("sma") if sma_50 else None,
-                    "ema_20": ema_20.get("ema") if ema_20 else None
-                },
-                "trend": self._determine_trend(current_price, sma_20, sma_50, ema_20),
+                "indicators": indicators,
+                "trend": self._determine_trend_from_indicators(
+                    current_price,
+                    indicators.get("sma_20"),
+                    indicators.get("sma_50"),
+                    indicators.get("ema_20")
+                ),
                 "timestamp": datetime.now().isoformat()
             }
             
@@ -325,36 +313,152 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
                 metadata={"symbol": symbol, "original_symbol": original_symbol}
             )
     
-    async def _fetch_indicator(
-        self,
-        symbol: str,
-        timeframe: str,
-        indicator: str,
-        period: int = None
-    ) -> Optional[Dict]:
-        """Fetch a single indicator from FMP API"""
+    async def _fetch_ohlcv_data(self, symbol: str, timeframe: str, limit: int = 100) -> Optional[List[Dict]]:
+        """
+        Fetch OHLCV historical data from FMP API.
+        This endpoint works for crypto unlike technical_indicator endpoint.
+        """
         try:
-            url = f"{self.base_url}/technical_indicator/{timeframe}"
-            params = {
-                "symbol": symbol,
-                "type": indicator,
-                "apikey": self.api_key
+            # Map timeframe to FMP format
+            tf_map = {
+                "1min": "1min", "5min": "5min", "15min": "15min",
+                "30min": "30min", "1hour": "1hour", "4hour": "4hour",
+                "1day": "1day", "daily": "1day", "1week": "1week", "weekly": "1week"
             }
-            if period:
-                params["period"] = period
-            
+            api_tf = tf_map.get(timeframe, "1hour")
+
+            url = f"{self.base_url}/historical-chart/{api_tf}/{symbol}"
+            params = {"apikey": self.api_key}
+
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(url, params=params)
                 response.raise_for_status()
                 data = response.json()
-            
+
             if data and isinstance(data, list) and len(data) > 0:
-                return data[0]  # Most recent value
+                # Sort by date ascending for calculations
+                sorted_data = sorted(data, key=lambda x: x.get('date', ''))
+                return sorted_data[-limit:]  # Get last N records
             return None
-            
+
         except Exception as e:
-            self.logger.warning(f"[{indicator}] Fetch error: {e}")
+            self.logger.warning(f"[OHLCV] Fetch error for {symbol}: {e}")
             return None
+
+    def _calculate_rsi(self, closes: List[float], period: int = 14) -> Optional[float]:
+        """Calculate RSI from closing prices"""
+        if len(closes) < period + 1:
+            return None
+
+        try:
+            closes = np.array(closes)
+            deltas = np.diff(closes)
+
+            gains = np.where(deltas > 0, deltas, 0)
+            losses = np.where(deltas < 0, -deltas, 0)
+
+            avg_gain = np.mean(gains[-period:])
+            avg_loss = np.mean(losses[-period:])
+
+            if avg_loss == 0:
+                return 100.0
+
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            return round(float(rsi), 2)
+        except Exception:
+            return None
+
+    def _calculate_sma(self, closes: List[float], period: int) -> Optional[float]:
+        """Calculate Simple Moving Average"""
+        if len(closes) < period:
+            return None
+        try:
+            return round(float(np.mean(closes[-period:])), 2)
+        except Exception:
+            return None
+
+    def _calculate_ema(self, closes: List[float], period: int) -> Optional[float]:
+        """Calculate Exponential Moving Average"""
+        if len(closes) < period:
+            return None
+        try:
+            closes = np.array(closes)
+            multiplier = 2 / (period + 1)
+            ema = closes[0]
+            for price in closes[1:]:
+                ema = (price * multiplier) + (ema * (1 - multiplier))
+            return round(float(ema), 2)
+        except Exception:
+            return None
+
+    def _calculate_macd(self, closes: List[float]) -> Optional[Dict]:
+        """Calculate MACD (12, 26, 9)"""
+        if len(closes) < 26:
+            return None
+        try:
+            closes = np.array(closes)
+
+            # Calculate EMAs
+            ema_12 = self._ema_series(closes, 12)
+            ema_26 = self._ema_series(closes, 26)
+
+            macd_line = ema_12 - ema_26
+            signal_line = self._ema_series(macd_line, 9)
+            histogram = macd_line - signal_line
+
+            return {
+                "macd": round(float(macd_line[-1]), 4),
+                "signal": round(float(signal_line[-1]), 4),
+                "histogram": round(float(histogram[-1]), 4)
+            }
+        except Exception:
+            return None
+
+    def _ema_series(self, data: np.ndarray, period: int) -> np.ndarray:
+        """Calculate EMA series for MACD"""
+        multiplier = 2 / (period + 1)
+        ema = np.zeros_like(data)
+        ema[0] = data[0]
+        for i in range(1, len(data)):
+            ema[i] = (data[i] * multiplier) + (ema[i-1] * (1 - multiplier))
+        return ema
+
+    async def _calculate_all_indicators(self, symbol: str, timeframe: str) -> Dict[str, Any]:
+        """Fetch OHLCV and calculate all indicators locally"""
+        ohlcv = await self._fetch_ohlcv_data(symbol, timeframe, limit=100)
+
+        if not ohlcv or len(ohlcv) < 26:
+            self.logger.warning(f"[INDICATORS] Insufficient OHLCV data for {symbol}")
+            return {
+                "rsi": {"value": None, "period": 14, "interpretation": "N/A"},
+                "macd": {"macd": None, "signal": None, "histogram": None},
+                "sma_20": None,
+                "sma_50": None,
+                "ema_20": None
+            }
+
+        # Extract closing prices
+        closes = [candle.get('close', 0) for candle in ohlcv if candle.get('close')]
+
+        # Calculate indicators
+        rsi_value = self._calculate_rsi(closes, 14)
+        macd_data = self._calculate_macd(closes)
+        sma_20 = self._calculate_sma(closes, 20)
+        sma_50 = self._calculate_sma(closes, 50)
+        ema_20 = self._calculate_ema(closes, 20)
+
+        return {
+            "rsi": {
+                "value": rsi_value,
+                "period": 14,
+                "interpretation": self._interpret_rsi(rsi_value)
+            },
+            "macd": macd_data if macd_data else {"macd": None, "signal": None, "histogram": None},
+            "sma_20": sma_20,
+            "sma_50": sma_50,
+            "ema_20": ema_20
+        }
     
     async def _fetch_current_price(self, symbol: str) -> Optional[float]:
         """Fetch current price"""
@@ -390,43 +494,39 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
         else:
             return "Neutral"
     
-    def _determine_trend(
+    def _determine_trend_from_indicators(
         self,
         price: Optional[float],
-        sma_20: Optional[Dict],
-        sma_50: Optional[Dict],
-        ema_20: Optional[Dict]
+        sma_20: Optional[float],
+        sma_50: Optional[float],
+        ema_20: Optional[float]
     ) -> str:
-        """Determine overall trend based on MAs"""
+        """Determine overall trend based on MAs (accepts direct values)"""
         if price is None:
             return "Unknown"
-        
-        sma20_val = sma_20.get("sma") if sma_20 else None
-        sma50_val = sma_50.get("sma") if sma_50 else None
-        ema20_val = ema_20.get("ema") if ema_20 else None
-        
+
         signals = []
-        
-        if sma20_val and price > sma20_val:
+
+        if sma_20 and price > sma_20:
             signals.append(1)
-        elif sma20_val:
+        elif sma_20:
             signals.append(-1)
-        
-        if sma50_val and price > sma50_val:
+
+        if sma_50 and price > sma_50:
             signals.append(1)
-        elif sma50_val:
+        elif sma_50:
             signals.append(-1)
-        
-        if ema20_val and price > ema20_val:
+
+        if ema_20 and price > ema_20:
             signals.append(1)
-        elif ema20_val:
+        elif ema_20:
             signals.append(-1)
-        
+
         if not signals:
             return "Unknown"
-        
+
         avg_signal = sum(signals) / len(signals)
-        
+
         if avg_signal > 0.5:
             return "Bullish (price above key MAs)"
         elif avg_signal < -0.5:
