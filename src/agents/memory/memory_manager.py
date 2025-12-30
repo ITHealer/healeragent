@@ -9,6 +9,8 @@ from src.handlers.vector_store_handler import VectorStoreQdrant
 from src.helpers.qdrant_connection_helper import QdrantConnection
 # from src.agents.memory.context_compressor import ContextCompressor
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
+from src.handlers.v2.tool_call_handler import tool_call
+from src.database.repository.sessions import SessionRepository
 
 
 # =============================================================================
@@ -67,6 +69,7 @@ class MemoryManager(LoggerMixin):
         self.vector_store = get_vector_store()
         self.qdrant_conn = get_qdrant_connection()
         self.retrieval = get_retrieval()
+        self.session_repo = SessionRepository()
 
         # Memory configuration
         self.short_term_window = 10  # Keep last 10 conversation turns
@@ -579,9 +582,9 @@ class MemoryManager(LoggerMixin):
         try:
             # Determine collection
             collection_name = f"archival_{user_id}" if user_id else "global_knowledge"
-            
-            # Use memory manager's semantic search
-            memories = await self.memory_manager.search_relevant_memory(
+
+            # Use semantic search (this is MemoryManager, so use self)
+            memories = await self.search_relevant_memory(
                 query=query,
                 collection_name=collection_name,
                 top_k=limit
@@ -748,9 +751,9 @@ class MemoryManager(LoggerMixin):
             # Get collection name for this session's short-term memory
             # Use a simple hash of session_id for collection naming
             collection_name = f"memory_short_{session_id[:8]}"
-            
-            # Use memory manager's semantic search
-            memories = await self.memory_manager.search_relevant_memory(
+
+            # Use semantic search (this is MemoryManager, so use self)
+            memories = await self.search_relevant_memory(
                 query=topic,
                 collection_name=collection_name,
                 top_k=limit
