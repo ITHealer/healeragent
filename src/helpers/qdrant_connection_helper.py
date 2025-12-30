@@ -1,4 +1,5 @@
 import uuid
+import asyncio
 import torch
 from qdrant_client import models, QdrantClient
 from typing import Literal, List, Dict, Any, Optional
@@ -18,12 +19,43 @@ TEXT_EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
 LATE_INTERACTION_TEXT_EMBEDDING_MODEL="colbert-ir/colbertv2.0"
 BM25_EMBEDDING_MODEL="Qdrant/bm25"
 
+
+# =============================================================================
+# SINGLETON QDRANT CLIENT - Prevents multiple connection instances
+# =============================================================================
+
+_qdrant_client_instance: Optional[QdrantClient] = None
+_qdrant_client_lock = asyncio.Lock()
+
+
+def get_shared_qdrant_client() -> QdrantClient:
+    """
+    Get or create shared QdrantClient singleton.
+    This prevents creating multiple connections that consume memory.
+    """
+    global _qdrant_client_instance
+
+    if _qdrant_client_instance is None:
+        _qdrant_client_instance = QdrantClient(
+            url=settings.QDRANT_ENDPOINT,
+            timeout=60,  # Reduced from 600s
+            prefer_grpc=True,
+        )
+        # Log only once
+        import logging
+        logging.getLogger(__name__).info(
+            f"[QDRANT] Created singleton client: {settings.QDRANT_ENDPOINT}"
+        )
+
+    return _qdrant_client_instance
+
+
 class QdrantConnection(LoggerMixin):
     """
     Qdrant connection helper with optimized settings.
 
-    Note: Timeout reduced from 600s to 60s to fail fast instead of blocking.
-    For heavy operations, consider increasing timeout or using async patterns.
+    Note: Now uses SINGLETON client to prevent memory issues.
+    Timeout reduced from 600s to 60s to fail fast instead of blocking.
     """
 
     # Reduced timeout to prevent blocking - was 600s
@@ -31,18 +63,14 @@ class QdrantConnection(LoggerMixin):
 
     def __init__(self, embedding_func: HuggingFaceEmbeddings | None = embedding_function):
         super().__init__()
-        self.client = QdrantClient(
-            url=settings.QDRANT_ENDPOINT,
-            timeout=self.QDRANT_TIMEOUT,
-            prefer_grpc=True,  # gRPC is faster than HTTP
-        )
+        # Use singleton client instead of creating new one each time
+        self.client = get_shared_qdrant_client()
         self.embedding_function = embedding_func
 
+        # These are already cached via @lru_cache in text_embedding_helper
         self.text_embedding_model = text_embedding_model
         self.late_interaction_text_embedding_model = late_interaction_text_embedding_model
         self.bm25_embedding_model = bm25_embedding_model
-
-        self.logger.info(f"[QDRANT] Initialized with timeout={self.QDRANT_TIMEOUT}s")
 
 
     async def add_data(self, 

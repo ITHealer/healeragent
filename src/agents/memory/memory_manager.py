@@ -11,18 +11,68 @@ from src.helpers.qdrant_connection_helper import QdrantConnection
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 
 
+# =============================================================================
+# SINGLETON INSTANCES - Prevent multiple heavy objects
+# =============================================================================
+
+_memory_manager_instance: Optional['MemoryManager'] = None
+_vector_store_instance: Optional[VectorStoreQdrant] = None
+_retrieval_instance: Optional[SearchRetrieval] = None
+_qdrant_conn_instance: Optional[QdrantConnection] = None
+
+
+def get_memory_manager() -> 'MemoryManager':
+    """Get or create singleton MemoryManager instance"""
+    global _memory_manager_instance
+    if _memory_manager_instance is None:
+        _memory_manager_instance = MemoryManager()
+    return _memory_manager_instance
+
+
+def get_vector_store() -> VectorStoreQdrant:
+    """Get or create singleton VectorStoreQdrant instance"""
+    global _vector_store_instance
+    if _vector_store_instance is None:
+        _vector_store_instance = VectorStoreQdrant()
+    return _vector_store_instance
+
+
+def get_retrieval() -> SearchRetrieval:
+    """Get or create singleton SearchRetrieval instance"""
+    global _retrieval_instance
+    if _retrieval_instance is None:
+        _retrieval_instance = SearchRetrieval()
+    return _retrieval_instance
+
+
+def get_qdrant_connection() -> QdrantConnection:
+    """Get or create singleton QdrantConnection instance"""
+    global _qdrant_conn_instance
+    if _qdrant_conn_instance is None:
+        _qdrant_conn_instance = QdrantConnection()
+    return _qdrant_conn_instance
+
+
 class MemoryManager(LoggerMixin):
-    """Manage dual memory system: short-term (session) and long-term (knowledge)"""
-    
+    """
+    Manage dual memory system: short-term (session) and long-term (knowledge)
+
+    NOTE: Use get_memory_manager() to get singleton instance instead of
+    creating new MemoryManager() to prevent resource waste.
+    """
+
     def __init__(self):
         super().__init__()
-        self.vector_store = VectorStoreQdrant()
-        self.qdrant_conn = QdrantConnection()
-        self.retrieval = SearchRetrieval()
-        
+        # Use singleton helpers to share connections
+        self.vector_store = get_vector_store()
+        self.qdrant_conn = get_qdrant_connection()
+        self.retrieval = get_retrieval()
+
         # Memory configuration
         self.short_term_window = 10  # Keep last 10 conversation turns
         self.long_term_threshold = 0.7  # Importance score threshold
+
+        self.logger.debug("[MEMORY_MANAGER] Initialized with shared connections")
         
 
     def get_memory_collection_name(self, 
