@@ -263,6 +263,14 @@ async def app_lifespan(app: FastAPI):
             logger.warning("Consumer manager process did not terminate in time. Killing it.")
             consumer_process.kill()
 
+    # 3. Close Redis LLM client (singleton)
+    logger.info("Closing Redis LLM client...")
+    try:
+        from src.helpers.redis_cache import close_redis_llm_client
+        await close_redis_llm_client()
+    except Exception as e:
+        logger.warning(f"Redis LLM client close error: {e}")
+
     logger.info('event=app-shutdown message="All connections are closed."')
 
 

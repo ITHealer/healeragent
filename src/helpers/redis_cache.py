@@ -13,7 +13,7 @@ from src.utils.logger.set_up_log_dataFMP import setup_logger
 logger = setup_logger(__name__, log_level=logging.INFO)
 T = TypeVar("T", bound=BaseModel)
 
-# Timeout settings 
+# Timeout settings
 REDIS_CONNECT_TIMEOUT = 10  # seconds - was 5
 REDIS_SOCKET_TIMEOUT = 10   # seconds
 REDIS_CLOSE_TIMEOUT = 8     # seconds - for graceful close
@@ -25,6 +25,14 @@ REDIS_HEALTH_CHECK_INTERVAL = 30  # seconds
 # Retry settings
 REDIS_RETRY_ATTEMPTS = 3
 REDIS_RETRY_BASE_DELAY = 0.5  # seconds - exponential backoff base
+
+
+# =============================================================================
+# SINGLETON REDIS CLIENT FOR LLM OPERATIONS
+# =============================================================================
+
+_redis_llm_client: Optional[aioredis.Redis] = None
+_redis_llm_lock: asyncio.Lock = asyncio.Lock()
 
 
 # =============================================================================
@@ -538,35 +546,76 @@ async def get_redis_client_for_scheduler() -> AsyncGenerator[Optional[aioredis.R
 
 async def get_redis_client_llm() -> Optional[aioredis.Redis]:
     """
-    Get Redis client for LLM operations (non-context manager version).
-    
-    Note: Caller is responsible for closing the connection!
-    
+    Get SINGLETON Redis client for LLM operations.
+
+    Uses a shared connection to prevent connection leaks.
+    DO NOT close this connection after use - it's shared across the application.
+
     Returns:
-        Redis client or None
+        Redis client singleton or None
     """
+    global _redis_llm_client
+
     if not settings.REDIS_HOST:
         logger.warning("Redis host (LLM) not configured. Cache disabled.")
         return None
-    
-    try:
-        redis_url = await _make_redis_url()
-        redis_conn = await _create_redis_connection(redis_url, decode_responses=True)
-        
-        if redis_conn:
-            await asyncio.wait_for(
-                redis_conn.ping(),
-                timeout=REDIS_CONNECT_TIMEOUT
-            )
-            logger.info(f"Connected to Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-            return redis_conn
-            
-    except (aioredis.ConnectionError, ConnectionRefusedError, asyncio.TimeoutError) as e:
-        logger.error(f"Cannot connect to Redis (LLM): {e}. Cache disabled.")
-    except Exception as e:
-        logger.error(f"Unexpected error connecting to Redis (LLM): {e}")
-    
+
+    # Fast path - already connected
+    if _redis_llm_client is not None:
+        try:
+            # Quick health check
+            await asyncio.wait_for(_redis_llm_client.ping(), timeout=2.0)
+            return _redis_llm_client
+        except Exception:
+            # Connection lost, need to reconnect
+            _redis_llm_client = None
+
+    # Slow path - create new connection with lock
+    async with _redis_llm_lock:
+        # Double-check after acquiring lock
+        if _redis_llm_client is not None:
+            return _redis_llm_client
+
+        try:
+            redis_url = await _make_redis_url()
+            redis_conn = await _create_redis_connection(redis_url, decode_responses=True)
+
+            if redis_conn:
+                await asyncio.wait_for(
+                    redis_conn.ping(),
+                    timeout=REDIS_CONNECT_TIMEOUT
+                )
+                logger.info(f"Connected to Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+                _redis_llm_client = redis_conn
+                return _redis_llm_client
+
+        except (aioredis.ConnectionError, ConnectionRefusedError, asyncio.TimeoutError) as e:
+            logger.error(f"Cannot connect to Redis (LLM): {e}. Cache disabled.")
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to Redis (LLM): {e}")
+
     return None
+
+
+async def close_redis_llm_client() -> None:
+    """
+    Close the singleton Redis LLM client.
+    Call this on application shutdown.
+    """
+    global _redis_llm_client
+
+    async with _redis_llm_lock:
+        if _redis_llm_client is not None:
+            try:
+                await asyncio.wait_for(
+                    _redis_llm_client.close(),
+                    timeout=REDIS_CLOSE_TIMEOUT
+                )
+                logger.info("Redis LLM client closed")
+            except Exception as e:
+                logger.warning(f"Error closing Redis LLM client: {e}")
+            finally:
+                _redis_llm_client = None
 
 
 # =============================================================================
