@@ -6,8 +6,7 @@ from typing import Dict, Optional, List, Tuple, Any
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.retrieval_handler import SearchRetrieval
 from src.handlers.vector_store_handler import VectorStoreQdrant
-from src.helpers.qdrant_connection_helper import QdrantConnection
-# from src.agents.memory.context_compressor import ContextCompressor
+from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.handlers.v2.tool_call_handler import tool_call
 from src.database.repository.sessions import SessionRepository
@@ -20,7 +19,6 @@ from src.database.repository.sessions import SessionRepository
 _memory_manager_instance: Optional['MemoryManager'] = None
 _vector_store_instance: Optional[VectorStoreQdrant] = None
 _retrieval_instance: Optional[SearchRetrieval] = None
-_qdrant_conn_instance: Optional[QdrantConnection] = None
 
 
 def get_memory_manager() -> 'MemoryManager':
@@ -45,14 +43,6 @@ def get_retrieval() -> SearchRetrieval:
     if _retrieval_instance is None:
         _retrieval_instance = SearchRetrieval()
     return _retrieval_instance
-
-
-def get_qdrant_connection() -> QdrantConnection:
-    """Get or create singleton QdrantConnection instance"""
-    global _qdrant_conn_instance
-    if _qdrant_conn_instance is None:
-        _qdrant_conn_instance = QdrantConnection()
-    return _qdrant_conn_instance
 
 
 class MemoryManager(LoggerMixin):

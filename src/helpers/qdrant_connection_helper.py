@@ -66,6 +66,33 @@ def get_shared_qdrant_client() -> QdrantClient:
     return _qdrant_client_instance
 
 
+# =============================================================================
+# SINGLETON QDRANT CONNECTION - Use this instead of QdrantConnection()
+# =============================================================================
+
+_qdrant_connection_instance: Optional['QdrantConnection'] = None
+
+
+def get_qdrant_connection() -> 'QdrantConnection':
+    """
+    Get or create singleton QdrantConnection instance.
+
+    Use this instead of QdrantConnection() to:
+    - Share connection across the application
+    - Prevent multiple heavy object instantiations
+    - Avoid circular import issues
+
+    Example:
+        from src.helpers.qdrant_connection_helper import get_qdrant_connection
+        qdrant = get_qdrant_connection()
+        await qdrant.collection_exists_async("my_collection")
+    """
+    global _qdrant_connection_instance
+    if _qdrant_connection_instance is None:
+        _qdrant_connection_instance = QdrantConnection()
+    return _qdrant_connection_instance
+
+
 class QdrantConnection(LoggerMixin):
     """
     Qdrant connection helper with optimized settings.
