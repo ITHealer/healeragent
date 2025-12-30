@@ -16,15 +16,13 @@ from src.schemas.response import BasicResponse, BasicResponseDelete
 from src.database.models.schemas import ChatSessions
 from src.database.repository.document import FileProcessingRepository
 
-from src.handlers.retrieval_handler import SearchRetrieval
-from src.handlers.vector_store_handler import VectorStoreQdrant
 from src.handlers.multi_collection_retrieval_handler import multi_collection_retriever
 
 from src.helpers.llm_helper import LLMGenerator, LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.helpers.prompt_template_helper import ContextualizeQuestionHistoryTemplate, QuestionAnswerTemplate
-from src.agents.memory.memory_manager import get_memory_manager
+from src.agents.memory.memory_manager import get_memory_manager, get_retrieval, get_vector_store
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
 from src.utils.config import settings
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -39,7 +37,7 @@ class ConversationAnalysis(BaseModel):
 class ChatHandler(LoggerMixin):
     def __init__(self) -> None:
         super().__init__()
-        self.search_retrieval = SearchRetrieval()
+        self.search_retrieval = get_retrieval()
         self.llm_generator = LLMGenerator()
         self.llm_generator_provider = LLMGeneratorProvider()
         self.memory_manager = get_memory_manager()
@@ -126,12 +124,12 @@ class ChatHandler(LoggerMixin):
             
             # Handle collection deletion if needed (including memory collections)
             if delete_collections:
-                vector_store = VectorStoreQdrant()
+                vector_store = get_vector_store()
                 
                 # Delete document collections
                 if collections_docs:
                     for collection_name in collections_docs.keys():
-                        result = vector_store.delete_qdrant_collection(
+                        result = await vector_store.delete_qdrant_collection(
                             collection_name=collection_name,
                             user={"id": user_id},
                             organization_id=organization_id,
