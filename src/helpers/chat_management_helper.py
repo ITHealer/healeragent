@@ -247,11 +247,11 @@ class ChatService(LoggerMixin):
             raise
     
     
-    def delete_chat_session_completely(
-        self, 
-        session_id: str, 
-        delete_documents: bool = False, 
-        delete_collections: bool = False, 
+    async def delete_chat_session_completely(
+        self,
+        session_id: str,
+        delete_documents: bool = False,
+        delete_collections: bool = False,
         organization_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
@@ -350,18 +350,18 @@ class ChatService(LoggerMixin):
             # Delete memory collections if needed
             if delete_collections and memory_collections_to_delete:
                 try:
-                    from src.helpers.qdrant_connection_helper import QdrantConnection
-                    qdrant_conn = QdrantConnection()
-                    
-                    # Get list of existing collections
-                    existing_collections = qdrant_conn.client.get_collections()
+                    from src.helpers.qdrant_connection_helper import get_qdrant_connection
+                    qdrant_conn = get_qdrant_connection()
+
+                    # Get list of existing collections (async to avoid blocking)
+                    existing_collections = await qdrant_conn.get_collections_async()
                     existing_collection_names = [col.name for col in existing_collections.collections]
-                    
+
                     # Delete each memory collection if it exists
                     for memory_collection in set(memory_collections_to_delete):  # Use set to avoid duplicates
                         if memory_collection in existing_collection_names:
                             try:
-                                qdrant_conn.client.delete_collection(collection_name=memory_collection)
+                                await qdrant_conn.delete_collection_async(collection_name=memory_collection)
                                 deleted_items["memory_collections"].append(memory_collection)
                                 self.logger.info(f"Deleted memory collection: {memory_collection}")
                             except Exception as e:

@@ -9,7 +9,7 @@ from typing import Tuple, Optional, Dict, Any, List
 from fastapi import UploadFile
 
 from src.utils.config import settings
-from src.helpers.qdrant_connection_helper import QdrantConnection
+from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.database.repository.document import FileProcessingRepository
 
 from src.handlers.document_extractor_handler import DocumentExtraction
@@ -79,9 +79,9 @@ class MockUploadFile:
 class DataIngestion(LoggerMixin):
     def __init__(self) -> None:
         super().__init__()
-        
-        # Comment out vector database connection
-        self.qdrant_client = QdrantConnection()
+
+        # Use singleton to prevent memory issues
+        self.qdrant_client = get_qdrant_connection()
         self.data_extraction = DocumentExtraction() 
     
     @staticmethod

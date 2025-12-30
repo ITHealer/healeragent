@@ -11,7 +11,7 @@ from src.helpers.risk_analysis_llm_helper import RiskAnalysisLLMHelper
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_chat_helper import (
     stream_with_heartbeat,
     analyze_conversation_importance,
@@ -32,7 +32,7 @@ logger_mixin = LoggerMixin()
 logger = logger_mixin.logger
 market_data = MarketData()
 risk_handler = RiskAnalysisHandler(market_data)
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 chat_service = ChatService()
 

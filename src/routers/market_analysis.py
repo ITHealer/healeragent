@@ -27,7 +27,7 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.language_detector import language_detector, DetectionMethod
 from src.services.background_tasks import trigger_summary_update_nowait
 
@@ -41,7 +41,7 @@ discovery_service = DiscoveryService()
 llm_generator = LLMGeneratorProvider()
 chat_service = ChatService()
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 
 async def analyze_market_movers_with_llm(

@@ -16,7 +16,7 @@ from src.helpers.llm_chat_helper import (
 from src.helpers.token_counter import TokenCounter
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.llm_chat_handler import ChatHandler, ChatService, ConversationAnalysis
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.comprehensive_analysis_handler import ComprehensiveAnalysisHandler
@@ -33,7 +33,7 @@ logger_mixin = LoggerMixin()
 logger = logger_mixin.logger
 chat_service = ChatService()
 chat_handler = ChatHandler()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 sp500_service = SP500Service()
 
 

@@ -112,11 +112,11 @@ class SearchConversationHistoryTool(BaseTool):
         )
     
     async def _get_memory_manager(self):
-        """Lazy load memory manager"""
+        """Lazy load memory manager using singleton"""
         if self._memory_manager is None:
             try:
-                from src.agents.memory.memory_manager import MemoryManager
-                self._memory_manager = MemoryManager()
+                from src.agents.memory.memory_manager import get_memory_manager
+                self._memory_manager = get_memory_manager()
             except ImportError as e:
                 self.logger.warning(f"[CONVERSATION_SEARCH] Could not import MemoryManager: {e}")
         return self._memory_manager

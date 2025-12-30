@@ -21,7 +21,7 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ProviderType
 from src.services.background_tasks import trigger_summary_update_nowait              
@@ -35,7 +35,7 @@ logger_mixin = LoggerMixin()
 logger = logger_mixin.logger
 pattern_handler = PatternRecognitionHandler(market_data)
 llm_helper = ChartAnalysisLLMHelper()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 
 # Schema inputs and outputs

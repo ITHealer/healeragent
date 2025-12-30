@@ -9,7 +9,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.handlers.content_processor import ContentProcessor, ContentTypeDetector
 from src.media.handlers.content_processor_manager import processor_manager
 from src.utils.logger.custom_logging import LoggerMixin
@@ -32,7 +32,7 @@ logger = LoggerMixin().logger
 # API Router
 router = APIRouter(prefix="/summarizer-url")
 
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 chat_service = ChatService()
 api_key_auth = APIKeyAuth()

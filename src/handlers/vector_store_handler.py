@@ -1,6 +1,6 @@
 from typing import Dict, Any, Optional, List
 from src.utils.logger.custom_logging import LoggerMixin
-from src.helpers.qdrant_connection_helper import QdrantConnection
+from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.schemas.response import BasicResponse
 from src.database.services.collection_management import CollectionManagementService
 
@@ -8,13 +8,13 @@ from src.database.services.collection_management import CollectionManagementServ
 class VectorStoreQdrant(LoggerMixin):
     def __init__(self) -> None:
         super().__init__()
-        self.qdrant = QdrantConnection()
+        self.qdrant = get_qdrant_connection()
         self.collection_service = CollectionManagementService()
 
 
-    def create_qdrant_collection(
-        self, 
-        collection_name: str, 
+    async def create_qdrant_collection(
+        self,
+        collection_name: str,
         user: Dict[str, Any],
         organization_id: Optional[str] = None,
         is_personal: bool = False
@@ -36,11 +36,12 @@ class VectorStoreQdrant(LoggerMixin):
             message="create qdrant collection success.",
             data=collection_name
         )
-        
+
         try:
-            if not self.qdrant.client.collection_exists(collection_name=collection_name):
+            # Use async wrapper to avoid blocking
+            if not await self.qdrant.collection_exists_async(collection_name):
                 # 1. Create collection in Qdrant vector database
-                is_created = self.qdrant._create_collection(collection_name)
+                is_created = await self.qdrant._create_collection_async(collection_name)
                 
                 if is_created:
                     # 2. Save metadata to PostgreSQL
@@ -82,8 +83,8 @@ class VectorStoreQdrant(LoggerMixin):
                 data=None
             )
         
-    def delete_qdrant_collection(self, 
-        collection_name: str, 
+    async def delete_qdrant_collection(self,
+        collection_name: str,
         user: Dict[str, Any],
         organization_id: Optional[str] = None,
         is_personal: bool = False
@@ -101,8 +102,8 @@ class VectorStoreQdrant(LoggerMixin):
             BasicResponse: Collection deletion result
         """
         try:
-            # 1. Check if collection exists
-            if self.qdrant.client.collection_exists(collection_name=collection_name):
+            # 1. Check if collection exists (async to avoid blocking)
+            if await self.qdrant.collection_exists_async(collection_name):
                 #2. Check access before deleting
                 has_permission = self.collection_service.check_collection_permission(
                     user_id=user["id"],
@@ -113,8 +114,8 @@ class VectorStoreQdrant(LoggerMixin):
                 )
                 
                 if has_permission:
-                    # 3. Delete collection from Qdrant
-                    self.qdrant._delete_collection(collection_name)
+                    # 3. Delete collection from Qdrant (async to avoid blocking)
+                    await self.qdrant.delete_collection_async(collection_name)
                     
                     # 4. Delete metadata from PostgreSQL (id, user_id, collection_name, organization_id, is_personal)
                     try:
@@ -152,7 +153,7 @@ class VectorStoreQdrant(LoggerMixin):
             )
     
 
-    def list_qdrant_collections(self, 
+    async def list_qdrant_collections(self,
         user: Dict[str, Any] = None,
         organization_id: Optional[str] = None,
         include_personal: bool = True,
@@ -171,9 +172,9 @@ class VectorStoreQdrant(LoggerMixin):
             List[Dict[str, Any]]: List of collections with metadata
         """
         try:
-            # 1. Get a list of all collections from Qdrant
-            collections = self.qdrant.client.get_collections().collections
-            all_collection_names = [c.name for c in collections]
+            # 1. Get a list of all collections from Qdrant (async to avoid blocking)
+            collections_response = await self.qdrant.get_collections_async()
+            all_collection_names = [c.name for c in collections_response.collections]
             
             # 2. Get access information from PostgreSQL
             if user and "id" in user:

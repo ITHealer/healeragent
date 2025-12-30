@@ -5,7 +5,7 @@
 # from typing import List, Dict, Optional, Any
 
 # from src.utils.logger.custom_logging import LoggerMixin
-# from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import get_memory_manager
 # from src.helpers.chat_management_helper import ChatService
 # from src.database.repository.sessions import SessionRepository
 # from src.providers.provider_factory import ProviderType
@@ -554,7 +554,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.chat_management_helper import ChatService
 from src.database.repository.sessions import SessionRepository
 from src.providers.provider_factory import ProviderType
@@ -574,10 +574,10 @@ class MemorySearchService(LoggerMixin):
 
     def __init__(self):
         super().__init__()
-        self.memory_manager = MemoryManager()
+        self.memory_manager = get_memory_manager()
         self.session_repo = SessionRepository()
         self.chat_service = ChatService()
-        
+
         # Initialize Enhanced Tool Execution Service
         self.tool_execution_service = ToolExecutionService()
     

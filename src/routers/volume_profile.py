@@ -21,7 +21,7 @@ from src.helpers.llm_chat_helper import (
     sse_done
 )
 from src.helpers.llm_helper import LLMGeneratorProvider
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.services.background_tasks import trigger_summary_update_nowait
 
 router = APIRouter()
@@ -33,7 +33,7 @@ llm_generator = LLMGeneratorProvider()
 volume_handler = VolumeProfileHandler()
 chat_service = ChatService()
 llm_helper = StatsAnalysisLLMHelper()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 # Schema inputs and outputs
 class StatsAnalysisChatRequest(BaseModel):

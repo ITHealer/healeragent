@@ -10,7 +10,7 @@ from typing import AsyncGenerator, Dict, Any, Optional, List
 from src.utils.config import settings
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.llm_helper import LLMGeneratorProvider
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.helpers.language_detector import language_detector, DetectionMethod
 from src.handlers.llm_chat_handler import ChatService, ChatMessageHistory, ConversationAnalysis
@@ -286,7 +286,7 @@ class LLMStreamingService(LoggerMixin):
     def __init__(self):
         super().__init__()
         self.llm_provider = LLMGeneratorProvider()
-        self.memory_manager = MemoryManager()
+        self.memory_manager = get_memory_manager()
         self.chat_service = ChatService()
         self.news_service = NewsService()
         self.analysis_handler = ComprehensiveAnalysisHandler()

@@ -191,6 +191,19 @@ class QdrantConnection(LoggerMixin):
             collection_name=collection_name
         )
 
+    async def get_collections_async(self):
+        """Non-blocking get all collections"""
+        return await self._run_sync_in_executor(
+            self.client.get_collections
+        )
+
+    async def delete_collection_async(self, collection_name: str) -> bool:
+        """Non-blocking delete collection"""
+        return await self._run_sync_in_executor(
+            self.client.delete_collection,
+            collection_name=collection_name
+        )
+
     async def query_points_async(self, collection_name: str, **kwargs):
         """Non-blocking query points"""
         return await self._run_sync_in_executor(

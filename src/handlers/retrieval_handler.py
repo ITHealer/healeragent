@@ -4,7 +4,7 @@ from langchain_core.documents import Document
 
 from src.utils.config import settings
 from src.utils.logger.custom_logging import LoggerMixin
-from src.helpers.qdrant_connection_helper import QdrantConnection
+from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.helpers.model_loader_helper import ModelLoader, flag_reranker
 from src.database.services.collection_management import CollectionManagementService
 
@@ -14,17 +14,17 @@ class SearchRetrieval(LoggerMixin):
     Handler for retrieving and reranking documents from the vector database.
     Uses singleton pattern to ensure models are loaded only once.
     """
-    
+
     def __init__(self, model_key: Optional[str] = None):
         """
         Initialize the search retrieval handler.
-        
+
         Args:
             model_key (Optional[str]): Key of reranking model in config.
                                       If None, uses the default model.
         """
         super().__init__()
-        self.qdrant_client = QdrantConnection()
+        self.qdrant_client = get_qdrant_connection()
         self.collection_service = CollectionManagementService()
         
         if model_key is None:

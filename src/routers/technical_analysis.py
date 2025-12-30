@@ -22,7 +22,7 @@ from src.providers.provider_factory import ModelProviderFactory
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.routers.llm_chat import analyze_conversation_importance
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ProviderType
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -35,7 +35,7 @@ logger_mixin = LoggerMixin()
 logger = logger_mixin.logger
 market_data = MarketData()
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 llm_helper = TechnicalAnalysisLLMHelper()
 

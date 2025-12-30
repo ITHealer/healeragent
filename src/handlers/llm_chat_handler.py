@@ -24,7 +24,7 @@ from src.helpers.llm_helper import LLMGenerator, LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.qdrant_connection_helper import get_qdrant_connection
 from src.helpers.prompt_template_helper import ContextualizeQuestionHistoryTemplate, QuestionAnswerTemplate
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
 from src.utils.config import settings
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -42,7 +42,7 @@ class ChatHandler(LoggerMixin):
         self.search_retrieval = SearchRetrieval()
         self.llm_generator = LLMGenerator()
         self.llm_generator_provider = LLMGeneratorProvider()
-        self.memory_manager = MemoryManager()
+        self.memory_manager = get_memory_manager()
     
     def create_session_id(self, user_id: str, organization_id: Optional[str] = None) -> BasicResponse:
         try:
@@ -86,9 +86,9 @@ class ChatHandler(LoggerMixin):
         Returns:
             BasicResponseDelete: Response indicating success or failure
         """
-        try:                       
-            # Delete session and get info about related resources
-            result = chat_service.delete_chat_session_completely(
+        try:
+            # Delete session and get info about related resources (async to avoid blocking)
+            result = await chat_service.delete_chat_session_completely(
                 session_id=session_id,
                 delete_documents=delete_documents,
                 delete_collections=delete_collections,

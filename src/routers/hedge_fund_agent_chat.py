@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.hedge_fund_agent_chat_handler import AgentChatHandler
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.handlers.llm_chat_handler import ChatHandler, ChatMessageHistory, ChatService
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.hedge_fund.llm.models import ModelProvider
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/agents")
 # Initialize services
 api_key_auth = APIKeyAuth()
 agent_handler = AgentChatHandler()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 chat_service = ChatService()
 llm_provider = LLMGeneratorProvider()
 logger = logging.getLogger(__name__)

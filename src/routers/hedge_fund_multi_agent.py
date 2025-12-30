@@ -24,7 +24,7 @@ from src.utils.config import settings
 from src.models.equity import APIResponse, APIResponseData
 from src.services.background_tasks import trigger_summary_update_nowait
 
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
@@ -119,8 +119,8 @@ class MultiAgentService:
         # Initialize existing components
         self.chat_service = ChatService()
         
-        # Initialize memory manager with default model
-        self.memory_manager = MemoryManager()
+        # Initialize memory manager with singleton
+        self.memory_manager = get_memory_manager()
         
         # Initialize LLM provider for analysis
         self.llm_provider = LLMGeneratorProvider()
