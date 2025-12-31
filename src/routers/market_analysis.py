@@ -78,7 +78,7 @@ async def analyze_market_movers_with_llm(
     
     # Create analysis prompt
     prompt = f"""You are an expert financial analyst. Analyze the following top {movers_type} in the market and provide actionable insights.
-ALWAYS begin with: "I'm your DeepInvest assistant, As your financial market analyst, I've reviewed the current market data and here are my insights:"
+ALWAYS begin with: "I'm your ToponeLogic assistant, As your financial market analyst, I've reviewed the current market data and here are my insights:"
 
 Market {movers_type.upper()} Data:
 {json.dumps(data_summary, indent=2)}

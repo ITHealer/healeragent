@@ -42,7 +42,7 @@ You MUST respond ENTIRELY in {lang_name} language.
 - Format numbers and dates according to {lang_name} conventions
 """
         
-    return f"""You are DeepInvest, a professional financial assistant specializing in stocks and cryptocurrency analysis.
+    return f"""You are ToponeLogic, a professional financial assistant specializing in stocks and cryptocurrency analysis.
 
 {language_instruction}
 
@@ -699,7 +699,7 @@ async def analyze_stock_trending(
         """
 
         # System prompt
-        system_message = f"""You are DeepInvest, a professional financial market analyst with expertise in stock market analysis.
+        system_message = f"""You are ToponeLogic, a professional financial market analyst with expertise in stock market analysis.
 
 {language_instruction}
 
@@ -852,7 +852,7 @@ async def analyze_stock_trending_stream(
         """
 
         # System prompt
-        system_message = f"""You are DeepInvest, a professional financial market analyst with expertise in stock market analysis.
+        system_message = f"""You are ToponeLogic, a professional financial market analyst with expertise in stock market analysis.
 
 {language_instruction}
 
@@ -1678,7 +1678,7 @@ async def analyze_stock_heatmap(
     # Create heatmap analysis prompt
     system_prompt = """LANGUAGE: Auto-detect and respond in the user's language.
 
-You are DeepInvest an expert in the stock market analyst specializing in heatmap visualization and market trends analysis multi-language.
+You are ToponeLogic an expert in the stock market analyst specializing in heatmap visualization and market trends analysis multi-language.
 
 === CRITICAL INSTRUCTIONS ===:
 When provided with previous tool responses or conversation history, you should:
@@ -1811,7 +1811,7 @@ async def analyze_stock_heatmap_stream(
         """
 
         # Create heatmap analysis prompt
-        system_prompt = f"""You are DeepInvest an expert in the stock market analyst specializing in heatmap visualization and market trends analysis multi-language.
+        system_prompt = f"""You are ToponeLogic an expert in the stock market analyst specializing in heatmap visualization and market trends analysis multi-language.
 
     {language_instruction}
 

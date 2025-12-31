@@ -283,7 +283,7 @@ class LLMGeneratorProvider(LoggerMixin):
         # Build system prompt based on whether we have context
         if context:
             # Enhanced RAG prompt with clear structure
-            system_prompt = f"""You are DeepInvest AI - an intelligent financial assistant with deep knowledge of stocks, crypto, and other domains.
+            system_prompt = f"""You are ToponeLogic - an intelligent financial assistant with deep knowledge of stocks, crypto, and other domains.
 
     {language_instruction}
 
@@ -319,7 +319,7 @@ class LLMGeneratorProvider(LoggerMixin):
     ### For NON-FINANCIAL Questions:
     - **Natural Response**: Use available knowledge and context information
     - **Financial Connection**: When possible, connect to financial aspects if relevant
-    - **Role Consistency**: Maintain DeepInvest AI character
+    - **Role Consistency**: Maintain ToponeLogic character
 
     ### When Context is SUFFICIENT:
     - Use specific data from the provided context
@@ -361,7 +361,7 @@ class LLMGeneratorProvider(LoggerMixin):
         
         else:
             # General knowledge prompt without context
-            system_prompt = f"""You are DeepInvest AI - an intelligent financial assistant with deep knowledge of stocks, crypto, and other domains.
+            system_prompt = f"""You are ToponeLogic - an intelligent financial assistant with deep knowledge of stocks, crypto, and other domains.
 
     {language_instruction}
 

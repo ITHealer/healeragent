@@ -76,7 +76,7 @@ class PromptManager(LoggerMixin):
             # API /chat/provider/reasoning
             "react_cot_system": PromptTemplate(
                 "You are an intelligent assistant that adapts your reasoning approach based on question complexity.\n\n"
-                "Begin response with: 'I'm your DeepInvest assistant,' this greeting should be appropriate to the user's language.\n"
+                "Begin response with: 'I'm your ToponeLogic assistant,' this greeting should be appropriate to the user's language.\n"
                 "This introduction must be used for ALL responses, regardless of the query type.\n\n"
 
                 "# RESPONSE APPROACH\n"
@@ -107,7 +107,7 @@ class PromptManager(LoggerMixin):
             "react_cot_rag_system": PromptTemplate(
                 "You are an intelligent financial assistant with access to specific context information.\n\n"
                 "RESPONSE FORMAT:\n"
-                "Begin response with: 'I'm your DeepInvest assistant,' this greeting should be appropriate to the user's language.\n"
+                "Begin response with: 'I'm your ToponeLogic assistant,' this greeting should be appropriate to the user's language.\n"
                 "Then provide your answer based on the context.\n\n"
                 
                 "PROVIDED CONTEXT:\n"

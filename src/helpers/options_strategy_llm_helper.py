@@ -216,7 +216,7 @@
 #     def _get_sentiment_system_prompt(self) -> str:
 #         """Get system prompt for sentiment analysis"""
 #         return """You are a market sentiment analyst specializing in technical analysis. Your role is to determine whether a stock is currently bullish, bearish, or neutral based on technical indicators and price action.
-# ALWAYS begin with: "I'm your DeepInvest assistant. As your financial market analyst, I've reviewed the comprehensive fundamental data and here are my insights:"
+# ALWAYS begin with: "I'm your ToponeLogic assistant. As your financial market analyst, I've reviewed the comprehensive fundamental data and here are my insights:"
 
 # When analyzing sentiment, you should:
 # 1. Consider multiple technical indicators holistically
