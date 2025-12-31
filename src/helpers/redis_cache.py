@@ -1,14 +1,32 @@
 import json
 import asyncio
 from typing import Optional, Any, List, Type, TypeVar, AsyncGenerator
-import logging 
+import logging
 
 from pydantic import BaseModel
-import aioredis
 from contextlib import asynccontextmanager
 from src.models.equity import PaginatedData
 from src.utils.config import settings
 from src.utils.logger.set_up_log_dataFMP import setup_logger
+
+# Import aioredis/redis with BlockingConnectionPool support
+# Works with both old aioredis and new redis-py (4.2+)
+try:
+    import aioredis
+    # Try modern redis-py path first (aioredis was merged into redis-py)
+    try:
+        from aioredis.connection import BlockingConnectionPool
+    except ImportError:
+        try:
+            from aioredis import BlockingConnectionPool
+        except ImportError:
+            # Fallback: redis-py asyncio module
+            from redis.asyncio.connection import BlockingConnectionPool
+    HAS_BLOCKING_POOL = True
+except ImportError:
+    # Last resort: use regular aioredis without BlockingConnectionPool
+    import aioredis
+    HAS_BLOCKING_POOL = False
 
 logger = setup_logger(__name__, log_level=logging.INFO)
 T = TypeVar("T", bound=BaseModel)
@@ -18,9 +36,10 @@ REDIS_CONNECT_TIMEOUT = 10  # seconds - was 5
 REDIS_SOCKET_TIMEOUT = 10   # seconds
 REDIS_CLOSE_TIMEOUT = 8     # seconds - for graceful close
 
-# Connection pool settings
-REDIS_MAX_CONNECTIONS = 50  # Max concurrent connections
+# Connection pool settings - PRODUCTION READY
+REDIS_MAX_CONNECTIONS = 100  # Increased for high traffic (was 50)
 REDIS_HEALTH_CHECK_INTERVAL = 30  # seconds
+REDIS_POOL_TIMEOUT = 20  # seconds - time to wait for available connection
 
 # Retry settings
 REDIS_RETRY_ATTEMPTS = 3
@@ -55,22 +74,45 @@ async def _create_redis_connection(
     decode_responses: bool = False
 ) -> Optional[aioredis.Redis]:
     """
-    Create a single Redis connection with proper timeout settings.
-    
+    Create a Redis client with BlockingConnectionPool for production.
+
+    BlockingConnectionPool WAITS for available connection instead of throwing
+    ConnectionError when pool is exhausted. Critical for high-traffic production.
+
     Returns:
         Redis client or None if connection failed
     """
     try:
-        client = await aioredis.from_url(
-            redis_url,
-            encoding="utf-8",
-            decode_responses=decode_responses,
-            socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
-            socket_timeout=REDIS_SOCKET_TIMEOUT,
-            max_connections=REDIS_MAX_CONNECTIONS,
-            retry_on_timeout=True,  
-            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
-        )
+        if HAS_BLOCKING_POOL:
+            # PRODUCTION MODE: Use BlockingConnectionPool
+            # WAITS for connection instead of throwing error when pool exhausted
+            # Critical for handling thousands of concurrent users
+            pool = BlockingConnectionPool.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=decode_responses,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                timeout=REDIS_POOL_TIMEOUT,  # Wait up to 20s for available connection
+                retry_on_timeout=True,
+                health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
+            )
+            client = aioredis.Redis(connection_pool=pool)
+            logger.info(f"Redis BlockingConnectionPool created (max={REDIS_MAX_CONNECTIONS}, timeout={REDIS_POOL_TIMEOUT}s)")
+        else:
+            # FALLBACK MODE: Regular ConnectionPool (will throw error if exhausted)
+            logger.warning("BlockingConnectionPool not available, using regular pool (may throw ConnectionError under load)")
+            client = await aioredis.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=decode_responses,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                retry_on_timeout=True,
+                health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
+            )
         return client
     except Exception as e:
         logger.error(f"Failed to create Redis connection: {e}")
