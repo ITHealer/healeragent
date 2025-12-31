@@ -1,3 +1,11 @@
+"""
+Memory Consolidation Agent for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Use get_consolidation_agent() singleton to avoid memory leaks
+- Uses LLM for semantic understanding of memory updates
+"""
+
 import json
 import hashlib
 from typing import Dict, List, Optional, Any, Literal
@@ -6,8 +14,41 @@ from enum import Enum
 from pydantic import BaseModel, Field, ConfigDict
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.helpers.llm_helper import LLMGeneratorProvider
+from src.helpers.llm_helper import LLMGeneratorProvider, get_llm_provider
 from src.providers.provider_factory import ProviderType
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_consolidation_agent_instance: Optional['MemoryConsolidationAgent'] = None
+
+
+def get_consolidation_agent(
+    model_name: str = "gpt-4.1-nano",
+    provider_type: str = ProviderType.OPENAI
+) -> 'MemoryConsolidationAgent':
+    """
+    Get singleton instance of MemoryConsolidationAgent.
+
+    Use this instead of MemoryConsolidationAgent() to prevent memory leaks.
+
+    Args:
+        model_name: LLM model for semantic analysis
+        provider_type: LLM provider
+
+    Returns:
+        MemoryConsolidationAgent singleton instance
+    """
+    global _consolidation_agent_instance
+
+    if _consolidation_agent_instance is None:
+        _consolidation_agent_instance = MemoryConsolidationAgent(
+            model_name=model_name,
+            provider_type=provider_type
+        )
+
+    return _consolidation_agent_instance
 
 
 class ConsolidationAction(str, Enum):
@@ -95,16 +136,20 @@ class MemoryConsolidationAgent(LoggerMixin):
     ):
         """
         Initialize Consolidation Agent
-        
+
+        Uses singleton LLMGeneratorProvider for efficiency.
+
         Args:
             model_name: LLM model for semantic analysis
             provider_type: LLM provider
         """
         super().__init__()
-        self.llm_provider = LLMGeneratorProvider()
+
+        # Use singleton for LLM provider
+        self.llm_provider = get_llm_provider()
         self.model_name = model_name
         self.provider_type = provider_type
-        
+
         self.logger.info("[MEMORY-CONSOLIDATION] Initialized successfully")
     
 

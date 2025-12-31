@@ -1,3 +1,11 @@
+"""
+LLM Helper - Provides LLM generation utilities
+
+PRODUCTION NOTES:
+- Use get_llm_provider() singleton for LLMGeneratorProvider
+- Caches provider instances internally for efficiency
+"""
+
 import re
 from typing import AsyncGenerator, Optional, Dict, Any, List
 from langchain_community.chat_models import ChatOllama
@@ -7,6 +15,31 @@ from src.utils.config import settings
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.model_manager import model_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
+
+
+# =============================================================================
+# SINGLETON INSTANCE FOR LLMGeneratorProvider
+# =============================================================================
+_llm_provider_instance: Optional['LLMGeneratorProvider'] = None
+
+
+def get_llm_provider() -> 'LLMGeneratorProvider':
+    """
+    Get singleton instance of LLMGeneratorProvider.
+
+    LLMGeneratorProvider caches provider instances, so sharing
+    a single instance is more efficient for production.
+
+    Returns:
+        LLMGeneratorProvider singleton instance
+    """
+    global _llm_provider_instance
+
+    if _llm_provider_instance is None:
+        _llm_provider_instance = LLMGeneratorProvider()
+
+    return _llm_provider_instance
+
 
 class LLMGenerator(LoggerMixin):
     def __init__(self):

@@ -1,11 +1,39 @@
 """
 Token Counter Utility
 Provides accurate token counting for different LLM models
+
+PRODUCTION NOTES:
+- Use get_token_counter() singleton to avoid memory leaks
+- TokenCounter caches tiktoken encoding for efficiency
 """
 
 import tiktoken
 from typing import List, Dict, Optional
 from src.utils.logger.custom_logging import LoggerMixin
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_token_counter_instance: Optional['TokenCounter'] = None
+
+
+def get_token_counter() -> 'TokenCounter':
+    """
+    Get singleton instance of TokenCounter.
+
+    TokenCounter uses tiktoken which caches encodings, so sharing
+    a single instance is more efficient for production.
+
+    Returns:
+        TokenCounter singleton instance
+    """
+    global _token_counter_instance
+
+    if _token_counter_instance is None:
+        _token_counter_instance = TokenCounter()
+
+    return _token_counter_instance
 
 
 class TokenCounter(LoggerMixin):

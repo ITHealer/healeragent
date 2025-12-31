@@ -1,15 +1,24 @@
+"""
+Memory Update Agent for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Uses singleton patterns for heavy objects (CoreMemory, LLMProvider)
+- ConsolidationAgent is created per-instance as it has custom config
+"""
+
 import json
 from typing import Dict, Optional, List, TypedDict, Any
 from datetime import datetime
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.memory.core_memory import CoreMemory
+from src.agents.memory.core_memory import get_core_memory
 from src.agents.memory.consolidation_agent import (
     MemoryConsolidationAgent,
     ConsolidationAction,
-    ConsolidationDecision
+    ConsolidationDecision,
+    get_consolidation_agent
 )
-from src.helpers.llm_helper import LLMGeneratorProvider
+from src.helpers.llm_helper import LLMGeneratorProvider, get_llm_provider
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.utils.config import settings
 
@@ -24,33 +33,67 @@ class MemoryUpdateResult(TypedDict, total=False):
     error: str
 
 
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_memory_update_agent_instance: Optional['MemoryUpdateAgent'] = None
+
+
+def get_memory_update_agent(use_consolidation: bool = True) -> 'MemoryUpdateAgent':
+    """
+    Get singleton instance of MemoryUpdateAgent.
+
+    Use this instead of MemoryUpdateAgent() to prevent memory leaks.
+
+    Args:
+        use_consolidation: Whether to enable consolidation
+
+    Returns:
+        MemoryUpdateAgent singleton instance
+    """
+    global _memory_update_agent_instance
+
+    if _memory_update_agent_instance is None:
+        _memory_update_agent_instance = MemoryUpdateAgent(use_consolidation)
+
+    return _memory_update_agent_instance
+
+
 class MemoryUpdateAgent(LoggerMixin):
     """
+    Memory Update Agent for extracting and storing user profile info.
+
     Flow:
-    1. Extract Info
+    1. Extract Info from conversation
     2. Load Existing Memory
-    3. Consolidate
+    3. Consolidate (smart merge/update/delete)
     4. Apply Action (ADD/UPDATE/DELETE/MERGE/NOOP)
+
+    IMPORTANT: Use get_memory_update_agent() singleton for production.
     """
-    
+
     def __init__(self, use_consolidation: bool = True):
         """
         Initialize Memory Update Agent
-        
+
+        Uses singleton instances for heavy objects.
+
         Args:
             use_consolidation: Whether to use ConsolidationAgent for smart merging
         """
         super().__init__()
-        self.core_memory = CoreMemory()
-        self.llm_provider = LLMGeneratorProvider()
+
+        # Use singletons for heavy objects
+        self.core_memory = get_core_memory()
+        self.llm_provider = get_llm_provider()
         self.use_consolidation = use_consolidation
-        
-        # Initialize consolidation agent if enabled
+
+        # Initialize consolidation agent if enabled (use singleton)
         if use_consolidation:
-            self.consolidation_agent = MemoryConsolidationAgent()
+            self.consolidation_agent = get_consolidation_agent()
         else:
             self.consolidation_agent = None
-        
+
         self.logger.info(
             f"[MEMORY_UPDATE_AGENT] Initialized successfully "
             f"(consolidation={'ON' if use_consolidation else 'OFF'})"

@@ -1,33 +1,45 @@
+"""
+Recursive Summary Manager for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Uses singleton patterns for SummaryRepository and ChatService
+- All database operations are async (non-blocking)
+- Optimized thresholds for production workloads
+"""
+
 from typing import Optional, Dict, List, Tuple, Any
 from datetime import datetime
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.database.repository.summary import SummaryRepository
+from src.database.repository.summary import get_summary_repository
 from src.services.summary_generation_service import SummaryGenerationService
-from src.helpers.chat_management_helper import ChatService
+from src.helpers.chat_management_helper import get_chat_service
 from src.providers.provider_factory import ProviderType
 
 
 class RecursiveSummaryManager(LoggerMixin):
     """
     Manages recursive conversation summaries
-    
+
     Pattern:
-    - Messages 1-10 → Summary v1
-    - Messages 11-20 + Summary v1 → Summary v2
-    - Messages 21-30 + Summary v2 → Summary v3
-    
+    - Messages 1-15 → Summary v1
+    - Messages 16-30 + Summary v1 → Summary v2
+    - Messages 31-45 + Summary v2 → Summary v3
+
     Key Features:
     - Progressive summarization to handle long conversations
     - Preserves important context while reducing token usage
     - Integrates with context compaction for memory efficiency
+    - Non-blocking async database operations for production
     """
-    
-    # Configuration
-    MESSAGE_THRESHOLD = 10  # Create summary every N messages
-    MAX_SUMMARY_TOKENS = 1000  # Keep summaries concise
-    MIN_NEW_MESSAGES_FOR_RECURSIVE = 5  # Min new messages before creating new summary
-    
+
+    # ==========================================================================
+    # PRODUCTION CONFIGURATION
+    # ==========================================================================
+    MESSAGE_THRESHOLD = 15          # Create summary every N messages (was 10)
+    MAX_SUMMARY_TOKENS = 1500       # Keep summaries concise (was 1000)
+    MIN_NEW_MESSAGES_FOR_RECURSIVE = 8  # Min new messages for recursive (was 5)
+
     def __init__(
         self,
         model_name: str = "gpt-4.1-nano",
@@ -35,17 +47,23 @@ class RecursiveSummaryManager(LoggerMixin):
     ):
         """
         Initialize RecursiveSummaryManager
-        
+
+        Uses singleton instances to prevent memory leaks in production.
+
         Args:
             model_name: LLM model for summarization
             provider_type: LLM provider
         """
         super().__init__()
-        self.summary_repo = SummaryRepository()
+
+        # Use singletons instead of creating new instances
+        self.summary_repo = get_summary_repository()
+        self.chat_service = get_chat_service()
+
+        # SummaryGenerationService is lightweight, can create per instance
         self.summary_service = SummaryGenerationService(model_name=model_name)
-        self.chat_service = ChatService()
         self.provider_type = provider_type
-        
+
         self.logger.info(
             f"[RECURSIVE-SUMMARY] Initialized with threshold={self.MESSAGE_THRESHOLD}, "
             f"model={model_name}"
@@ -55,24 +73,27 @@ class RecursiveSummaryManager(LoggerMixin):
     async def get_active_summary(self, session_id: str) -> Optional[str]:
         """
         Get current active summary for a session
-        
+
+        Uses async database call to avoid blocking event loop.
+
         Args:
             session_id: Session identifier
-            
+
         Returns:
             Summary text or None
         """
         try:
-            summary = self.summary_repo.get_active_summary(session_id)
-            
+            # Use async method to avoid blocking event loop
+            summary = await self.summary_repo.get_active_summary_async(session_id)
+
             if summary:
                 self.logger.debug(
                     f"[SUMMARY] Loaded v{summary['version']} for session {session_id[:8]}"
                 )
                 return summary['summary_text']
-            
+
             return None
-            
+
         except Exception as e:
             self.logger.error(f"[SUMMARY] Error getting active summary: {e}")
             return None
@@ -109,16 +130,16 @@ class RecursiveSummaryManager(LoggerMixin):
                 f"[SUMMARY CHECK] Session: {session_id[:8]}..., User: {user_id}"
             )
 
-            # Step 1: Get message count
-            message_count = self._get_session_message_count(session_id)
-            
+            # Step 1: Get message count (async)
+            message_count = await self._get_session_message_count_async(session_id)
+
             self.logger.info(
                 f"[SUMMARY CHECK] Total messages: {message_count}, "
                 f"Threshold: {self.MESSAGE_THRESHOLD}"
             )
-            
-            # Step 2: Get existing summary
-            existing_summary = self.summary_repo.get_active_summary(session_id)
+
+            # Step 2: Get existing summary (async)
+            existing_summary = await self.summary_repo.get_active_summary_async(session_id)
             
             # Step 3: Determine if summary is needed
             should_create, reason = self._should_create_summary(
@@ -314,38 +335,38 @@ class RecursiveSummaryManager(LoggerMixin):
             Dict with creation result
         """
         try:
-            # Get messages to summarize
-            messages = self._get_messages_for_summary(
+            # Get messages to summarize (async)
+            messages = await self._get_messages_for_summary_async(
                 session_id=session_id,
                 start_index=0,
                 count=message_count
             )
-            
+
             if not messages:
                 return {
                     'created': False,
                     'error': 'No messages to summarize'
                 }
-            
+
             self.logger.debug(
                 f"[SUMMARY] Generating initial summary from {len(messages)} messages"
             )
-            
+
             # Generate summary
             summary_result = await self.summary_service.generate_initial_summary(
                 messages=messages,
                 model_name=model_name,
                 provider_type=provider_type
             )
-            
+
             if not summary_result.get('summary_text'):
                 return {
                     'created': False,
                     'error': 'Summary generation failed - no text returned'
                 }
-            
-            # Save to database
-            summary_id = self.summary_repo.create_summary(
+
+            # Save to database (async)
+            summary_id = await self.summary_repo.create_summary_async(
                 session_id=session_id,
                 user_id=user_id,
                 organization_id=organization_id,
@@ -417,25 +438,25 @@ class RecursiveSummaryManager(LoggerMixin):
                     'created': False,
                     'reason': 'no_new_messages'
                 }
-            
-            # Get new messages
-            new_messages = self._get_messages_for_summary(
+
+            # Get new messages (async)
+            new_messages = await self._get_messages_for_summary_async(
                 session_id=session_id,
                 start_index=previous_total,
                 count=new_message_count
             )
-            
+
             if not new_messages:
                 return {
                     'created': False,
                     'error': 'Could not retrieve new messages'
                 }
-            
+
             self.logger.debug(
                 f"[SUMMARY] Generating recursive summary: "
                 f"v{existing_summary['version']} + {len(new_messages)} new messages"
             )
-            
+
             # Generate recursive summary
             summary_result = await self.summary_service.generate_recursive_summary(
                 previous_summary=existing_summary['summary_text'],
@@ -443,17 +464,17 @@ class RecursiveSummaryManager(LoggerMixin):
                 model_name=model_name,
                 provider_type=provider_type
             )
-            
+
             if not summary_result.get('summary_text'):
                 return {
                     'created': False,
                     'error': 'Recursive summary generation failed'
                 }
-            
-            # Save new version
+
+            # Save new version (async)
             new_version = existing_summary['version'] + 1
-            
-            summary_id = self.summary_repo.create_summary(
+
+            summary_id = await self.summary_repo.create_summary_async(
                 session_id=session_id,
                 user_id=user_id,
                 organization_id=organization_id,
@@ -493,7 +514,7 @@ class RecursiveSummaryManager(LoggerMixin):
     
     
     def _get_session_message_count(self, session_id: str) -> int:
-        """Get total message count for a session"""
+        """Get total message count for a session (sync - legacy)"""
         try:
             history = self.chat_service.get_chat_history(
                 session_id=session_id,
@@ -503,8 +524,27 @@ class RecursiveSummaryManager(LoggerMixin):
         except Exception as e:
             self.logger.error(f"[SUMMARY] Error getting message count: {e}")
             return 0
-    
-    
+
+    async def _get_session_message_count_async(self, session_id: str) -> int:
+        """
+        Get total message count for a session (async - non-blocking).
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Number of messages in the session
+        """
+        try:
+            history = await self.chat_service.get_chat_history_async(
+                session_id=session_id,
+                limit=1000  # Get large number to count
+            )
+            return len(history)
+        except Exception as e:
+            self.logger.error(f"[SUMMARY] Error getting message count: {e}")
+            return 0
+
     def _get_messages_for_summary(
         self,
         session_id: str,
@@ -512,13 +552,13 @@ class RecursiveSummaryManager(LoggerMixin):
         count: int
     ) -> List[Dict[str, str]]:
         """
-        Get messages for summarization
-        
+        Get messages for summarization (sync - legacy)
+
         Args:
             session_id: Session identifier
             start_index: Starting message index
             count: Number of messages to get
-            
+
         Returns:
             List of message dicts with 'role', 'content', 'id'
         """
@@ -528,18 +568,18 @@ class RecursiveSummaryManager(LoggerMixin):
                 session_id=session_id,
                 limit=1000
             )
-            
+
             # Reverse to chronological order (oldest first)
             all_messages.reverse()
-            
+
             # Slice to get target range
             target_messages = all_messages[start_index:start_index + count]
-            
+
             # Convert to format for LLM
             formatted_messages = []
             for msg in target_messages:
                 content, role = msg  # (content, role) tuple
-                
+
                 # Map role
                 if role == 'user':
                     llm_role = 'user'
@@ -547,14 +587,68 @@ class RecursiveSummaryManager(LoggerMixin):
                     llm_role = 'assistant'
                 else:
                     llm_role = 'user'  # Default
-                
+
                 formatted_messages.append({
                     'role': llm_role,
                     'content': content
                 })
-            
+
             return formatted_messages
-            
+
+        except Exception as e:
+            self.logger.error(f"[SUMMARY] Error getting messages for summary: {e}")
+            return []
+
+    async def _get_messages_for_summary_async(
+        self,
+        session_id: str,
+        start_index: int,
+        count: int
+    ) -> List[Dict[str, str]]:
+        """
+        Get messages for summarization (async - non-blocking).
+
+        Args:
+            session_id: Session identifier
+            start_index: Starting message index
+            count: Number of messages to get
+
+        Returns:
+            List of message dicts with 'role', 'content'
+        """
+        try:
+            # Get all messages (async)
+            all_messages = await self.chat_service.get_chat_history_async(
+                session_id=session_id,
+                limit=1000
+            )
+
+            # Reverse to chronological order (oldest first)
+            all_messages.reverse()
+
+            # Slice to get target range
+            target_messages = all_messages[start_index:start_index + count]
+
+            # Convert to format for LLM
+            formatted_messages = []
+            for msg in target_messages:
+                content, role = msg  # (content, role) tuple
+
+                # Map role
+                if role == 'user':
+                    llm_role = 'user'
+                elif role == 'assistant':
+                    llm_role = 'assistant'
+                else:
+                    llm_role = 'user'  # Default
+
+                formatted_messages.append({
+                    'role': llm_role,
+                    'content': content
+                })
+
+            return formatted_messages
+
         except Exception as e:
             self.logger.error(f"[SUMMARY] Error getting messages for summary: {e}")
             return []

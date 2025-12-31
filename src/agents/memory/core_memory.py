@@ -1,11 +1,43 @@
+"""
+Core Memory Manager for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Use get_core_memory() singleton to avoid memory leaks
+- CoreMemory is lightweight but should be shared across handlers
+"""
+
 import yaml
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from datetime import datetime
 from pathlib import Path
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.helpers.token_counter import TokenCounter
+from src.helpers.token_counter import TokenCounter, get_token_counter
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_core_memory_instance: Optional['CoreMemory'] = None
+
+
+def get_core_memory() -> 'CoreMemory':
+    """
+    Get singleton instance of CoreMemory.
+
+    Use this instead of CoreMemory() to prevent multiple instances
+    when handling thousands of concurrent requests.
+
+    Returns:
+        CoreMemory singleton instance
+    """
+    global _core_memory_instance
+
+    if _core_memory_instance is None:
+        _core_memory_instance = CoreMemory()
+
+    return _core_memory_instance
 
 
 class CoreMemory(LoggerMixin):
@@ -25,15 +57,18 @@ class CoreMemory(LoggerMixin):
     def __init__(self, config_dir: str = "src/config"):
         """
         Initialize Core Memory Manager
-        
+
+        Uses singleton TokenCounter for efficiency.
+
         Args:
             config_dir: Directory containing YAML config files
         """
         super().__init__()
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.token_counter = TokenCounter()
+
+        # Use singleton for token counter
+        self.token_counter = get_token_counter()
         
         # Default paths
         self.default_persona_path = self.config_dir / "default_persona.yaml"

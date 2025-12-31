@@ -1,3 +1,11 @@
+"""
+Context Compressor for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Uses singleton LLMGeneratorProvider for efficiency
+- Optimized config parameters for production workloads
+"""
+
 import functools
 import re
 import json
@@ -7,7 +15,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.helpers.llm_helper import LLMGeneratorProvider
+from src.helpers.llm_helper import LLMGeneratorProvider, get_llm_provider
 from src.providers.provider_factory import ProviderType
 
 # Token counting
@@ -61,22 +69,28 @@ class CompactionStrategy(Enum):
 
 @dataclass
 class CompactionConfig:
-    """Configuration for context compaction"""
-    
-    # Thresholds
-    token_threshold: int = 100000          # Trigger at this token count
+    """
+    Configuration for context compaction.
+
+    PRODUCTION OPTIMIZED - these values are tuned for production workloads.
+    """
+
+    # ==========================================================================
+    # PRODUCTION-OPTIMIZED THRESHOLDS
+    # ==========================================================================
+    token_threshold: int = 80000           # Trigger compaction earlier (was 100000)
     token_target: int = 50000              # Target after compaction
-    message_threshold: int = 50            # Trigger at this message count
-    
+    message_threshold: int = 40            # Trigger at fewer messages (was 50)
+
     # Strategy
     strategy: CompactionStrategy = CompactionStrategy.SMART_SUMMARY
-    
-    # Retention
-    retention_window: int = 6              # Messages to keep unchanged
+
+    # Retention - keep more context for better coherence
+    retention_window: int = 10             # Messages to keep unchanged (was 6)
     preserve_system: bool = True           # Always keep system prompt
-    
+
     # Summary settings
-    max_summary_tokens: int = 2000         # Max tokens for summary
+    max_summary_tokens: int = 2500         # Slightly larger summaries (was 2000)
     summary_model: str = "gpt-4.1-nano"    # Model for summarization
     
     # Advanced
@@ -242,15 +256,18 @@ class ContextCompressor(LoggerMixin):
     ):
         """
         Initialize Context Compressor
-        
+
+        Uses singleton LLMGeneratorProvider for efficiency.
+
         Args:
             config: Compaction configuration (uses defaults if None)
         """
         super().__init__()
-        
+
         self.config = config or CompactionConfig()
-        self.llm_provider = LLMGeneratorProvider()
-        
+        # Use singleton for LLM provider
+        self.llm_provider = get_llm_provider()
+
         self.logger.info(
             f"[CONTEXT COMPRESSOR] Initialized with strategy={self.config.strategy.value}, "
             f"threshold={self.config.token_threshold} tokens"

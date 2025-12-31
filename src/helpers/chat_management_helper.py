@@ -1,4 +1,15 @@
+"""
+Chat Management Helper
+
+PRODUCTION NOTES:
+- Use get_chat_service() singleton to avoid memory leaks
+- Use async methods (get_chat_history_async, etc.) for non-blocking operations
+- Sync methods kept for backward compatibility but should be migrated
+"""
+
+import asyncio
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -8,11 +19,51 @@ from src.database.models.schemas import ChatSessions
 from src.database import get_postgres_db
 
 
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_chat_service_instance: Optional['ChatService'] = None
+
+# Thread pool for running sync DB operations without blocking event loop
+_chat_db_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="chat_service_")
+
+
+def get_chat_service() -> 'ChatService':
+    """
+    Get singleton instance of ChatService.
+
+    Use this instead of ChatService() to prevent memory leaks
+    when handling thousands of concurrent requests.
+
+    Returns:
+        ChatService singleton instance
+    """
+    global _chat_service_instance
+
+    if _chat_service_instance is None:
+        _chat_service_instance = ChatService()
+
+    return _chat_service_instance
+
+
 class ChatService(LoggerMixin):
+    """
+    Chat management service for handling chat sessions and messages.
+
+    IMPORTANT: Use get_chat_service() singleton instead of direct instantiation.
+
+    For async contexts, use the async methods:
+    - get_chat_history_async()
+    - create_chat_session_async()
+    - save_user_question_async()
+    - save_assistant_response_async()
+    """
+
     def __init__(self):
         super().__init__()
         self.chat_repo = ChatRepository()
         self.db = get_postgres_db()
+        self._executor = _chat_db_executor  # Shared thread pool
 
     def create_chat_session(self, user_id: str, organization_id: Optional[str] = None) -> str:
         """
@@ -609,3 +660,163 @@ class ChatService(LoggerMixin):
         except Exception as e:
             self.logger.error(f"Error getting sources by message: {str(e)}")
             return []
+
+    # =========================================================================
+    # ASYNC WRAPPER METHODS (NON-BLOCKING)
+    # Use these in async contexts to avoid blocking the event loop
+    # =========================================================================
+
+    async def get_chat_history_async(
+        self,
+        session_id: str,
+        limit: int = 5
+    ) -> List[Tuple[str, str]]:
+        """
+        Async version of get_chat_history.
+
+        Runs the sync database operation in a thread pool to avoid
+        blocking the event loop. Safe for production with high concurrency.
+
+        Args:
+            session_id: The ID of the chat session
+            limit: Maximum number of messages to retrieve
+
+        Returns:
+            List of (content, sender_role) tuples
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self.get_chat_history(session_id, limit)
+        )
+
+    async def create_chat_session_async(
+        self,
+        user_id: str,
+        organization_id: Optional[str] = None
+    ) -> str:
+        """
+        Async version of create_chat_session.
+
+        Args:
+            user_id: The ID of the user
+            organization_id: Optional organization ID
+
+        Returns:
+            The generated session ID
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self.create_chat_session(user_id, organization_id)
+        )
+
+    async def save_user_question_async(
+        self,
+        session_id: str,
+        created_at: datetime,
+        created_by: str,
+        content: str
+    ) -> str:
+        """
+        Async version of save_user_question.
+
+        Args:
+            session_id: The ID of the chat session
+            created_at: When the question was created
+            created_by: Who created the question
+            content: The question text
+
+        Returns:
+            The ID of the saved question
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self.save_user_question(session_id, created_at, created_by, content)
+        )
+
+    async def save_assistant_response_async(
+        self,
+        session_id: str,
+        created_at: datetime,
+        question_id: str,
+        content: str,
+        response_time: float
+    ) -> str:
+        """
+        Async version of save_assistant_response.
+
+        Args:
+            session_id: The ID of the chat session
+            created_at: When the response was created
+            question_id: The ID of the question being answered
+            content: The response text
+            response_time: How long it took to generate
+
+        Returns:
+            The ID of the saved response
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self.save_assistant_response(
+                session_id, created_at, question_id, content, response_time
+            )
+        )
+
+    async def is_session_exist_async(self, session_id: str) -> bool:
+        """
+        Async version of is_session_exist.
+
+        Args:
+            session_id: The ID of the session to check
+
+        Returns:
+            True if the session exists
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self.is_session_exist,
+            session_id
+        )
+
+    async def delete_chat_history_async(self, session_id: str) -> None:
+        """
+        Async version of delete_chat_history.
+
+        Args:
+            session_id: The ID of the chat session to delete
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self.delete_chat_history,
+            session_id
+        )
+
+    async def get_pageable_chat_history_async(
+        self,
+        session_id: str,
+        page: int = 1,
+        size: int = 10,
+        sort: str = 'DESC'
+    ) -> List[Dict[str, Any]]:
+        """
+        Async version of get_pageable_chat_history.
+
+        Args:
+            session_id: The ID of the chat session
+            page: Page number (1-based)
+            size: Number of items per page
+            sort: Sort order ('ASC' or 'DESC')
+
+        Returns:
+            List of message dictionaries
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            lambda: self.get_pageable_chat_history(session_id, page, size, sort)
+        )

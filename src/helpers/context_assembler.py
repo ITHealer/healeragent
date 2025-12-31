@@ -1,16 +1,44 @@
 """
 Context Assembler for MemGPT-style Memory System
 Assembles context window with proper priority ordering
+
+PRODUCTION NOTES:
+- Uses singleton patterns for heavy objects
+- Optimized token budgets for better context utilization
 """
 
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.memory.core_memory import CoreMemory
-from src.helpers.token_counter import TokenCounter
+from src.agents.memory.core_memory import CoreMemory, get_core_memory
+from src.helpers.token_counter import TokenCounter, get_token_counter
 from src.handlers.llm_chat_handler import ChatMessageHistory
-from src.helpers.chat_management_helper import ChatService
+from src.helpers.chat_management_helper import get_chat_service
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_context_assembler_instance: Optional['ContextAssembler'] = None
+
+
+def get_context_assembler() -> 'ContextAssembler':
+    """
+    Get singleton instance of ContextAssembler.
+
+    Use this instead of ContextAssembler() to prevent memory leaks
+    when handling thousands of concurrent requests.
+
+    Returns:
+        ContextAssembler singleton instance
+    """
+    global _context_assembler_instance
+
+    if _context_assembler_instance is None:
+        _context_assembler_instance = ContextAssembler()
+
+    return _context_assembler_instance
 
 
 class ContextAssembler(LoggerMixin):
@@ -18,25 +46,35 @@ class ContextAssembler(LoggerMixin):
     Assemble context window following MemGPT architecture priority:
     1. System Prompt
     2. Core Memory (Persona + Human)
-    3. Recursive Summary (future)
+    3. Recursive Summary
     4. Recent Chat History (FIFO)
     5. Current Query
+
+    IMPORTANT: Use get_context_assembler() singleton for production.
     """
-    
-    # Context budget allocation (tokens)
-    MAX_CONTEXT_TOKENS = 180000  # Reserve 20K for response
-    SYSTEM_PROMPT_BUDGET = 800
-    CORE_MEMORY_BUDGET = 2000
-    SUMMARY_BUDGET = 1000  # ✨ NEW - For recursive summary
-    HISTORY_BUDGET = 4000
-    QUERY_BUDGET = 500
-    
+
+    # ==========================================================================
+    # PRODUCTION CONFIGURATION - Optimized token budgets
+    # ==========================================================================
+    MAX_CONTEXT_TOKENS = 180000   # Reserve 20K for response
+    SYSTEM_PROMPT_BUDGET = 1000   # Slightly increased (was 800)
+    CORE_MEMORY_BUDGET = 2500     # Increased for more personalization (was 2000)
+    SUMMARY_BUDGET = 1500         # Increased for better summary (was 1000)
+    HISTORY_BUDGET = 6000         # Increased for more context (was 4000)
+    QUERY_BUDGET = 500            # Unchanged
+
     def __init__(self):
-        """Initialize Context Assembler"""
+        """
+        Initialize Context Assembler.
+
+        Uses singleton instances to prevent memory leaks in production.
+        """
         super().__init__()
-        self.core_memory = CoreMemory()
-        self.token_counter = TokenCounter()
-        self.chat_service = ChatService()
+
+        # Use singletons for heavy objects
+        self.core_memory = get_core_memory()
+        self.token_counter = get_token_counter()
+        self.chat_service = get_chat_service()
     
     
     async def assemble_context(
