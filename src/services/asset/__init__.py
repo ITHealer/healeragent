@@ -21,6 +21,28 @@ from src.services.asset.asset_resolver import (
     get_asset_resolver,
 )
 
+# New: Symbol Resolution Models (Soft Context Inheritance)
+from src.services.asset.symbol_resolution_models import (
+    UIContext,
+    ActiveTab,
+    Exchange,
+    ResolutionMethod,
+    ConfidenceLevel,
+    ResolutionInfo,
+    AlternativeSymbol,
+    ResolvedSymbol,
+    SymbolResolutionResult,
+    EXCHANGE_SUFFIX_PATTERNS,
+    CRYPTO_PAIR_PATTERNS,
+    DEFAULT_EXCHANGES,
+)
+
+from src.services.asset.symbol_resolver import (
+    SymbolResolver,
+    get_symbol_resolver,
+    reset_symbol_resolver,
+)
+
 __all__ = [
     # Symbol Cache
     "SymbolCacheService",
@@ -34,9 +56,26 @@ __all__ = [
     "CryptoSymbolValidator",
     "CryptoSearchResult",
     "get_crypto_validator",
-    # Asset Resolver
+    # Asset Resolver (legacy)
     "AssetResolver",
     "ResolvedAsset",
     "ExtractedEntity",
     "get_asset_resolver",
+    # Symbol Resolution Models (Soft Context Inheritance)
+    "UIContext",
+    "ActiveTab",
+    "Exchange",
+    "ResolutionMethod",
+    "ConfidenceLevel",
+    "ResolutionInfo",
+    "AlternativeSymbol",
+    "ResolvedSymbol",
+    "SymbolResolutionResult",
+    "EXCHANGE_SUFFIX_PATTERNS",
+    "CRYPTO_PAIR_PATTERNS",
+    "DEFAULT_EXCHANGES",
+    # Symbol Resolver (new)
+    "SymbolResolver",
+    "get_symbol_resolver",
+    "reset_symbol_resolver",
 ]

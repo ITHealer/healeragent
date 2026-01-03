@@ -34,6 +34,16 @@ from .models import (
     VALID_CATEGORIES,
 )
 
+# Symbol resolution imports (for Soft Context Inheritance)
+from src.services.asset.symbol_resolution_models import (
+    UIContext,
+    ActiveTab,
+)
+from src.services.asset.symbol_resolver import (
+    SymbolResolver,
+    get_symbol_resolver,
+)
+
 
 # ============================================================================
 # CLASSIFICATION CACHE (Redis-backed with in-memory fallback)
@@ -205,10 +215,11 @@ class UnifiedClassifier(LoggerMixin):
     - Anthropic-style structured output
     - Few-shot examples for accuracy
     - Graceful fallback handling
+    - Soft Context Inheritance for symbol resolution
 
     Usage:
         classifier = UnifiedClassifier(model_name="gpt-4.1-nano")
-        result = await classifier.classify(context)
+        result = await classifier.classify(context, resolve_symbols=True)
     """
 
     def __init__(
@@ -227,24 +238,37 @@ class UnifiedClassifier(LoggerMixin):
         self.llm_provider = LLMGeneratorProvider()
         self.api_key = ModelProviderFactory._get_api_key(self.provider_type)
 
+        # Symbol resolver for Soft Context Inheritance
+        self._symbol_resolver: Optional[SymbolResolver] = None
+
         self.logger.info(
             f"[CLASSIFIER] Initialized: model={self.model_name}, provider={self.provider_type}"
         )
+
+    def _get_symbol_resolver(self) -> SymbolResolver:
+        """Lazy initialization of symbol resolver"""
+        if self._symbol_resolver is None:
+            self._symbol_resolver = get_symbol_resolver()
+        return self._symbol_resolver
 
     async def classify(
         self,
         context: ClassifierContext,
         use_cache: bool = True,
+        resolve_symbols: bool = True,
     ) -> UnifiedClassificationResult:
         """
         Classify a query and determine if tools are needed.
 
+        Now includes Soft Context Inheritance for symbol resolution.
+
         Args:
-            context: ClassifierContext with query, history, and memory
+            context: ClassifierContext with query, history, memory, and ui_context
             use_cache: Whether to use caching (default True)
+            resolve_symbols: Whether to resolve symbols with context (default True)
 
         Returns:
-            UnifiedClassificationResult with classification and validation
+            UnifiedClassificationResult with classification, validation, and resolved symbols
         """
         start_time = datetime.now()
 
@@ -276,12 +300,19 @@ class UnifiedClassifier(LoggerMixin):
             # Post-processing
             classification = self._post_process(classification, context)
 
+            # Symbol Resolution (Soft Context Inheritance)
+            if resolve_symbols and classification.symbols:
+                classification = await self._resolve_classification_symbols(
+                    classification, context
+                )
+
             elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             self.logger.info(
                 f"[CLASSIFIER] Success: type={classification.query_type.value}, "
                 f"requires_tools={classification.requires_tools}, "
                 f"symbols={classification.symbols}, "
                 f"categories={classification.tool_categories}, "
+                f"clarification_needed={classification.clarification_needed}, "
                 f"time={elapsed_ms}ms"
             )
 
@@ -296,6 +327,88 @@ class UnifiedClassifier(LoggerMixin):
         except Exception as e:
             self.logger.error(f"[CLASSIFIER] Failed: {e}", exc_info=True)
             return UnifiedClassificationResult.fallback(str(e))
+
+    async def _resolve_classification_symbols(
+        self,
+        classification: UnifiedClassificationResult,
+        context: ClassifierContext,
+    ) -> UnifiedClassificationResult:
+        """
+        Resolve extracted symbols using Soft Context Inheritance.
+
+        Args:
+            classification: Classification result with raw symbols
+            context: Classifier context with UI context
+
+        Returns:
+            Classification with resolved_symbols and clarification info
+        """
+        if not classification.symbols:
+            return classification
+
+        try:
+            resolver = self._get_symbol_resolver()
+
+            # Build UI context from classifier context
+            ui_context = self._build_ui_context(context)
+
+            # Resolve symbols
+            result = await resolver.resolve(
+                symbols=classification.symbols,
+                query=context.query,
+                ui_context=ui_context,
+                conversation_history=context.conversation_history,
+                use_cache=True,
+            )
+
+            # Update classification with resolution results
+            classification.resolved_symbols = [
+                rs.to_dict() for rs in result.resolved_symbols
+            ]
+
+            if result.has_ambiguity():
+                classification.clarification_needed = True
+                classification.clarification_messages = result.clarification_messages
+
+                # Add ambiguous symbols to resolved_symbols for UI display
+                for ambiguous in result.needs_clarification:
+                    classification.resolved_symbols.append(ambiguous.to_dict())
+
+            self.logger.debug(
+                f"[CLASSIFIER] Symbol resolution: "
+                f"resolved={len(result.resolved_symbols)}, "
+                f"ambiguous={len(result.needs_clarification)}, "
+                f"unresolved={len(result.unresolved)}"
+            )
+
+        except Exception as e:
+            self.logger.warning(f"[CLASSIFIER] Symbol resolution failed: {e}")
+            # Continue without symbol resolution
+
+        return classification
+
+    def _build_ui_context(self, context: ClassifierContext) -> UIContext:
+        """Build UIContext from ClassifierContext"""
+        if not context.ui_context:
+            return UIContext()
+
+        try:
+            active_tab = ActiveTab.NONE
+            tab_value = context.ui_context.get("active_tab", "none")
+            try:
+                active_tab = ActiveTab(tab_value)
+            except ValueError:
+                pass
+
+            return UIContext(
+                active_tab=active_tab,
+                recent_symbols=context.ui_context.get("recent_symbols", []),
+                preferred_quote_currency=context.ui_context.get(
+                    "preferred_quote_currency", "USD"
+                ),
+            )
+        except Exception:
+            return UIContext()
 
     def _extract_symbols_from_context(self, context: ClassifierContext) -> List[str]:
         """Extract current symbols from working memory context for cache key."""
@@ -322,6 +435,9 @@ class UnifiedClassifier(LoggerMixin):
         # Format memory context
         memory_context = context.format_memory_context()
 
+        # Format UI context (Soft Context Inheritance)
+        ui_context = context.format_ui_context()
+
         # Get current date
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -342,6 +458,8 @@ You are a financial query classification system. Analyze the user's query and pr
 </conversation_history>
 
 {memory_context}
+
+{ui_context}
 
 <analysis_instructions>
 Analyze the query carefully:

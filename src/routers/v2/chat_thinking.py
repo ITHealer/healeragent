@@ -50,34 +50,19 @@ OPENROUTER_MODEL_PRESETS = {
 # ============================================================================
 
 class UIContextRequest(BaseModel):
-    """
-    UI Context for Soft Context Inheritance.
-
-    Frontend sends this to indicate the current UI state,
-    enabling smart disambiguation of ambiguous symbols.
-
-    Example:
-        User is on Crypto tab, asks "giá BTC"
-        → BTC resolved as Bitcoin (crypto) not BTC Digital (stock)
-    """
-
-    current_tab: str = Field(
-        default="auto",
-        description="Current UI tab: 'crypto', 'stock', or 'auto'",
-        examples=["crypto", "stock", "auto"]
+    """UI context for Soft Context Inheritance."""
+    active_tab: str = Field(
+        default="none",
+        description="Active UI tab: stock, crypto, forex, commodity, or none",
+        examples=["stock", "crypto", "none"]
     )
     recent_symbols: List[str] = Field(
         default_factory=list,
-        description="Recently viewed symbols (for context reinforcement)",
-        examples=[["BTC", "ETH", "SOL"]]
+        description="Recently viewed symbols in UI"
     )
-    watchlist_type: Optional[str] = Field(
-        default=None,
-        description="Type of watchlist currently displayed"
-    )
-    language: str = Field(
-        default="vi",
-        description="User's preferred language"
+    preferred_quote_currency: str = Field(
+        default="USD",
+        description="Preferred quote currency for crypto (USD, USDT, etc.)"
     )
 
 
@@ -111,17 +96,8 @@ class ThinkingChatRequest(BaseModel):
         default=True,
         description="Enable thinking display in stream"
     )
-
-    # UI Context for Soft Context Inheritance
-    ui_context: Optional[UIContextRequest] = Field(
-        default=None,
-        description=(
-            "UI context from frontend for soft symbol disambiguation. "
-            "If provided, ambiguous symbols will be resolved based on current tab."
-        )
-    )
     enable_tools: bool = Field(
-        default=True, 
+        default=True,
         description="Enable tool execution"
     )
     enable_think_tool: bool = Field(
@@ -144,8 +120,13 @@ class ThinkingChatRequest(BaseModel):
         description="Enable agent tree tracking"
     )
     stream_config: Optional[Dict[str, Any]] = Field(
-        default=None, 
+        default=None,
         description="Custom stream configuration"
+    )
+    # Soft Context Inheritance
+    ui_context: Optional[UIContextRequest] = Field(
+        default=None,
+        description="UI context for symbol resolution (active tab, recent symbols)"
     )
 
     @field_validator('provider_type')
