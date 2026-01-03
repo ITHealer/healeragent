@@ -21,7 +21,8 @@ from src.helpers.llm_chat_helper import (
     sse_done
 )
 from src.helpers.llm_helper import LLMGeneratorProvider
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.services.background_tasks import trigger_summary_update_nowait
 
 router = APIRouter()
@@ -33,7 +34,7 @@ llm_generator = LLMGeneratorProvider()
 volume_handler = VolumeProfileHandler()
 chat_service = ChatService()
 llm_helper = StatsAnalysisLLMHelper()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 # Schema inputs and outputs
 class StatsAnalysisChatRequest(BaseModel):
@@ -81,19 +82,19 @@ async def stats_analysis_chat(
         context = ""
         memory_stats = {}
         document_references = []
-        if chat_request.session_id and user_id:
-            try:
-                context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                    llm_provider=llm_generator,
-                    max_short_term=5,  # Top 5 relevant recent conversations
-                    max_long_term=3    # Top 3 important past conversations
-                )
-                logger.info(f"Retrieved memory context for technical analysis: {memory_stats}")
-            except Exception as e:
-                logger.error(f"Error getting memory context: {e}")
+        # if chat_request.session_id and user_id:
+            # try:
+            #     context, memory_stats, document_references = await memory_manager.get_relevant_context(
+            #         session_id=chat_request.session_id,
+            #         user_id=user_id,
+            #         current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+            #         llm_provider=llm_generator,
+            #         max_short_term=5,  # Top 5 relevant recent conversations
+            #         max_long_term=3    # Top 3 important past conversations
+            #     )
+            #     logger.info(f"Retrieved memory context for technical analysis: {memory_stats}")
+            # except Exception as e:
+            #     logger.error(f"Error getting memory context: {e}")
         
         # Get volume profile data
         volume_profile = await volume_handler.get_volume_profile(
@@ -116,42 +117,42 @@ async def stats_analysis_chat(
             chat_history=context
         )
         
-        # 3. Analyze conversation importance
-        importance_score = 0.5  # Default score
+        # # 3. Analyze conversation importance
+        # importance_score = 0.5  # Default score
         
-        if chat_request.session_id and user_id:
-            try:
-                analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+        # if chat_request.session_id and user_id:
+        #     try:
+        #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
                 
-                importance_score = await analyze_conversation_importance(
-                    query=chat_request.question_input or f"Analyze volumee for {chat_request.symbol}",
-                    response=llm_interpretation["llm_interpretation"],
-                    llm_provider=llm_generator,
-                    model_name=analysis_model,
-                    provider_type=chat_request.provider_type
-                )
+        #         importance_score = await analyze_conversation_importance(
+        #             query=chat_request.question_input or f"Analyze volumee for {chat_request.symbol}",
+        #             response=llm_interpretation["llm_interpretation"],
+        #             llm_provider=llm_generator,
+        #             model_name=analysis_model,
+        #             provider_type=chat_request.provider_type
+        #         )
                 
-                logger.info(f"Volume analysis importance score: {importance_score}")
+        #         logger.info(f"Volume analysis importance score: {importance_score}")
                 
-            except Exception as e:
-                logger.error(f"Error analyzing conversation importance: {e}")
+        #     except Exception as e:
+        #         logger.error(f"Error analyzing conversation importance: {e}")
         
         # 4. Store conversation in memory system
         if chat_request.session_id and user_id:
             try:
-                # Store in memory system
-                await memory_manager.store_conversation_turn(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                    response=llm_interpretation["llm_interpretation"],
-                    metadata={
-                        "type": "volume_analysis",
-                        "symbol": chat_request.symbol,
-                        # "indicators": llm_interpretation.get("technical_data", {})
-                    },
-                    importance_score=importance_score
-                )
+                # # Store in memory system
+                # await memory_manager.store_conversation_turn(
+                #     session_id=chat_request.session_id,
+                #     user_id=user_id,
+                #     query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+                #     response=llm_interpretation["llm_interpretation"],
+                #     metadata={
+                #         "type": "volume_analysis",
+                #         "symbol": chat_request.symbol,
+                #         # "indicators": llm_interpretation.get("technical_data", {})
+                #     },
+                #     importance_score=importance_score
+                # )
 
                 question_content = chat_request.question_input or f"Analyze volume profile for {chat_request.symbol}"
                 question_id = chat_service.save_user_question(
@@ -234,19 +235,19 @@ async def stats_analysis_chat_stream(
             context = ""
             memory_stats = {}
             document_references = []
-            if chat_request.session_id and user_id:
-                try:
-                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                    logger.info(f"Retrieved memory context for streaming: {memory_stats}")
-                except Exception as e:
-                    logger.error(f"Error getting memory: {e}")
+            # if chat_request.session_id and user_id:
+                # try:
+                #     context, memory_stats, document_references = await memory_manager.get_relevant_context(
+                #         session_id=chat_request.session_id,
+                #         user_id=user_id,
+                #         current_query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
+                #         llm_provider=llm_generator,
+                #         max_short_term=5,
+                #         max_long_term=3
+                #     )
+                #     logger.info(f"Retrieved memory context for streaming: {memory_stats}")
+                # except Exception as e:
+                #     logger.error(f"Error getting memory: {e}")
             
             enhanced_history = ""
             if context:
@@ -298,37 +299,37 @@ async def stats_analysis_chat_stream(
             # Analyze conversation importance
             importance_score = 0.5
             
-            if chat_request.session_id and user_id:
-                try:
-                    analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+            # if chat_request.session_id and user_id:
+                # try:
+                #     analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
-                        response=complete_response,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=chat_request.provider_type
-                    )
+                #     importance_score = await analyze_conversation_importance(
+                #         query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
+                #         response=complete_response,
+                #         llm_provider=llm_generator,
+                #         model_name=analysis_model,
+                #         provider_type=chat_request.provider_type
+                #     )
                     
-                    logger.info(f"Volume analysis stream importance: {importance_score}")
+                #     logger.info(f"Volume analysis stream importance: {importance_score}")
                     
-                except Exception as e:
-                    logger.error(f"Error analyzing conversation: {e}")
+                # except Exception as e:
+                #     logger.error(f"Error analyzing conversation: {e}")
             
             # Store in memory system
             if chat_request.session_id and user_id and complete_response:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
-                        response=complete_response,
-                        metadata={
-                            "type": "volume_analysis",
-                            "symbol": chat_request.symbol
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Analyze volume for {chat_request.symbol}",
+                    #     response=complete_response,
+                    #     metadata={
+                    #         "type": "volume_analysis",
+                    #         "symbol": chat_request.symbol
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     chat_service.save_assistant_response(
                         session_id=chat_request.session_id,
@@ -338,7 +339,7 @@ async def stats_analysis_chat_stream(
                         response_time=0.1
                     )
 
-                    trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
+                    # trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
 
                 except Exception as e:
                     logger.error(f"Error saving to chat history: {str(e)}")

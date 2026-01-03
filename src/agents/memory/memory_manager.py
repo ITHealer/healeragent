@@ -1,7 +1,10 @@
 import hashlib
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from langchain_core.documents import Document
 from datetime import datetime, timedelta
-from typing import Dict, Optional, List, Tuple, Any
+from typing import Dict, Optional, List, Tuple, Any, TYPE_CHECKING
 
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.retrieval_handler import SearchRetrieval
@@ -10,19 +13,154 @@ from src.helpers.qdrant_connection_helper import QdrantConnection
 # from src.agents.memory.context_compressor import ContextCompressor
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 
+# Thread pool for running sync Qdrant operations without blocking event loop
+_qdrant_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="qdrant_")
+
+# Default timeout for memory operations (seconds)
+MEMORY_OPERATION_TIMEOUT = 10.0
+
+# =============================================================================
+# SINGLETON INSTANCES - Prevent multiple heavy objects
+# =============================================================================
+
+_memory_manager_instance: Optional['MemoryManager'] = None
+_vector_store_instance: Optional[VectorStoreQdrant] = None
+_retrieval_instance: Optional[SearchRetrieval] = None
+_qdrant_conn_instance: Optional[QdrantConnection] = None
+
+
+def get_memory_manager() -> 'MemoryManager':
+    """Get or create singleton MemoryManager instance"""
+    global _memory_manager_instance
+    if _memory_manager_instance is None:
+        _memory_manager_instance = MemoryManager()
+    return _memory_manager_instance
+
+
+def get_vector_store() -> VectorStoreQdrant:
+    """Get or create singleton VectorStoreQdrant instance"""
+    global _vector_store_instance
+    if _vector_store_instance is None:
+        _vector_store_instance = VectorStoreQdrant()
+    return _vector_store_instance
+
+
+def get_retrieval() -> SearchRetrieval:
+    """Get or create singleton SearchRetrieval instance"""
+    global _retrieval_instance
+    if _retrieval_instance is None:
+        _retrieval_instance = SearchRetrieval()
+    return _retrieval_instance
+
+
+def get_qdrant_connection() -> QdrantConnection:
+    """Get or create singleton QdrantConnection instance"""
+    global _qdrant_conn_instance
+    if _qdrant_conn_instance is None:
+        _qdrant_conn_instance = QdrantConnection()
+    return _qdrant_conn_instance
+
+
+def reset_memory_manager():
+    """Reset all singleton instances (for testing)"""
+    global _memory_manager_instance, _vector_store_instance
+    global _retrieval_instance, _qdrant_conn_instance
+    _memory_manager_instance = None
+    _vector_store_instance = None
+    _retrieval_instance = None
+    _qdrant_conn_instance = None
+
 
 class MemoryManager(LoggerMixin):
-    """Manage dual memory system: short-term (session) and long-term (knowledge)"""
-    
+    """
+    Manage dual memory system: short-term (session) and long-term (knowledge)
+
+    NOTE: Use get_memory_manager() to get singleton instance instead of
+    creating new MemoryManager() to prevent resource waste.
+    """
+
     def __init__(self):
         super().__init__()
-        self.vector_store = VectorStoreQdrant()
-        self.qdrant_conn = QdrantConnection()
-        self.retrieval = SearchRetrieval()
-        
+        # Use singleton helpers to share connections
+        self.vector_store = get_vector_store()
+        self.qdrant_conn = get_qdrant_connection()
+        self.retrieval = get_retrieval()
+
         # Memory configuration
         self.short_term_window = 10  # Keep last 10 conversation turns
         self.long_term_threshold = 0.7  # Importance score threshold
+
+        self.logger.debug("[MEMORY_MANAGER] Initialized with shared connections")
+
+    async def _run_sync_in_executor(self, func, *args, timeout: float = MEMORY_OPERATION_TIMEOUT, **kwargs):
+        """
+        Run a sync function in thread executor to avoid blocking event loop.
+
+        Args:
+            func: Sync function to run
+            *args: Positional arguments
+            timeout: Timeout in seconds (default 10s)
+            **kwargs: Keyword arguments
+
+        Returns:
+            Result from the function
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            if kwargs:
+                func_with_kwargs = partial(func, *args, **kwargs)
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(_qdrant_executor, func_with_kwargs),
+                    timeout=timeout
+                )
+            else:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(_qdrant_executor, func, *args),
+                    timeout=timeout
+                )
+            return result
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Qdrant operation timed out after {timeout}s")
+            raise
+        except Exception as e:
+            self.logger.error(f"Error in executor: {e}")
+            raise
+
+    async def _collection_exists_async(self, collection_name: str) -> bool:
+        """Check if collection exists without blocking event loop"""
+        try:
+            return await self._run_sync_in_executor(
+                self.qdrant_conn.client.collection_exists,
+                collection_name=collection_name
+            )
+        except asyncio.TimeoutError:
+            return False
+        except Exception:
+            return False
+
+    async def _get_collection_async(self, collection_name: str):
+        """Get collection info without blocking event loop"""
+        return await self._run_sync_in_executor(
+            self.qdrant_conn.client.get_collection,
+            collection_name
+        )
+
+    async def _scroll_async(self, collection_name: str, limit: int = 1000):
+        """Scroll collection without blocking event loop"""
+        return await self._run_sync_in_executor(
+            self.qdrant_conn.client.scroll,
+            collection_name=collection_name,
+            limit=limit,
+            timeout=30.0  # Scroll can take longer
+        )
+
+    async def _delete_points_async(self, collection_name: str, points_selector):
+        """Delete points without blocking event loop"""
+        return await self._run_sync_in_executor(
+            self.qdrant_conn.client.delete,
+            collection_name=collection_name,
+            points_selector=points_selector
+        )
         
 
     def get_memory_collection_name(self, 
@@ -68,12 +206,21 @@ class MemoryManager(LoggerMixin):
     async def ensure_memory_collection(self, collection_name: str):
         """Ensure a single memory collection exists with the expected configuration"""
         try:
-            if not self.qdrant_conn.client.collection_exists(collection_name=collection_name):
-                is_created = self.qdrant_conn._create_collection(collection_name=collection_name)
+            # Use async wrapper to avoid blocking event loop
+            exists = await self._collection_exists_async(collection_name)
+            if not exists:
+                # Run sync create_collection in executor
+                is_created = await self._run_sync_in_executor(
+                    self.qdrant_conn._create_collection,
+                    collection_name=collection_name,
+                    timeout=30.0  # Collection creation can take longer
+                )
                 if is_created:
                     self.logger.info(f"Created memory collection with hybrid search support: {collection_name}")
                 else:
                     self.logger.error(f"Failed to create memory collection: {collection_name}")
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Timeout ensuring memory collection: {collection_name}")
         except Exception as e:
             self.logger.error(f"Error ensuring memory collection: {e}")
     
@@ -292,8 +439,9 @@ class MemoryManager(LoggerMixin):
             List[Dict]: List of relevant memories with content and metadata
         """
         try:
-            # Check and create collection if not exists
-            if not self.qdrant_conn.client.collection_exists(collection_name=collection_name):
+            # Check and create collection if not exists (non-blocking)
+            exists = await self._collection_exists_async(collection_name)
+            if not exists:
                 self.logger.info(f"Collection {collection_name} does not exist, creating it...")
                 # Create collection
                 await self.ensure_memory_collection(collection_name)
@@ -337,9 +485,11 @@ class MemoryManager(LoggerMixin):
         for memory_type in ["short", "long"]:
             collection_name = self.get_memory_collection_name(session_id, user_id, memory_type)
             try:
-                if self.qdrant_conn.client.collection_exists(collection_name=collection_name):
-                    collection_info = self.qdrant_conn.client.get_collection(collection_name)
-                    
+                # Use non-blocking async wrappers
+                exists = await self._collection_exists_async(collection_name)
+                if exists:
+                    collection_info = await self._get_collection_async(collection_name)
+
                     stats[f"{memory_type}_term"] = {
                         "collection_name": collection_name,
                         "vectors_count": collection_info.vectors_count,
@@ -353,6 +503,12 @@ class MemoryManager(LoggerMixin):
                         "vectors_count": 0,
                         "status": "not_found"
                     }
+            except asyncio.TimeoutError:
+                stats[f"{memory_type}_term"] = {
+                    "collection_name": collection_name,
+                    "vectors_count": 0,
+                    "status": "timeout"
+                }
             except Exception as e:
                 stats[f"{memory_type}_term"] = {
                     "collection_name": collection_name,
@@ -376,56 +532,63 @@ class MemoryManager(LoggerMixin):
         """
         try:
             short_collection = self.get_memory_collection_name(session_id, user_id, "short")
-            
-            # Check if collection exists
-            if not self.qdrant_conn.client.collection_exists(collection_name=short_collection):
+
+            # Check if collection exists (non-blocking)
+            exists = await self._collection_exists_async(short_collection)
+            if not exists:
                 self.logger.info(f"Collection {short_collection} does not exist, nothing to cleanup")
                 return
-            
-            # Get all points from collection
-            points = self.qdrant_conn.client.scroll(
-                collection_name=short_collection,
-                limit=1000
-            )[0]
-            
+
+            # Get all points from collection (non-blocking with timeout)
+            try:
+                scroll_result = await self._run_sync_in_executor(
+                    self.qdrant_conn.client.scroll,
+                    collection_name=short_collection,
+                    limit=1000,
+                    timeout=30.0  # Scroll can take longer
+                )
+                points = scroll_result[0]
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Timeout scrolling collection {short_collection}")
+                return
+
             cutoff_date = datetime.now() - timedelta(days=days_to_keep)
             points_to_delete = []
-            
+
             for point in points:
                 timestamp_str = point.payload.get("metadata", {}).get("timestamp", "")
                 if timestamp_str:
                     timestamp = datetime.fromisoformat(timestamp_str)
-                    
+
                     if timestamp < cutoff_date:
                         # Check importance before deletion
                         importance = point.payload.get("metadata", {}).get("importance_score", 0)
                         if importance >= self.long_term_threshold:
                             # Move to long-term memory
                             long_collection = self.get_memory_collection_name(session_id, user_id, "long")
-                            
+
                             # Create document from point
                             doc = Document(
                                 page_content=point.payload.get("page_content", ""),
                                 metadata=point.payload.get("metadata", {})
                             )
-                            
+
                             # Add to long-term
                             await self.qdrant_conn.add_data(
                                 documents=[doc],
                                 collection_name=long_collection
                             )
-                            
+
                         # Mark for deletion from short-term
                         points_to_delete.append(point.id)
-            
-            # Delete old points
+
+            # Delete old points (non-blocking)
             if points_to_delete:
-                self.qdrant_conn.client.delete(
-                    collection_name=short_collection,
-                    points_selector=points_to_delete
-                )
+                await self._delete_points_async(short_collection, points_to_delete)
                 self.logger.info(f"Cleaned up {len(points_to_delete)} old memories from {short_collection}")
-            
+
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Timeout cleaning up memories for {session_id}")
         except Exception as e:
             self.logger.error(f"Error cleaning up memories: {e}")
 
@@ -527,8 +690,8 @@ class MemoryManager(LoggerMixin):
             # Determine collection
             collection_name = f"archival_{user_id}" if user_id else "global_knowledge"
             
-            # Use memory manager's semantic search
-            memories = await self.memory_manager.search_relevant_memory(
+            # Use semantic search (self is MemoryManager)
+            memories = await self.search_relevant_memory(
                 query=query,
                 collection_name=collection_name,
                 top_k=limit
@@ -738,7 +901,7 @@ class MemoryManager(LoggerMixin):
         context_parts = []
         
         if recall_results:
-            context_parts.append("ðŸ“ RELEVANT CONVERSATION HISTORY:")
+            context_parts.append("RELEVANT CONVERSATION HISTORY:")
             for i, msg in enumerate(recall_results[:5], 1):
                 role = msg.get('role', 'user')
                 content = msg.get('content', '')[:200]
@@ -749,7 +912,7 @@ class MemoryManager(LoggerMixin):
             context_parts.append("")
         
         if archival_results:
-            context_parts.append("ðŸ“š RELEVANT KNOWLEDGE:")
+            context_parts.append("RELEVANT KNOWLEDGE:")
             for i, doc in enumerate(archival_results[:3], 1):
                 content = doc.get('content', '')[:300]
                 source = doc.get('source', 'knowledge_base')

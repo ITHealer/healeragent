@@ -15,6 +15,7 @@ from src.providers.provider_factory import ProviderType
 from src.utils.constants import APIModelName
 from src.utils.config import settings
 from src.agents.streaming.streaming_chat_handler import CancellationToken
+from src.helpers.llm_chat_helper import SSE_HEADERS, DEFAULT_HEARTBEAT_SEC
 
 # ============================================================================
 # ROUTER INITIALIZATION
@@ -373,12 +374,9 @@ async def chat_thinking_stream(
     cancellation_token = CancellationToken()
 
     async def event_generator():
-        """Generate SSE events from streaming handler"""
-
-        heartbeat_task = None
+        """Generate SSE events with heartbeat support"""
 
         try:
-            # Get configured handler
             handler = await StreamingHandlerFactory.get_handler(
                 model_name=data.model_name,
                 provider_type=data.provider_type,
@@ -386,17 +384,9 @@ async def chat_thinking_stream(
                 enable_llm_events=data.enable_llm_events,
                 enable_agent_tree=data.enable_agent_tree
             )
-
-            # Start heartbeat task for long connections
-            async def send_heartbeats():
-                """Send periodic heartbeats to keep connection alive"""
-                while not cancellation_token.is_cancelled:
-                    await asyncio.sleep(30)  # Heartbeat every 30 seconds
-                    if not cancellation_token.is_cancelled:
-                        yield format_sse_heartbeat()
             
-            # Stream events from handler with cancellation support
-            async for event in handler.handle_chat_stream(
+            # ============= HEARTBEAT PATTERN =============
+            stream_gen = handler.handle_chat_stream(
                 query=data.question_input,
                 session_id=session_id,
                 user_id=user_id,
@@ -404,31 +394,77 @@ async def chat_thinking_stream(
                 provider_type=data.provider_type,
                 organization_id=organization_id,
                 enable_thinking=data.enable_thinking,
-                # Pass additional parameters
                 chart_displayed=data.chart_displayed,
                 enable_compaction=data.enable_compaction,
                 enable_think_tool=data.enable_think_tool,
-                # Pass cancellation token
                 cancellation_token=cancellation_token
-            ):
-                # Check if client disconnected
-                if await request.is_disconnected():
-                    logger.info(f"[THINKING:STREAM] Client disconnected - cancelling")
-                    cancellation_token.cancel()
-                    break
-
-                yield event.to_sse()
+            )
+            
+            pending_task = None
+            
+            try:
+                while True:
+                    # Check client disconnect
+                    if await request.is_disconnected():
+                        logger.info(f"[THINKING:STREAM] Client disconnected")
+                        cancellation_token.cancel()
+                        break
+                    
+                    if pending_task is None:
+                        pending_task = asyncio.create_task(anext(stream_gen))
+                    
+                    done, _ = await asyncio.wait(
+                        {pending_task}, 
+                        timeout=DEFAULT_HEARTBEAT_SEC
+                    )
+                    
+                    if done:
+                        try:
+                            event = pending_task.result()
+                        except StopAsyncIteration:
+                            break
+                        except Exception as e:
+                            logger.error(f"[THINKING:STREAM] Event error: {e}")
+                            error_event = {
+                                "type": "error",
+                                "error": str(e),
+                                "timestamp": datetime.utcnow().isoformat()
+                            }
+                            yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+                            break
+                        finally:
+                            pending_task = None
+                        
+                        # Yield the event
+                        yield event.to_sse()
+                    else:
+                        # Timeout - send heartbeat
+                        yield ": heartbeat\n\n"
+                        
+            finally:
+                # Cleanup
+                if pending_task is not None and not pending_task.done():
+                    pending_task.cancel()
+                    try:
+                        await pending_task
+                    except (asyncio.CancelledError, StopAsyncIteration):
+                        pass
+                
+                if hasattr(stream_gen, 'aclose'):
+                    try:
+                        await stream_gen.aclose()
+                    except Exception:
+                        pass
+            # ============= END HEARTBEAT PATTERN =============
             
             # Final done marker
             if not cancellation_token.is_cancelled:
                 yield format_sse_done()
 
         except asyncio.CancelledError:
-            # Handle asyncio cancellation gracefully
             logger.info(f"[THINKING:STREAM] Stream cancelled (asyncio)")
             cancellation_token.cancel()
             
-            # Emit cancellation error event
             error_event = {
                 "type": "error",
                 "error": "Stream cancelled",
@@ -442,7 +478,6 @@ async def chat_thinking_stream(
         except Exception as e:
             logger.error(f"[THINKING:STREAM] Error: {e}", exc_info=True)
             
-            # Send error event
             error_event = {
                 "type": "error",
                 "error": str(e),
@@ -454,7 +489,6 @@ async def chat_thinking_stream(
             yield format_sse_done()
 
         finally:
-            # Ensure cleanup happens
             if not cancellation_token.is_cancelled:
                 cancellation_token.cancel()
             
@@ -463,120 +497,145 @@ async def chat_thinking_stream(
     return StreamingResponse(
         event_generator(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*"
-        }
+        headers=SSE_HEADERS
     )
 
 
-@router.post(
-    "/stream/v2",
-    summary="Streaming Chat v2 - Cancellation",
-    description="""
-Enhanced streaming with more aggressive cancellation detection.
+# @router.post(
+#     "/stream/v2",
+#     summary="Streaming Chat v2 - Cancellation",
+#     description="""
+# Enhanced streaming with more aggressive cancellation detection.
 
-Checks for client disconnect more frequently and cleans up resources properly.
-    """,
-    response_class=StreamingResponse,
-)
-async def chat_thinking_stream_v2(
-    request: Request,
-    data: ThinkingChatRequest,
-    api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
-):
-    """
-    Streaming chat v2 with enhanced cancellation
+# Checks for client disconnect more frequently and cleans up resources properly.
+#     """,
+#     response_class=StreamingResponse,
+# )
+# async def chat_thinking_stream_v2(
+#     request: Request,
+#     data: ThinkingChatRequest,
+#     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
+# ):
+#     """
+#     Streaming chat v2 with enhanced cancellation
     
-    Task 1: More aggressive disconnect detection
-    """
-    user_id = getattr(request.state, "user_id", None)
-    organization_id = getattr(request.state, "organization_id", None)
+#     Task 1: More aggressive disconnect detection
+#     """
+#     user_id = getattr(request.state, "user_id", None)
+#     organization_id = getattr(request.state, "organization_id", None)
     
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID required")
+#     if not user_id:
+#         raise HTTPException(status_code=400, detail="User ID required")
     
-    session_id = data.session_id or create_session_id(user_id, organization_id)
+#     session_id = data.session_id or create_session_id(user_id, organization_id)
     
-    logger.info(f"[THINKING:STREAM:V2] Starting enhanced stream: session={session_id}")
+#     logger.info(f"[THINKING:STREAM:V2] Starting enhanced stream: session={session_id}")
     
-    cancellation_token = CancellationToken()
+#     cancellation_token = CancellationToken()
     
-    async def event_generator_with_disconnect_check():
-        """
-        Event generator with periodic disconnect checks
+#     async def event_generator_with_heartbeat():
+#         event_count = 0
         
-        Task 1: Check for disconnect every few events
-        """
-        event_count = 0
-        check_interval = 5  # Check every 5 events
+#         try:
+#             handler = await StreamingHandlerFactory.get_handler(
+#                 model_name=data.model_name,
+#                 provider_type=data.provider_type,
+#                 stream_config=data.stream_config,
+#                 enable_llm_events=data.enable_llm_events,
+#                 enable_agent_tree=data.enable_agent_tree
+#             )
+            
+#             stream_gen = handler.handle_chat_stream(
+#                 query=data.question_input,
+#                 session_id=session_id,
+#                 user_id=user_id,
+#                 model_name=data.model_name,
+#                 provider_type=data.provider_type,
+#                 organization_id=organization_id,
+#                 enable_thinking=data.enable_thinking,
+#                 chart_displayed=data.chart_displayed,
+#                 enable_compaction=data.enable_compaction,
+#                 enable_think_tool=data.enable_think_tool,
+#                 cancellation_token=cancellation_token
+#             )
+            
+#             pending_task = None
+            
+#             try:
+#                 while True:
+#                     # Check disconnect
+#                     if await request.is_disconnected():
+#                         logger.info(f"[THINKING:STREAM:V2] Client disconnected at event {event_count}")
+#                         cancellation_token.cancel()
+#                         break
+                    
+#                     if pending_task is None:
+#                         pending_task = asyncio.create_task(anext(stream_gen))
+                    
+#                     done, _ = await asyncio.wait(
+#                         {pending_task}, 
+#                         timeout=DEFAULT_HEARTBEAT_SEC
+#                     )
+                    
+#                     if done:
+#                         try:
+#                             event = pending_task.result()
+#                         except StopAsyncIteration:
+#                             break
+#                         except Exception as e:
+#                             logger.error(f"[THINKING:STREAM:V2] Error: {e}")
+#                             error_event = {"type": "error", "error": str(e)}
+#                             yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+#                             break
+#                         finally:
+#                             pending_task = None
+                        
+#                         event_count += 1
+#                         yield event.to_sse()
+                        
+#                         # Allow other tasks to run
+#                         await asyncio.sleep(0)
+#                     else:
+#                         # Heartbeat
+#                         yield ": heartbeat\n\n"
+                        
+#             finally:
+#                 if pending_task is not None and not pending_task.done():
+#                     pending_task.cancel()
+#                     try:
+#                         await pending_task
+#                     except (asyncio.CancelledError, StopAsyncIteration):
+#                         pass
+                
+#                 if hasattr(stream_gen, 'aclose'):
+#                     try:
+#                         await stream_gen.aclose()
+#                     except Exception:
+#                         pass
+            
+#             if not cancellation_token.is_cancelled:
+#                 yield format_sse_done()
+            
+#         except asyncio.CancelledError:
+#             logger.info(f"[THINKING:STREAM:V2] Cancelled at event {event_count}")
+#             cancellation_token.cancel()
+#             yield format_sse_done()
+            
+#         except Exception as e:
+#             logger.error(f"[THINKING:STREAM:V2] Error at event {event_count}: {e}")
+#             error_event = {"type": "error", "error": str(e)}
+#             yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
+#             yield format_sse_done()
         
-        try:
-            handler = await StreamingHandlerFactory.get_handler(
-                model_name=data.model_name,
-                provider_type=data.provider_type,
-                stream_config=data.stream_config,
-                enable_llm_events=data.enable_llm_events,
-                enable_agent_tree=data.enable_agent_tree
-            )
-            
-            async for event in handler.handle_chat_stream(
-                query=data.question_input,
-                session_id=session_id,
-                user_id=user_id,
-                model_name=data.model_name,
-                provider_type=data.provider_type,
-                organization_id=organization_id,
-                enable_thinking=data.enable_thinking,
-                chart_displayed=data.chart_displayed,
-                enable_compaction=data.enable_compaction,
-                enable_think_tool=data.enable_think_tool,
-                cancellation_token=cancellation_token
-            ):
-                event_count += 1
-                
-                # Task 1: Periodic disconnect check
-                if event_count % check_interval == 0:
-                    if await request.is_disconnected():
-                        logger.info(f"[THINKING:STREAM:V2] Client disconnected at event {event_count}")
-                        cancellation_token.cancel()
-                        break
-                
-                yield event.to_sse()
-                
-                # Small yield to allow other tasks to run
-                await asyncio.sleep(0)
-            
-            if not cancellation_token.is_cancelled:
-                yield format_sse_done()
-            
-        except asyncio.CancelledError:
-            logger.info(f"[THINKING:STREAM:V2] Cancelled at event {event_count}")
-            cancellation_token.cancel()
-            yield format_sse_done()
-            
-        except Exception as e:
-            logger.error(f"[THINKING:STREAM:V2] Error at event {event_count}: {e}")
-            error_event = {"type": "error", "error": str(e)}
-            yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
-            yield format_sse_done()
-        
-        finally:
-            cancellation_token.cancel()
-            logger.info(f"[THINKING:STREAM:V2] Completed: {event_count} events")
+#         finally:
+#             cancellation_token.cancel()
+#             logger.info(f"[THINKING:STREAM:V2] Completed: {event_count} events")
     
-    return StreamingResponse(
-        event_generator_with_disconnect_check(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "Access-Control-Allow-Origin": "*"
-        }
-    )
+#     return StreamingResponse(
+#         event_generator_with_heartbeat(),
+#         media_type="text/event-stream",
+#         headers=SSE_HEADERS
+#     )
 
 
 # ============================================================================
@@ -723,24 +782,24 @@ async def chat_thinking_complete(
 # AGENT TREE ENDPOINT 
 # ============================================================================
 
-@router.get(
-    "/debug/tree/{flow_id}",
-    summary="Get Agent Tree for Flow",
-    description="Get the agent execution tree for debugging (Task 6)"
-)
-async def get_agent_tree(
-    flow_id: str,
-    api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
-):
-    """
-    Get agent tree for a specific flow
+# @router.get(
+#     "/debug/tree/{flow_id}",
+#     summary="Get Agent Tree for Flow",
+#     description="Get the agent execution tree for debugging (Task 6)"
+# )
+# async def get_agent_tree(
+#     flow_id: str,
+#     api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
+# ):
+#     """
+#     Get agent tree for a specific flow
     
-    Useful for debugging complex queries
-    """
-    # In production, this would fetch from a cache or database
-    # For now, return a placeholder
-    return JSONResponse({
-        "status": "info",
-        "message": "Agent tree is returned in the stream/complete response",
-        "hint": "Check the 'agent_tree' field in DoneEvent or ThinkingChatResponse"
-    })
+#     Useful for debugging complex queries
+#     """
+#     # In production, this would fetch from a cache or database
+#     # For now, return a placeholder
+#     return JSONResponse({
+#         "status": "info",
+#         "message": "Agent tree is returned in the stream/complete response",
+#         "hint": "Check the 'agent_tree' field in DoneEvent or ThinkingChatResponse"
+#     })

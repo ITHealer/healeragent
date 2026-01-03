@@ -8,10 +8,38 @@ from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.token_counter import TokenCounter
 
 
+# Singleton instance
+_core_memory_instance: Optional['CoreMemory'] = None
+
+
+def get_core_memory(config_dir: str = "src/config") -> 'CoreMemory':
+    """
+    Get singleton CoreMemory instance
+
+    Args:
+        config_dir: Directory containing YAML config files
+
+    Returns:
+        CoreMemory singleton instance
+    """
+    global _core_memory_instance
+
+    if _core_memory_instance is None:
+        _core_memory_instance = CoreMemory(config_dir=config_dir)
+
+    return _core_memory_instance
+
+
+def reset_core_memory():
+    """Reset singleton instance (for testing)"""
+    global _core_memory_instance
+    _core_memory_instance = None
+
+
 class CoreMemory(LoggerMixin):
     """
     Core Memory Manager - Always loaded into context window
-    
+
     Implements Tier 1 memory from MemGPT architecture:
     - PERSONA: Agent's identity and capabilities
     - HUMAN: User's profile and preferences

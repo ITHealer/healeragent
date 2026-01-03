@@ -26,7 +26,7 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.services.background_tasks import trigger_summary_update_nowait
 
 router = APIRouter()
@@ -41,7 +41,7 @@ FMP_API_KEY = settings.FMP_API_KEY
 tool_call_service = ToolCallService()
 fundamental_handler = FundamentalAnalysisHandler()
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 
 # Define Pydantic models
@@ -189,15 +189,15 @@ Focus on:
         
         if chat_request.session_id and user_id:
             try:
-                analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
+                # analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
                 
-                importance_score = await analyze_conversation_importance(
-                    query=query_text,
-                    response=analysis_text,
-                    llm_provider=llm_generator,
-                    model_name=analysis_model,
-                    provider_type=provider_type
-                )
+                # importance_score = await analyze_conversation_importance(
+                #     query=query_text,
+                #     response=analysis_text,
+                #     llm_provider=llm_generator,
+                #     model_name=analysis_model,
+                #     provider_type=provider_type
+                # )
                 
                 # Boost importance for significant investment ratings
                 rating = get_rating_from_score(investment_score["total_score"])
@@ -229,14 +229,14 @@ Focus on:
                 }
                 
                 # Store in conversation memory
-                await memory_manager.store_conversation_turn(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    query=query_text,
-                    response=analysis_text,
-                    metadata=metadata,
-                    importance_score=importance_score
-                )
+                # await memory_manager.store_conversation_turn(
+                #     session_id=chat_request.session_id,
+                #     user_id=user_id,
+                #     query=query_text,
+                #     response=analysis_text,
+                #     metadata=metadata,
+                #     importance_score=importance_score
+                # )
                 
                 # Save to chat history (existing logic)
                 question_id = chat_service.save_user_question(
@@ -338,22 +338,22 @@ async def get_financial_growth_with_analysis_stream(
             context = ""
             memory_stats = {}
             document_references = []
-            if chat_request.session_id and user_id:
-                try:
-                    query_text = chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}"
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         query_text = chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}"
                     
-                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=query_text,
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
+            #         context, memory_stats, document_references = await memory_manager.get_relevant_context(
+            #             session_id=chat_request.session_id,
+            #             user_id=user_id,
+            #             current_query=query_text,
+            #             llm_provider=llm_generator,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
                     
-                    logger.info(f"Retrieved memory context for fundamental streaming: {memory_stats}")
-                except Exception as e:
-                    logger.error(f"Error getting memory: {e}")
+            #         logger.info(f"Retrieved memory context for fundamental streaming: {memory_stats}")
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory: {e}")
 
             enhanced_history = ""
             if context:
@@ -423,15 +423,15 @@ async def get_financial_growth_with_analysis_stream(
             
             if chat_request.session_id and user_id:
                 try:
-                    analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
+                    # analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}",
-                        response=analysis_text,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=provider_type
-                    )
+                    # importance_score = await analyze_conversation_importance(
+                    #     query=chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}",
+                    #     response=analysis_text,
+                    #     llm_provider=llm_generator,
+                    #     model_name=analysis_model,
+                    #     provider_type=provider_type
+                    # )
                     
                     # Boost for significant ratings
                     if quick_summary["rating"] in ["STRONG BUY", "STRONG SELL"]:
@@ -457,14 +457,14 @@ async def get_financial_growth_with_analysis_stream(
                         "analysis_type": "comprehensive_streaming"
                     }
                     
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}",
-                        response=analysis_text,
-                        metadata=metadata,
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Comprehensive fundamental analysis for {symbol}",
+                    #     response=analysis_text,
+                    #     metadata=metadata,
+                    #     importance_score=importance_score
+                    # )
                     
                     # Prepare response data for chat history
                     response_data = {
@@ -481,7 +481,7 @@ async def get_financial_growth_with_analysis_stream(
                         response_time=0.1
                     )
 
-                    trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
+                    # trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
 
                 except Exception as e:
                     logger.error(f"Error saving to chat history: {str(e)}")

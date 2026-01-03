@@ -34,10 +34,10 @@ class NewsService:
         )
         
         timeout = httpx.Timeout(
-            connect=15.0,
-            read=40.0,
-            write=10.0,
-            pool=10.0
+            connect=5.0,
+            read=10.0,
+            write=5.0,
+            pool=5.0
         )
         
         return httpx.AsyncClient(limits=limits, timeout=timeout)
@@ -47,7 +47,7 @@ class NewsService:
         client: httpx.AsyncClient, 
         endpoint_path: str, 
         params: Dict[str, Any],
-        max_retries: int = 3
+        max_retries: int = 2
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Fetch data từ FMP với retry logic và optimized timeout.
@@ -64,7 +64,7 @@ class NewsService:
         for attempt in range(max_retries):
             try:
                 # Tăng timeout theo exponential backoff
-                current_timeout = 25.0 * (1.5 ** attempt)  # 25s, 37.5s, 56.25s
+                current_timeout = 8.0 * (1.5 ** attempt)  # 25s, 37.5s, 56.25s
                 
                 logger.debug(
                     f"Fetching FMP data from {endpoint_path}, "
@@ -87,7 +87,7 @@ class NewsService:
             
             except (httpx.ConnectTimeout, httpx.ReadTimeout) as timeout_err:
                 if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt  # 1s, 2s, 4s
+                    wait_time = 0.5 ** attempt  # 1s, 2s, 4s
                     logger.warning(
                         f"⏱️ Timeout fetching FMP data ({endpoint_path}) on attempt {attempt + 1}/{max_retries}. "
                         f"Error: {type(timeout_err).__name__}. Retrying in {wait_time}s..."

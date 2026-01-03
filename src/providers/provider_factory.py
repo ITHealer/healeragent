@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import Optional, Dict, List
 
 from src.providers.base_provider import ModelProvider
 from src.providers.openai_provider import OpenAIModelProvider
@@ -9,30 +9,22 @@ from src.providers.openrouter_provider import OpenRouterModelProvider
 from src.utils.logger.custom_logging import LoggerMixin
 from src.utils.config import settings
 
+
 class ProviderType(str, Enum):
-    """
-    Supported LLM provider types.
-    
-    Each provider has different capabilities, pricing, and model availability:
-    
-    - OLLAMA: Local/self-hosted models (free, private)
-    - OPENAI: OpenAI's models (GPT-4, GPT-3.5, etc.)
-    - OPENROUTER: Unified API for 100+ models from multiple providers
-    - GEMINI: Google's Gemini models
-    """
+    """Supported LLM provider types."""
     OLLAMA = "ollama"
     OPENAI = "openai"
     OPENROUTER = "openrouter"
     GEMINI = "gemini"
-    
+
     @classmethod
-    def list(cls):
-        """Get list of all provider type values."""
-        return list(map(lambda c: c.value, cls))
-    
+    def list(cls) -> List[str]:
+        """Return all provider type values."""
+        return [p.value for p in cls]
+
     @classmethod
-    def get_display_names(cls) -> dict:
-        """Get provider display names for UI."""
+    def get_display_names(cls) -> Dict[str, str]:
+        """Return provider display names for UI."""
         return {
             cls.OLLAMA.value: "Ollama (Local)",
             cls.OPENAI.value: "OpenAI",
@@ -41,15 +33,8 @@ class ProviderType(str, Enum):
         }
 
 class ModelProviderFactory(LoggerMixin):
-    """
-    Factory for creating model providers.
-    
-    Centralizes provider creation logic and handles:
-    - Provider instantiation
-    - API key validation
-    - Configuration from environment
-    """
-    
+    """Factory for creating LLM model providers."""
+
     @staticmethod
     def create_provider(
         provider_type: str,
@@ -58,154 +43,83 @@ class ModelProviderFactory(LoggerMixin):
         **kwargs
     ) -> ModelProvider:
         """
-        Create appropriate provider based on type.
-        
+        Create a model provider instance.
+
         Args:
-            provider_type: One of ProviderType values (ollama, openai, openrouter, gemini)
-            model_name: Model identifier
-                - OpenAI: "gpt-4o-mini", "gpt-4-turbo"
-                - OpenRouter: "provider/model" format, e.g., "anthropic/claude-3.5-sonnet"
-                - Ollama: Local model name, e.g., "llama3:8b"
-                - Gemini: "gemini-pro", "gemini-1.5-flash"
-            api_key: API key for the provider (not needed for Ollama)
-            **kwargs: Additional provider-specific arguments
-                - site_url: For OpenRouter analytics
-                - site_name: For OpenRouter analytics
-                
+            provider_type: Provider type (ollama, openai, openrouter, gemini)
+            model_name: Model identifier for the provider
+            api_key: API key (not required for Ollama)
+            **kwargs: Provider-specific options (site_url, site_name for OpenRouter)
+
         Returns:
-            ModelProvider: Configured provider instance
-            
+            Configured ModelProvider instance
+
         Raises:
             ValueError: If provider type is unsupported or API key is missing
         """
         logger = LoggerMixin().logger
+        ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
 
-        # Normalize provider type
-        provider_type_lower = provider_type.lower() if isinstance(provider_type, str) else provider_type
-        
-        if provider_type_lower == ProviderType.OLLAMA:
-            logger.debug(f"[FACTORY] Creating Ollama provider: {model_name}")
+        if ptype == ProviderType.OLLAMA or ptype == "ollama":
+            logger.debug(f"[FACTORY] Creating Ollama provider | model={model_name}")
             return OllamaModelProvider(model_name=model_name)
-        elif provider_type == ProviderType.OPENAI:
+
+        if ptype == ProviderType.OPENAI or ptype == "openai":
             if not api_key:
-                raise ValueError(
-                    "API key is required for OpenAI provider. "
-                    "Set OPENAI_API_KEY environment variable or pass api_key parameter."
-                )
-            logger.debug(f"[FACTORY] Creating OpenAI provider: {model_name}")
+                raise ValueError("API key required for OpenAI. Set OPENAI_API_KEY or pass api_key.")
+            logger.debug(f"[FACTORY] Creating OpenAI provider | model={model_name}")
             return OpenAIModelProvider(api_key=api_key, model_name=model_name)
-        elif provider_type_lower == ProviderType.OPENROUTER:
+
+        if ptype == ProviderType.OPENROUTER or ptype == "openrouter":
             if not api_key:
-                raise ValueError(
-                    "API key is required for OpenRouter provider. "
-                    "Set OPENROUTER_API_KEY environment variable or pass api_key parameter."
-                )
-            
-            # Extract OpenRouter-specific kwargs
-            site_url = kwargs.get('site_url')
-            site_name = kwargs.get('site_name', 'CODEMIND Agent')
-            
-            logger.debug(f"[FACTORY] Creating OpenRouter provider: {model_name}")
+                raise ValueError("API key required for OpenRouter. Set OPENROUTER_API_KEY or pass api_key.")
+            logger.debug(f"[FACTORY] Creating OpenRouter provider | model={model_name}")
             return OpenRouterModelProvider(
                 api_key=api_key,
                 model_name=model_name,
-                site_url=site_url,
-                site_name=site_name
+                site_url=kwargs.get("site_url"),
+                site_name=kwargs.get("site_name", "CODEMIND Agent"),
             )
-        elif provider_type == ProviderType.GEMINI:
+
+        if ptype == ProviderType.GEMINI or ptype == "gemini":
             if not api_key:
-                raise ValueError(
-                    "API key is required for Gemini provider. "
-                    "Set GEMINI_API_KEY environment variable or pass api_key parameter."
-                )
-            logger.debug(f"[FACTORY] Creating Gemini provider: {model_name}")
+                raise ValueError("API key required for Gemini. Set GEMINI_API_KEY or pass api_key.")
+            logger.debug(f"[FACTORY] Creating Gemini provider | model={model_name}")
             return GeminiModelProvider(api_key=api_key, model_name=model_name)
-        else:
-            raise ValueError(
-                f"Unsupported provider type: {provider_type}. "
-                f"Supported providers: {ProviderType.list()}"
-            )
+
+        raise ValueError(f"Unsupported provider: {provider_type}. Supported: {ProviderType.list()}")
     
     @staticmethod
     def _get_api_key(provider_type: str) -> Optional[str]:
-        """
-        Get API key for a provider from environment variables.
-        
-        Args:
-            provider_type: Provider type (ollama, openai, openrouter, gemini)
-            
-        Returns:
-            Optional[str]: API key for the provider, or None/endpoint for Ollama
-            
-        Note:
-            Environment variables used:
-            - OPENAI_API_KEY for OpenAI
-            - OPENROUTER_API_KEY for OpenRouter
-            - GEMINI_API_KEY for Gemini
-            - OLLAMA_ENDPOINT for Ollama (returns endpoint, not key)
-        """
-        provider_type_lower = provider_type.lower() if isinstance(provider_type, str) else provider_type
-        
-        if provider_type_lower == ProviderType.OPENAI:
-            return settings.OPENAI_API_KEY
-        
-        elif provider_type_lower == ProviderType.OPENROUTER:
-            return settings.OPENROUTER_API_KEY
-        
-        elif provider_type_lower == ProviderType.GEMINI:
-            return settings.GEMINI_API_KEY
-        
-        elif provider_type_lower == ProviderType.OLLAMA:
-            # Ollama doesn't need API key, return endpoint instead
-            return settings.OLLAMA_ENDPOINT
-        
-        return None
-    
+        """Get API key from environment for the specified provider."""
+        ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
+
+        key_map = {
+            ProviderType.OPENAI: settings.OPENAI_API_KEY,
+            ProviderType.OPENROUTER: settings.OPENROUTER_API_KEY,
+            ProviderType.GEMINI: settings.GEMINI_API_KEY,
+            ProviderType.OLLAMA: settings.OLLAMA_ENDPOINT,  # Ollama uses endpoint, not key
+        }
+        return key_map.get(ptype)
+
     @staticmethod
     def is_api_key_configured(provider_type: str) -> bool:
-        """
-        Check if API key is configured for a provider.
-        
-        Args:
-            provider_type: Provider type to check
-            
-        Returns:
-            bool: True if API key is available
-        """
+        """Check if API key/endpoint is configured for a provider."""
         api_key = ModelProviderFactory._get_api_key(provider_type)
-        
-        # Ollama doesn't need API key
-        if provider_type.lower() == ProviderType.OLLAMA:
-            return bool(api_key)  # Just check endpoint is set
-        
-        return bool(api_key and len(api_key) > 0)
+        return bool(api_key)
+
+    @staticmethod
+    def get_available_providers() -> List[str]:
+        """Return list of providers with configured API keys."""
+        return [
+            p.value for p in ProviderType
+            if ModelProviderFactory.is_api_key_configured(p.value)
+        ]
     
     @staticmethod
-    def get_available_providers() -> list:
-        """
-        Get list of providers with configured API keys.
-        
-        Returns:
-            list: Provider types that are ready to use
-        """
-        available = []
-        for provider in ProviderType:
-            if ModelProviderFactory.is_api_key_configured(provider.value):
-                available.append(provider.value)
-        return available
-    
-    @staticmethod
-    def get_provider_info(provider_type: str) -> dict:
-        """
-        Get information about a provider.
-        
-        Args:
-            provider_type: Provider type
-            
-        Returns:
-            dict: Provider information
-        """
-        info = {
+    def get_provider_info(provider_type: str) -> Dict[str, any]:
+        """Return metadata about a provider (name, description, example models, docs)."""
+        provider_info = {
             ProviderType.OLLAMA.value: {
                 "name": "Ollama",
                 "description": "Local/self-hosted LLM models",
@@ -223,7 +137,7 @@ class ModelProviderFactory(LoggerMixin):
             },
             ProviderType.OPENROUTER.value: {
                 "name": "OpenRouter",
-                "description": "Unified API gateway for 100+ models from multiple providers",
+                "description": "Unified API gateway for 100+ models",
                 "api_key_required": True,
                 "api_key_env": "OPENROUTER_API_KEY",
                 "example_models": [
@@ -231,7 +145,6 @@ class ModelProviderFactory(LoggerMixin):
                     "anthropic/claude-3.5-sonnet",
                     "google/gemini-pro-1.5",
                     "meta-llama/llama-3.1-70b-instruct",
-                    "mistralai/mistral-large",
                 ],
                 "docs_url": "https://openrouter.ai/docs",
             },
@@ -244,5 +157,6 @@ class ModelProviderFactory(LoggerMixin):
                 "docs_url": "https://ai.google.dev/docs",
             },
         }
-        
-        return info.get(provider_type.lower(), {"name": provider_type, "description": "Unknown provider"})
+
+        ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
+        return provider_info.get(ptype, {"name": provider_type, "description": "Unknown provider"})

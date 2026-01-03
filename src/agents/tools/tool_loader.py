@@ -99,6 +99,7 @@ TOOL_DEFINITIONS = {
     "memory": [
         ("src.agents.tools.memory.search_conversation_history", "SearchConversationHistoryTool", None),
         ("src.agents.tools.memory.get_recent_conversations", "GetRecentConversationsTool", None),
+        ("src.agents.tools.memory.memory_user_edits", "MemoryUserEditsTool", None),
         ("src.agents.tools.memory.search_recall_memory", "SearchRecallMemoryTool", None),
         ("src.agents.tools.memory.search_archival_memory", "SearchArchivalMemoryTool", None),
     ],
@@ -109,6 +110,14 @@ TOOL_DEFINITIONS = {
     "reasoning": [
         ("src.agents.tools.reasoning.think_tool", "ThinkTool", None),
     ],
+
+    # ========================================================================
+    # WEB TOOLS (1) - Web Search
+    # ========================================================================
+    "web": [
+        ("src.agents.tools.web", "WebSearchTool", "tavily_api_key"),
+    ],
+
 }
 
 
@@ -124,13 +133,16 @@ def _create_tool_instance(
     module_path: str,
     class_name: str,
     init_arg: Optional[str],
-    api_key: Optional[str]
+    api_key: Optional[str],
+    tavily_api_key: Optional[str] = None,
 ):
     """Create tool instance with optional init argument"""
     tool_class = _import_tool_class(module_path, class_name)
     
     if init_arg == "api_key" and api_key:
         return tool_class(api_key=api_key)
+    elif init_arg == "tavily_api_key":
+        return tool_class(api_key=tavily_api_key)
     else:
         return tool_class()
 
@@ -149,11 +161,15 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
     failed_imports = []
     registered_count = 0
     
-    # Get FMP API key
+    # Get API keys
     fmp_api_key = os.environ.get("FMP_API_KEY")
+    tavily_api_key = os.environ.get("TAVILY_API_KEY")
     
     if not fmp_api_key:
         logger.warning("FMP_API_KEY not set - some tools may not work")
+
+    if not tavily_api_key:
+        logger.info("TAVILY_API_KEY not set - web search will be disabled")
     
     # logger.info("=" * 70)
     # logger.info("[TOOL LOADER] Starting tool registration...")
@@ -169,7 +185,8 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                     module_path=module_path,
                     class_name=class_name,
                     init_arg=init_arg,
-                    api_key=fmp_api_key
+                    api_key=fmp_api_key,
+                    tavily_api_key=tavily_api_key,
                 )
                 
                 registry.register_tool(tool)

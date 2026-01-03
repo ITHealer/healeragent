@@ -49,6 +49,12 @@ class ChatRequest(BaseModel):
     collection_name: str = settings.QDRANT_COLLECTION_NAME
     use_multi_collection: bool = False
 
+class StockHeatmapPayload(BaseModel):
+    session_id: str = Field(None, description="Chat session ID")
+    question_input: str = Field("Show me the stock heatmap", description="User's question")
+    target_language: Optional[str] = None
+    model_name: str = Field("gpt-4.1-nano-2025-04-14", description="LLM model to use")
+    provider_type: str = Field(ProviderType.OPENAI, description="Provider type: ollama, openai, gemini")
 
 class MarketMoversAnalysisRequest(BaseModel):
     """Request model for market movers analysis (gainers/losers)"""

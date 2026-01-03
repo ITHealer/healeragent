@@ -57,6 +57,7 @@ class IncludeAPIRouter(object):
         # =============================================================================
         # from src.routers.v2.chat import router as router_chat
         from src.routers.v2.chat_thinking import router as router_chat_thinking
+        from src.routers.v2.chat_assistant import router as router_chat_assistant
         from src.routers.v2.tool_call import router as router_tool_call
         from src.routers.v2.cookies_router import router as router_cookies
         from src.routers.v2.text_translator import router as router_text_translator
@@ -121,6 +122,7 @@ class IncludeAPIRouter(object):
         router.include_router(router_tool_call, tags=["TOL Router - Tool Call"])
         # router.include_router(router_chat, tags=["TOL Chat - Dev Chat"])
         router.include_router(router_chat_thinking, tags=["TOL Chat - Assistant"])
+        router.include_router(router_chat_assistant, tags=["TOL Chat - Assistant - V2"])
         router.include_router(router_cookies, tags=["TOL Cookies - Cookie Management"])
         router.include_router(router_content_processor, tags=['TOL - Content Summarizer'])
         router.include_router(router_news_agent, tags=['TOL News Aggregator - Tavily News Agent'])

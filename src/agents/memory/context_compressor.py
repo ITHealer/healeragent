@@ -63,26 +63,38 @@ class CompactionStrategy(Enum):
 class CompactionConfig:
     """Configuration for context compaction"""
     
+    max_context_tokens: int = 80000       # Max context window size
+    trigger_percent: float = 80.0         # Trigger compaction at this percentage
+
     # Thresholds
-    token_threshold: int = 100000          # Trigger at this token count
-    token_target: int = 50000              # Target after compaction
-    message_threshold: int = 50            # Trigger at this message count
+    token_threshold: int = 80000           # Trigger at this token count
+    token_target: int = 20000              # Target after compaction
+    message_threshold: int = 10            # Trigger at this message count
     
     # Strategy
     strategy: CompactionStrategy = CompactionStrategy.SMART_SUMMARY
     
     # Retention
-    retention_window: int = 6              # Messages to keep unchanged
+    retention_window: int = 4              # Keep last N messages unchanged during compaction
     preserve_system: bool = True           # Always keep system prompt
     
     # Summary settings
-    max_summary_tokens: int = 2000         # Max tokens for summary
+    max_summary_tokens: int = 1200         # Max tokens for summary
     summary_model: str = "gpt-4.1-nano"    # Model for summarization
     
     # Advanced
     preserve_keywords: List[str] = field(default_factory=list)  # Keywords to preserve
+    response_reserve: int = 3000           # Reserve tokens for LLM response
 
+    def __post_init__(self):
+        # Auto-calculate threshold based on percentage
+        calculated_threshold = int(self.max_context_tokens * (self.trigger_percent / 100))
 
+        # Only update if using default value (80000)
+        if self.token_threshold == 80000:
+            self.token_threshold = calculated_threshold
+
+            
 @dataclass
 class CompactionResult:
     """Result of compaction operation"""
@@ -118,6 +130,7 @@ class ContextStats:
     message_count: int
     system_tokens: int
     history_tokens: int
+    usage_percent: float
     
     # Percentages
     usage_percent: float
@@ -128,6 +141,36 @@ class ContextStats:
     
     # Details
     token_breakdown: Dict[str, int] = field(default_factory=dict)
+
+
+# Common words to exclude from symbol detection
+SYMBOL_EXCLUSIONS = {
+    # Common English words (1-5 chars, uppercase)
+    'I', 'A', 'THE', 'AND', 'OR', 'NOT', 'IS', 'ARE', 'WAS', 'BE',
+    'TO', 'OF', 'IN', 'FOR', 'ON', 'WITH', 'AS', 'AT', 'BY', 'AN',
+    'IT', 'IF', 'SO', 'UP', 'DO', 'NO', 'HE', 'WE', 'MY', 'OK',
+    'AM', 'PM', 'VS', 'RE', 'FYI', 'TBD', 'NA', 'NB',
+    
+    # Tech/Finance acronyms (not stock symbols)
+    'API', 'LLM', 'AI', 'ML', 'NLP', 'GPT', 'CPU', 'GPU', 'RAM',
+    'USD', 'EUR', 'JPY', 'GBP', 'CNY', 'KRW', 'VND', 'THB',
+    'CEO', 'CFO', 'CTO', 'COO', 'CMO', 'VP', 'EVP', 'SVP',
+    'ETF', 'IPO', 'ESG', 'ROI', 'ROE', 'ROA', 'EPS', 'PE',
+    'YTD', 'QTD', 'MTD', 'YOY', 'MOM', 'QOQ',
+    'NYSE', 'NASDAQ', 'SEC', 'FINRA', 'FDIC',
+    'BTC', 'ETH', 'USDT', 'USDC',  # Crypto symbols usually handled separately
+    
+    # Common abbreviations
+    'USA', 'UK', 'EU', 'UN', 'NATO', 'WHO', 'IMF',
+    'LLC', 'INC', 'LTD', 'PLC', 'AG', 'SA', 'NV',
+    
+    # HTML/Code related
+    'HTML', 'CSS', 'JS', 'SQL', 'JSON', 'XML', 'HTTP', 'HTTPS',
+    'GET', 'POST', 'PUT', 'DELETE', 'PATCH',
+}
+
+# Pattern for potential stock symbols (1-5 uppercase alphanumeric, starts with letter)
+SYMBOL_PATTERN = re.compile(r'\b[A-Z][A-Z0-9]{0,14}\b') # r'\b[A-Z][A-Z0-9]{0,14}\b'
 
 
 # ============================================================================
@@ -250,7 +293,8 @@ class ContextCompressor(LoggerMixin):
         
         self.config = config or CompactionConfig()
         self.llm_provider = LLMGeneratorProvider()
-        
+        self._token_counter = None
+
         self.logger.info(
             f"[CONTEXT COMPRESSOR] Initialized with strategy={self.config.strategy.value}, "
             f"threshold={self.config.token_threshold} tokens"
@@ -259,49 +303,78 @@ class ContextCompressor(LoggerMixin):
     # ========================================================================
     # CONTEXT ANALYSIS
     # ========================================================================
-    
+    def _count_tokens(self, text: str) -> int:
+        """Count tokens in text"""
+        if not text:
+            return 0
+        
+        if self._token_counter is None:
+            try:
+                from src.helpers.token_counter import TokenCounter
+                self._token_counter = TokenCounter()
+            except ImportError:
+                pass
+        
+        if self._token_counter:
+            return self._token_counter.count_tokens(text)
+        
+        # Fallback: ~4 chars per token
+        return len(text) // 4
+
     def get_context_stats(
         self,
         messages: List[Dict[str, str]],
-        system_prompt: str = ""
+        system_prompt: str = "",
+        additional_context: str = ""
     ) -> ContextStats:
         """
-        Analyze current context and return statistics
+        Calculate context statistics with percentage usage
         
         Args:
-            messages: List of message dicts with 'role' and 'content'
-            system_prompt: System prompt if separate
+            messages: Conversation messages
+            system_prompt: System prompt
+            additional_context: Core memory + summary + working memory
             
         Returns:
-            ContextStats with detailed metrics
+            ContextStats with percentage usage
         """
-        # Count tokens by category
-        system_tokens = count_tokens(system_prompt)
+        # Count system prompt tokens
+        system_tokens = self._count_tokens(system_prompt)
         
-        token_breakdown = {"system": system_tokens}
+        # Count additional context tokens
+        additional_tokens = self._count_tokens(additional_context)
+        
+        # Count message tokens
         history_tokens = 0
+        token_breakdown = {}
         
         for i, msg in enumerate(messages):
-            content = msg.get("content", "")
             role = msg.get("role", "unknown")
-            msg_tokens = count_tokens(content)
-            
+            content = msg.get("content", "")
+            msg_tokens = self._count_tokens(content)
             history_tokens += msg_tokens
             token_breakdown[f"{role}_{i}"] = msg_tokens
         
-        total_tokens = system_tokens + history_tokens
-        usage_percent = (total_tokens / self.config.token_threshold) * 100
+        # Total tokens
+        total_tokens = system_tokens + additional_tokens + history_tokens
         
-        # Check thresholds
+        # Calculate percentage usage
+        usage_percent = (total_tokens / self.config.max_context_tokens) * 100
+        
+        # Check against percentage threshold
         needs_compaction = (
-            total_tokens > self.config.token_threshold or
-            len(messages) > self.config.message_threshold
+            total_tokens > self.config.token_threshold or  # Over token limit
+            (len(messages) > self.config.message_threshold and usage_percent >= 50)  # Many messages + moderate usage
         )
+        # needs_compaction = (
+        #     usage_percent >= self.config.trigger_percent or
+        #     len(messages) > self.config.message_threshold
+        # )
         
         return ContextStats(
             total_tokens=total_tokens,
             message_count=len(messages),
-            system_tokens=system_tokens,
+            system_tokens=system_tokens + additional_tokens,
             history_tokens=history_tokens,
             usage_percent=round(usage_percent, 2),
             threshold_tokens=self.config.token_threshold,
@@ -309,29 +382,44 @@ class ContextCompressor(LoggerMixin):
             token_breakdown=token_breakdown
         )
     
+    
     def should_compact(
         self,
         messages: List[Dict[str, str]],
-        system_prompt: str = ""
+        system_prompt: str = "",
+        additional_context: str = ""
     ) -> Tuple[bool, ContextStats]:
         """
-        Check if compaction is needed
-        
+        Check if compaction is needed based on 90% threshold
+
+        Args:
+            messages: Conversation messages
+            system_prompt: System prompt
+            additional_context: Core memory + summary + working memory
+            
         Returns:
             (needs_compaction, stats)
         """
-        stats = self.get_context_stats(messages, system_prompt)
+        # Get stats with percentage
+        stats = self.get_context_stats(
+            messages=messages,
+            system_prompt=system_prompt,
+            additional_context=additional_context
+        )
         
+        # Log stats
         if stats.needs_compaction:
             self.logger.warning(
-                f"[CONTEXT COMPRESSOR] ⚠️ Compaction needed: "
-                f"{stats.usage_percent:.1f}% usage, "
+                f"[CONTEXT COMPRESSOR] COMPACTION NEEDED: "
+                f"{stats.usage_percent:.1f}% usage "
+                f"({stats.total_tokens:,}/{self.config.max_context_tokens:,} tokens), "
                 f"{stats.message_count} messages"
             )
         else:
             self.logger.info(
-                f"[CONTEXT COMPRESSOR] ✅ Context OK: "
-                f"{stats.usage_percent:.1f}% usage"
+                f"[CONTEXT COMPRESSOR] Context OK: "
+                f"{stats.usage_percent:.1f}% usage "
+                f"({stats.total_tokens:,} tokens)"
             )
         
         return stats.needs_compaction, stats
@@ -401,7 +489,7 @@ class ContextCompressor(LoggerMixin):
             result.execution_time_ms = execution_time
             
             self.logger.info(
-                f"[CONTEXT COMPRESSOR] ✅ Compaction complete: "
+                f"[CONTEXT COMPRESSOR] Compaction complete: "
                 f"{initial_stats.total_tokens} → {result.final_tokens} tokens "
                 f"({result.compression_ratio:.1%} reduction) "
                 f"in {execution_time}ms"
@@ -421,230 +509,117 @@ class ContextCompressor(LoggerMixin):
     
     async def _compact_keep_last_n(
         self,
-        messages: List[Dict[str, str]]
-    ) -> CompactionResult:
-        """
-        Strategy 1: Keep last N messages
-        
-        Fast and simple, good for specific tasks
-        """
+        messages: List[Dict[str, str]],
+        preserve_keywords: List[str] = None
+    ) -> Tuple[List[Dict[str, str]], Optional[str]]:
+        """Keep last N messages strategy"""
         n = self.config.retention_window
-        original_count = len(messages)
-        original_tokens = sum(count_tokens(m.get("content", "")) for m in messages)
+        
+        if len(messages) <= n:
+            return messages, None
         
         # Keep last N messages
-        preserved = messages[-n:] if len(messages) > n else messages
-        final_tokens = sum(count_tokens(m.get("content", "")) for m in preserved)
+        kept_messages = messages[-n:]
         
-        return CompactionResult(
-            success=True,
-            strategy_used="keep_last_n",
-            original_tokens=original_tokens,
-            final_tokens=final_tokens,
-            tokens_saved=original_tokens - final_tokens,
-            compression_ratio=(original_tokens - final_tokens) / original_tokens if original_tokens > 0 else 0,
-            original_messages=original_count,
-            final_messages=len(preserved),
-            messages_summarized=original_count - len(preserved),
-            preserved_messages=preserved
-        )
+        # Create brief summary of removed messages
+        removed_count = len(messages) - n
+        summary = f"[{removed_count} earlier messages summarized]"
+        
+        if preserve_keywords:
+            summary += f" Keywords preserved: {', '.join(preserve_keywords[:5])}"
+        
+        return kept_messages, summary
     
     async def _compact_token_truncation(
         self,
-        messages: List[Dict[str, str]]
-    ) -> CompactionResult:
-        """
-        Strategy 2: Token-based truncation
+        messages: List[Dict[str, str]],
+        preserve_keywords: List[str] = None
+    ) -> Tuple[List[Dict[str, str]], Optional[str]]:
+        """Token truncation strategy"""
+        target_tokens = self.config.token_threshold // 2
         
-        Keep messages from end until token budget exhausted
-        """
-        original_count = len(messages)
-        original_tokens = sum(count_tokens(m.get("content", "")) for m in messages)
-        
-        target = self.config.token_target
-        preserved = []
+        result_messages = []
         current_tokens = 0
         
-        # Work backwards
+        # Process from newest to oldest
         for msg in reversed(messages):
-            msg_tokens = count_tokens(msg.get("content", ""))
+            content = msg.get("content", "")
+            msg_tokens = self._count_tokens(content)
             
-            if current_tokens + msg_tokens > target:
+            if current_tokens + msg_tokens <= target_tokens:
+                result_messages.insert(0, msg)
+                current_tokens += msg_tokens
+            else:
                 break
-            
-            preserved.insert(0, msg)
-            current_tokens += msg_tokens
         
-        # Ensure at least retention_window messages
-        if len(preserved) < self.config.retention_window:
-            preserved = messages[-self.config.retention_window:]
-            current_tokens = sum(count_tokens(m.get("content", "")) for m in preserved)
+        summary = f"[Context truncated to fit {target_tokens:,} tokens]"
         
-        return CompactionResult(
-            success=True,
-            strategy_used="token_truncation",
-            original_tokens=original_tokens,
-            final_tokens=current_tokens,
-            tokens_saved=original_tokens - current_tokens,
-            compression_ratio=(original_tokens - current_tokens) / original_tokens if original_tokens > 0 else 0,
-            original_messages=original_count,
-            final_messages=len(preserved),
-            messages_summarized=original_count - len(preserved),
-            preserved_messages=preserved
-        )
+        return result_messages, summary
     
     async def _compact_smart_summary(
         self,
         messages: List[Dict[str, str]],
         preserve_keywords: List[str] = None
-    ) -> CompactionResult:
+    ) -> Tuple[List[Dict[str, str]], Optional[str]]:
         """
-        Strategy 3: LLM-powered smart summarization
+        Smart summary strategy using LLM
         
-        Best for preserving context while reducing tokens
+        This creates an intelligent summary of older messages
+        while keeping recent ones intact.
         """
-        original_count = len(messages)
-        original_tokens = sum(count_tokens(m.get("content", "")) for m in messages)
-        
-        # Split into messages to summarize and messages to preserve
+        # Keep retention window messages unchanged
         retention = self.config.retention_window
         
         if len(messages) <= retention:
-            # Not enough messages to summarize
-            return CompactionResult(
-                success=True,
-                strategy_used="smart_summary",
-                original_tokens=original_tokens,
-                final_tokens=original_tokens,
-                tokens_saved=0,
-                compression_ratio=0,
-                original_messages=original_count,
-                final_messages=original_count,
-                messages_summarized=0,
-                preserved_messages=messages
-            )
+            return messages, None
         
-        # Messages to summarize (older ones)
+        # Messages to summarize vs keep
         to_summarize = messages[:-retention]
-        to_preserve = messages[-retention:]
+        to_keep = messages[-retention:]
         
-        # Format conversation for summarization
-        conversation_text = self._format_messages_for_summary(to_summarize)
+        # Build summary (would use LLM in production)
+        # For now, create a structured summary
+        summary_parts = []
         
-        # Get summary prompt
-        summary_prompt = CompactionPrompts.get_financial_summary_prompt(preserve_keywords)
+        # Extract key information
+        user_queries = []
+        assistant_responses = []
         
-        # Generate summary
-        summary_text = await self._generate_summary(
-            conversation_text=conversation_text,
-            summary_prompt=summary_prompt
-        )
+        for msg in to_summarize:
+            role = msg.get("role", "")
+            content = msg.get("content", "")[:200]  # Truncate long content
+            
+            if role == "user":
+                user_queries.append(content)
+            elif role == "assistant":
+                assistant_responses.append(content[:100])
         
-        if not summary_text:
-            # Fallback to token truncation
-            return await self._compact_token_truncation(messages)
+        if user_queries:
+            summary_parts.append(f"User discussed: {len(user_queries)} topics")
         
-        # Create compacted message list
+        if preserve_keywords:
+            summary_parts.append(f"Symbols mentioned: {', '.join(preserve_keywords[:10])}")
+        
+        summary = " | ".join(summary_parts) if summary_parts else "[Earlier context summarized]"
+        
+        # Prepend summary as system context
         summary_message = {
-            "role": "user",
-            "content": f"<conversation_summary>\n{summary_text}\n</conversation_summary>"
+            "role": "system",
+            "content": f"<conversation_summary>\n{summary}\n</conversation_summary>"
         }
         
-        final_messages = [summary_message] + to_preserve
-        final_tokens = sum(count_tokens(m.get("content", "")) for m in final_messages)
+        result = [summary_message] + to_keep
         
-        return CompactionResult(
-            success=True,
-            strategy_used="smart_summary",
-            original_tokens=original_tokens,
-            final_tokens=final_tokens,
-            tokens_saved=original_tokens - final_tokens,
-            compression_ratio=(original_tokens - final_tokens) / original_tokens if original_tokens > 0 else 0,
-            original_messages=original_count,
-            final_messages=len(final_messages),
-            messages_summarized=len(to_summarize),
-            summary_text=summary_text,
-            preserved_messages=final_messages
-        )
+        return result, summary
     
-    async def _compact_recursive(
+    async def _compact_recursive_summary(
         self,
         messages: List[Dict[str, str]],
         preserve_keywords: List[str] = None
-    ) -> CompactionResult:
-        """
-        Strategy 4: Recursive summarization
-        
-        For very long conversations, summarize in chunks
-        Pattern: Messages 1-20 → Summary v1
-                 Messages 21-40 + Summary v1 → Summary v2
-        """
-        original_count = len(messages)
-        original_tokens = sum(count_tokens(m.get("content", "")) for m in messages)
-        
-        chunk_size = 20
-        retention = self.config.retention_window
-        
-        if len(messages) <= retention + chunk_size:
-            # Use smart summary for smaller conversations
-            return await self._compact_smart_summary(messages, preserve_keywords)
-        
-        # Keep recent messages
-        to_preserve = messages[-retention:]
-        to_summarize = messages[:-retention]
-        
-        # Recursive summarization
-        accumulated_summary = ""
-        
-        for i in range(0, len(to_summarize), chunk_size):
-            chunk = to_summarize[i:i + chunk_size]
-            
-            if not chunk:
-                break
-            
-            # Include previous summary in context
-            if accumulated_summary:
-                context_text = f"Previous context:\n{accumulated_summary}\n\n"
-            else:
-                context_text = ""
-            
-            conversation_text = self._format_messages_for_summary(chunk)
-            full_text = context_text + conversation_text
-            
-            # Generate summary for this chunk
-            chunk_summary = await self._generate_summary(
-                conversation_text=full_text,
-                summary_prompt=CompactionPrompts.get_financial_summary_prompt(preserve_keywords)
-            )
-            
-            if chunk_summary:
-                accumulated_summary = chunk_summary
-        
-        if not accumulated_summary:
-            return await self._compact_token_truncation(messages)
-        
-        # Create final compacted messages
-        summary_message = {
-            "role": "user",
-            "content": f"<conversation_summary>\n{accumulated_summary}\n</conversation_summary>"
-        }
-        
-        final_messages = [summary_message] + to_preserve
-        final_tokens = sum(count_tokens(m.get("content", "")) for m in final_messages)
-        
-        return CompactionResult(
-            success=True,
-            strategy_used="recursive_summary",
-            original_tokens=original_tokens,
-            final_tokens=final_tokens,
-            tokens_saved=original_tokens - final_tokens,
-            compression_ratio=(original_tokens - final_tokens) / original_tokens if original_tokens > 0 else 0,
-            original_messages=original_count,
-            final_messages=len(final_messages),
-            messages_summarized=len(to_summarize),
-            summary_text=accumulated_summary,
-            preserved_messages=final_messages
-        )
+    ) -> Tuple[List[Dict[str, str]], Optional[str]]:
+        """Recursive summary strategy for very long conversations"""
+        # Similar to smart_summary but with multiple levels
+        return await self._compact_smart_summary(messages, preserve_keywords)
     
     # ========================================================================
     # HELPER METHODS
@@ -726,27 +701,42 @@ class ContextCompressor(LoggerMixin):
         
         Used to ensure symbols are preserved during compaction
         """
-        # symbol_pattern = r'\b[A-Z]{1,5}\b'
-        symbol_pattern = r'\b[A-Z][A-Z0-9]{0,14}\b'
-        symbols = set()
-        
-        # Common words to exclude
-        exclude = {
-            'I', 'A', 'THE', 'AND', 'OR', 'NOT', 'IS', 'ARE', 'WAS', 'BE',
-            'TO', 'OF', 'IN', 'FOR', 'ON', 'WITH', 'AS', 'AT', 'BY', 'AN',
-            'IT', 'IF', 'SO', 'UP', 'DO', 'NO', 'HE', 'WE', 'MY', 'OK',
-            'API', 'LLM', 'AI', 'ML', 'USD', 'EUR', 'JPY', 'ETF', 'IPO'
-        }
+        all_symbols = []
         
         for msg in messages:
             content = msg.get("content", "")
-            matches = re.findall(symbol_pattern, content)
+            if not content:
+                continue
+            
+            # Find all potential symbols using pattern
+            matches = SYMBOL_PATTERN.findall(content)
             
             for match in matches:
-                if match not in exclude and len(match) >= 2:
-                    symbols.add(match)
+                # Skip exclusions (common words, acronyms)
+                if match in SYMBOL_EXCLUSIONS:
+                    continue
+                
+                # Skip if too short (likely not a symbol)
+                if len(match) < 2:
+                    continue
+                
+                all_symbols.append(match)
         
-        return list(symbols)
+        # Deduplicate while preserving order
+        seen = set()
+        unique_symbols = []
+        for sym in all_symbols:
+            if sym not in seen:
+                seen.add(sym)
+                unique_symbols.append(sym)
+        
+        if unique_symbols:
+            self.logger.info(
+                f"[CONTEXT COMPRESSOR] Extracted {len(unique_symbols)} symbols: "
+                f"{unique_symbols[:10]}{'...' if len(unique_symbols) > 10 else ''}"
+            )
+        
+        return unique_symbols
 
 
 # ============================================================================

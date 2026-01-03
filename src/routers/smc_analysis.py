@@ -11,7 +11,8 @@ from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ProviderType
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 import asyncio
 
 from src.helpers.llm_chat_helper import (
@@ -50,7 +51,7 @@ smc_handler = SMCAnalysisHandler()
 smc_llm_helper = SMCAnalysisLLMHelper()
 llm_provider = LLMGeneratorProvider()
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 
 # ============================================================================

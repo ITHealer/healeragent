@@ -112,7 +112,7 @@ class AssessRiskTool(BaseTool):
                 ToolParameter(
                     name="lookback_days",
                     type="number",
-                    description="Days of historical data for calculation (default 60)",
+                    description="Days of historical data (30-252, default 60). Max 252 = 1 trading year.",
                     required=False,
                     default=60,
                     min_value=30,
@@ -176,7 +176,15 @@ class AssessRiskTool(BaseTool):
             ToolOutput with risk analysis
         """
         symbol_upper = symbol.upper()
+
+        original_lookback = lookback_days
+        lookback_days = max(30, min(252, lookback_days))
         
+        if original_lookback != lookback_days:
+            self.logger.warning(
+                f"[ASSESS_RISK] lookback_days clamped: {original_lookback} → {lookback_days}"
+            )
+
         try:
             # Call existing handler
             risk_results = await self.risk_handler.suggest_stop_loss_levels(

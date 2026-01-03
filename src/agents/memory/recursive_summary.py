@@ -1,3 +1,17 @@
+"""
+Recursive Summary Manager for MemGPT-style Memory System
+
+PRODUCTION NOTES:
+- Uses sync database operations (SummaryRepository is sync)
+- Optimized thresholds for production workloads
+- Falls back gracefully on errors
+- Uses SINGLETON pattern to prevent multiple initializations
+
+CRITICAL FIX:
+- Fixed keyword arguments order to match SummaryRepository.create_summary() signature
+- organization_id is OPTIONAL and must come AFTER all required params
+"""
+
 from typing import Optional, Dict, List, Tuple, Any
 from datetime import datetime
 
@@ -6,6 +20,46 @@ from src.database.repository.summary import SummaryRepository
 from src.services.summary_generation_service import SummaryGenerationService
 from src.helpers.chat_management_helper import ChatService
 from src.providers.provider_factory import ProviderType
+
+
+# =============================================================================
+# SINGLETON INSTANCE
+# =============================================================================
+_recursive_summary_manager_instance: Optional['RecursiveSummaryManager'] = None
+
+
+def get_recursive_summary_manager(
+    model_name: str = "gpt-4.1-nano",
+    provider_type: str = ProviderType.OPENAI
+) -> 'RecursiveSummaryManager':
+    """
+    Get singleton instance of RecursiveSummaryManager.
+
+    Use this instead of RecursiveSummaryManager() to prevent memory leaks
+    and multiple initialization logs.
+
+    Args:
+        model_name: LLM model for summarization
+        provider_type: LLM provider
+
+    Returns:
+        RecursiveSummaryManager singleton instance
+    """
+    global _recursive_summary_manager_instance
+
+    if _recursive_summary_manager_instance is None:
+        _recursive_summary_manager_instance = RecursiveSummaryManager(
+            model_name=model_name,
+            provider_type=provider_type
+        )
+
+    return _recursive_summary_manager_instance
+
+
+def reset_recursive_summary_manager():
+    """Reset singleton instance (for testing)"""
+    global _recursive_summary_manager_instance
+    _recursive_summary_manager_instance = None
 
 
 class RecursiveSummaryManager(LoggerMixin):
@@ -35,20 +89,24 @@ class RecursiveSummaryManager(LoggerMixin):
     ):
         """
         Initialize RecursiveSummaryManager
-        
+
         Args:
             model_name: LLM model for summarization
             provider_type: LLM provider
         """
         super().__init__()
         self.summary_repo = SummaryRepository()
-        self.summary_service = SummaryGenerationService(model_name=model_name)
+        self.summary_service = SummaryGenerationService(
+            model_name=model_name,
+            provider_type=provider_type  # Now passes provider_type
+        )
         self.chat_service = ChatService()
+        self.model_name = model_name
         self.provider_type = provider_type
-        
+
         self.logger.info(
             f"[RECURSIVE-SUMMARY] Initialized with threshold={self.MESSAGE_THRESHOLD}, "
-            f"model={model_name}"
+            f"model={model_name}, provider={provider_type}"
         )
     
     
@@ -330,12 +388,16 @@ class RecursiveSummaryManager(LoggerMixin):
             self.logger.debug(
                 f"[SUMMARY] Generating initial summary from {len(messages)} messages"
             )
-            
+
+            # Use stored defaults if not provided
+            effective_model = model_name or self.model_name
+            effective_provider = provider_type or self.provider_type
+
             # Generate summary
             summary_result = await self.summary_service.generate_initial_summary(
                 messages=messages,
-                model_name=model_name,
-                provider_type=provider_type
+                model_name=effective_model,
+                provider_type=effective_provider
             )
             
             if not summary_result.get('summary_text'):
@@ -345,16 +407,17 @@ class RecursiveSummaryManager(LoggerMixin):
                 }
             
             # Save to database
+            # Note: Parameter order must match SummaryRepository.create_summary signature
             summary_id = self.summary_repo.create_summary(
                 session_id=session_id,
                 user_id=user_id,
-                organization_id=organization_id,
                 summary_text=summary_result['summary_text'],
                 version=1,
                 token_count=summary_result['token_count'],
                 message_count=len(messages),
                 total_messages=message_count,
-                model_name=model_name or self.summary_service.model_name,
+                model_name=effective_model,
+                organization_id=organization_id,
                 messages_start_id=messages[0].get('id') if messages else None,
                 messages_end_id=messages[-1].get('id') if messages else None
             )
@@ -435,13 +498,17 @@ class RecursiveSummaryManager(LoggerMixin):
                 f"[SUMMARY] Generating recursive summary: "
                 f"v{existing_summary['version']} + {len(new_messages)} new messages"
             )
-            
+
+            # Use stored defaults if not provided
+            effective_model = model_name or self.model_name
+            effective_provider = provider_type or self.provider_type
+
             # Generate recursive summary
             summary_result = await self.summary_service.generate_recursive_summary(
                 previous_summary=existing_summary['summary_text'],
                 new_messages=new_messages,
-                model_name=model_name,
-                provider_type=provider_type
+                model_name=effective_model,
+                provider_type=effective_provider
             )
             
             if not summary_result.get('summary_text'):
@@ -452,17 +519,18 @@ class RecursiveSummaryManager(LoggerMixin):
             
             # Save new version
             new_version = existing_summary['version'] + 1
-            
+
+            # Note: Parameter order must match SummaryRepository.create_summary signature
             summary_id = self.summary_repo.create_summary(
                 session_id=session_id,
                 user_id=user_id,
-                organization_id=organization_id,
                 summary_text=summary_result['summary_text'],
                 version=new_version,
                 token_count=summary_result['token_count'],
                 message_count=len(new_messages),
                 total_messages=message_count,
-                model_name=model_name or self.summary_service.model_name,
+                model_name=effective_model,
+                organization_id=organization_id,
                 messages_start_id=new_messages[0].get('id') if new_messages else None,
                 messages_end_id=new_messages[-1].get('id') if new_messages else None,
                 previous_summary_tokens=existing_summary['token_count']

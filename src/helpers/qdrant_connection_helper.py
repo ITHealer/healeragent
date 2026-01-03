@@ -1,5 +1,8 @@
 import uuid
+import asyncio
 import torch
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from qdrant_client import models, QdrantClient
 from typing import Literal, List, Dict, Any, Optional
 from langchain_core.documents import Document
@@ -18,56 +21,284 @@ TEXT_EMBEDDING_MODEL="sentence-transformers/all-MiniLM-L6-v2"
 LATE_INTERACTION_TEXT_EMBEDDING_MODEL="colbert-ir/colbertv2.0"
 BM25_EMBEDDING_MODEL="Qdrant/bm25"
 
+
+# =============================================================================
+# THREAD POOL FOR QDRANT OPERATIONS - Prevents blocking async event loop
+# =============================================================================
+
+# Dedicated thread pool for Qdrant sync operations
+_qdrant_executor = ThreadPoolExecutor(
+    max_workers=8,
+    thread_name_prefix="qdrant_sync_"
+)
+
+# Timeout for Qdrant operations in seconds
+QDRANT_OPERATION_TIMEOUT = 30
+
+
+# =============================================================================
+# SINGLETON QDRANT CLIENT - Prevents multiple connection instances
+# =============================================================================
+
+_qdrant_client_instance: Optional[QdrantClient] = None
+_qdrant_client_lock = asyncio.Lock()
+
+
+def get_shared_qdrant_client() -> QdrantClient:
+    """
+    Get or create shared QdrantClient singleton.
+    This prevents creating multiple connections that consume memory.
+    """
+    global _qdrant_client_instance
+
+    if _qdrant_client_instance is None:
+        _qdrant_client_instance = QdrantClient(
+            url=settings.QDRANT_ENDPOINT,
+            timeout=60,  # Reduced from 600s
+            prefer_grpc=True,
+        )
+        # Log only once
+        import logging
+        logging.getLogger(__name__).info(
+            f"[QDRANT] Created singleton client: {settings.QDRANT_ENDPOINT}"
+        )
+
+    return _qdrant_client_instance
+
+
+# =============================================================================
+# SINGLETON QDRANT CONNECTION - Use this instead of QdrantConnection()
+# =============================================================================
+
+_qdrant_connection_instance: Optional['QdrantConnection'] = None
+
+
+def get_qdrant_connection() -> 'QdrantConnection':
+    """
+    Get or create singleton QdrantConnection instance.
+
+    Use this instead of QdrantConnection() to:
+    - Share connection across the application
+    - Prevent multiple heavy object instantiations
+    - Avoid circular import issues
+
+    Example:
+        from src.helpers.qdrant_connection_helper import get_qdrant_connection
+        qdrant = get_qdrant_connection()
+        await qdrant.collection_exists_async("my_collection")
+    """
+    global _qdrant_connection_instance
+    if _qdrant_connection_instance is None:
+        _qdrant_connection_instance = QdrantConnection()
+    return _qdrant_connection_instance
+
+
 class QdrantConnection(LoggerMixin):
+    """
+    Qdrant connection helper with optimized settings.
+
+    Note: Now uses SINGLETON client to prevent memory issues.
+    Timeout reduced from 600s to 60s to fail fast instead of blocking.
+    """
+
+    # Reduced timeout to prevent blocking - was 600s
+    QDRANT_TIMEOUT = 60
+
     def __init__(self, embedding_func: HuggingFaceEmbeddings | None = embedding_function):
         super().__init__()
-        self.client = QdrantClient(url=settings.QDRANT_ENDPOINT, timeout=600)
+        # Use singleton client instead of creating new one each time
+        self.client = get_shared_qdrant_client()
         self.embedding_function = embedding_func
 
+        # These are already cached via @lru_cache in text_embedding_helper
         self.text_embedding_model = text_embedding_model
         self.late_interaction_text_embedding_model = late_interaction_text_embedding_model
         self.bm25_embedding_model = bm25_embedding_model
 
+    # =========================================================================
+    # ASYNC EXECUTOR WRAPPER - Run sync Qdrant operations in thread pool
+    # =========================================================================
 
-    async def add_data(self, 
-        documents: List[Document], 
+    async def _run_sync_in_executor(
+        self,
+        func,
+        *args,
+        timeout: float = QDRANT_OPERATION_TIMEOUT,
+        **kwargs
+    ):
+        """
+        Run a synchronous Qdrant operation in thread pool to avoid blocking event loop.
+
+        Args:
+            func: The sync function to run
+            *args: Positional arguments
+            timeout: Operation timeout in seconds
+            **kwargs: Keyword arguments
+
+        Returns:
+            Result of the function call
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            if kwargs:
+                func_with_kwargs = partial(func, *args, **kwargs)
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(_qdrant_executor, func_with_kwargs),
+                    timeout=timeout
+                )
+            else:
+                if args:
+                    func_with_args = partial(func, *args)
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(_qdrant_executor, func_with_args),
+                        timeout=timeout
+                    )
+                else:
+                    result = await asyncio.wait_for(
+                        loop.run_in_executor(_qdrant_executor, func),
+                        timeout=timeout
+                    )
+            return result
+        except asyncio.TimeoutError:
+            self.logger.warning(f"[QDRANT] Operation timed out after {timeout}s: {func.__name__ if hasattr(func, '__name__') else 'unknown'}")
+            raise
+        except Exception as e:
+            self.logger.error(f"[QDRANT] Error in executor: {e}")
+            raise
+
+    # =========================================================================
+    # ASYNC WRAPPER METHODS - Non-blocking versions of common operations
+    # =========================================================================
+
+    async def collection_exists_async(self, collection_name: str) -> bool:
+        """Non-blocking check if collection exists"""
+        try:
+            return await self._run_sync_in_executor(
+                self.client.collection_exists,
+                collection_name=collection_name
+            )
+        except asyncio.TimeoutError:
+            self.logger.warning(f"[QDRANT] collection_exists timed out for {collection_name}")
+            return False
+        except Exception as e:
+            self.logger.error(f"[QDRANT] Error checking collection exists: {e}")
+            return False
+
+    async def get_collection_async(self, collection_name: str):
+        """Non-blocking get collection info"""
+        return await self._run_sync_in_executor(
+            self.client.get_collection,
+            collection_name=collection_name
+        )
+
+    async def get_collections_async(self):
+        """Non-blocking get all collections"""
+        return await self._run_sync_in_executor(
+            self.client.get_collections
+        )
+
+    async def delete_collection_async(self, collection_name: str) -> bool:
+        """Non-blocking delete collection"""
+        return await self._run_sync_in_executor(
+            self.client.delete_collection,
+            collection_name=collection_name
+        )
+
+    async def query_points_async(self, collection_name: str, **kwargs):
+        """Non-blocking query points"""
+        return await self._run_sync_in_executor(
+            self.client.query_points,
+            collection_name,
+            **kwargs
+        )
+
+    async def scroll_async(self, collection_name: str, **kwargs):
+        """Non-blocking scroll through collection"""
+        return await self._run_sync_in_executor(
+            self.client.scroll,
+            collection_name=collection_name,
+            **kwargs
+        )
+
+    async def delete_async(self, collection_name: str, **kwargs):
+        """Non-blocking delete operation"""
+        return await self._run_sync_in_executor(
+            self.client.delete,
+            collection_name=collection_name,
+            **kwargs
+        )
+
+    async def create_payload_index_async(self, collection_name: str, field_name: str, field_schema: str):
+        """Non-blocking create payload index"""
+        return await self._run_sync_in_executor(
+            self.client.create_payload_index,
+            collection_name=collection_name,
+            field_name=field_name,
+            field_schema=field_schema
+        )
+
+    async def upload_points_async(self, collection_name: str, points: list, batch_size: int = 16):
+        """Non-blocking upload points"""
+        return await self._run_sync_in_executor(
+            self.client.upload_points,
+            collection_name,
+            points=points,
+            batch_size=batch_size
+        )
+
+    async def _create_collection_async(self, collection_name: str) -> bool:
+        """Non-blocking create collection"""
+        config = self._get_collection_config(
+            text_embedding_model=TEXT_EMBEDDING_MODEL,
+            late_interaction_text_embedding_model=LATE_INTERACTION_TEXT_EMBEDDING_MODEL,
+            bm25_embedding_model=BM25_EMBEDDING_MODEL
+        )
+        return await self._run_sync_in_executor(
+            self.client.create_collection,
+            collection_name=collection_name,
+            **config
+        )
+
+    async def add_data(self,
+        documents: List[Document],
         collection_name: str = settings.QDRANT_COLLECTION_NAME,
         organization_id: Optional[str] = None
     ) -> bool:
-        
-        if not self.client.collection_exists(collection_name=collection_name):
+
+        # Use async wrapper to avoid blocking event loop
+        if not await self.collection_exists_async(collection_name):
             self.logger.info(f"CREATING NEW COLLECTION {collection_name}")
-            is_created = self._create_collection(collection_name=collection_name)
+            is_created = await self._create_collection_async(collection_name=collection_name)
             if is_created:
                 self.logger.info(f"CREATING NEW COLLECTION {collection_name} SUCCESS.")
 
-        # Upload documents with organization_id
-        self._upload_documents(
-            collection_name=collection_name, 
-            documents=documents, 
+        # Upload documents with organization_id (run in executor)
+        await self._upload_documents_async(
+            collection_name=collection_name,
+            documents=documents,
             batch_size=16,
             organization_id=organization_id
         )
 
         self.logger.info(f"CREATING PAYLOAD INDEX {collection_name}")
-        self.client.create_payload_index(
+        await self.create_payload_index_async(
             collection_name=collection_name,
             field_name="metadata.index",
             field_schema="integer",
         )
-        
+
         # Create index for organization_id to support efficient searching
         if organization_id:
-            self.client.create_payload_index(
+            await self.create_payload_index_async(
                 collection_name=collection_name,
                 field_name="metadata.organization_id",
                 field_schema="keyword",
             )
-            
+
         return True
 
 
-    async def hybrid_search(self, 
+    async def hybrid_search(self,
         query: str = None,
         collection_name: str = settings.QDRANT_COLLECTION_NAME,
         organization_id: Optional[str] = None
@@ -83,7 +314,8 @@ class QdrantConnection(LoggerMixin):
         Returns:
             Optional[List[Document]]: Search results
         """
-        if not self.client.collection_exists(collection_name=collection_name):
+        # Use async wrapper to avoid blocking event loop
+        if not await self.collection_exists_async(collection_name):
             raise Exception(f"Collection {collection_name} does not exist")
 
         dense_query_vector = next(self.text_embedding_model.query_embed(query))
@@ -92,14 +324,13 @@ class QdrantConnection(LoggerMixin):
 
         prefetch = self._create_prefetch(dense_query_vector, sparse_query_vector, late_query_vector)
 
-        results = self.client.query_points(
+        # Use async wrapper for query_points
+        results = await self.query_points_async(
             collection_name,
             prefetch=prefetch,
             query=models.FusionQuery(
                 fusion=models.Fusion.RRF,  # Reciprocal Rank Fusion
             ),
-            # query=late_query_vector,
-            # using=LATE_INTERACTION_TEXT_EMBEDDING_MODEL,
             with_payload=True,
             limit=20,
         )
@@ -112,23 +343,23 @@ class QdrantConnection(LoggerMixin):
 
 
     async def query_headers(
-        self, 
-        documents: List[Document], 
+        self,
+        documents: List[Document],
         collection_name: str = settings.QDRANT_COLLECTION_NAME,
         organization_id: Optional[str] = None
     ) -> Optional[List[Document]]:
-        
+
         processed_documents = {}
-        # get max point data in qdrant collection 
-        info_collection = self.client.get_collection(collection_name=collection_name)
+        # Use async wrapper to get collection info without blocking
+        info_collection = await self.get_collection_async(collection_name=collection_name)
         vectors_count = int(info_collection.points_count)
         self.logger.info(f"[HEADERS] Collection {collection_name} has {vectors_count} total points")
-        
+
         for idx, doc in enumerate(documents):
             doc_name = doc.metadata.get('document_name', 'Unknown')
             headers = doc.metadata.get('headers', 'Unknown')
             doc_id = doc.metadata.get('document_id', 'Unknown')
-            
+
             self.logger.info(f"[HEADERS] Processing doc {idx+1}/{len(documents)}: {doc_name}, headers={headers[:1000]}...")
 
             if doc.metadata['headers'] in processed_documents:
@@ -145,10 +376,11 @@ class QdrantConnection(LoggerMixin):
                     models.FieldCondition(key="metadata.headers", match=models.MatchValue(value=doc.metadata['headers']))
                 ]
             )
-            
+
             self.logger.info(f"[HEADERS] Querying full content with filter for doc_name={doc_name}")
-            
-            results = self.client.query_points(
+
+            # Use async wrapper for query_points without blocking
+            results = await self.query_points_async(
                 collection_name,
                 prefetch=[
                     models.Prefetch(
@@ -159,8 +391,8 @@ class QdrantConnection(LoggerMixin):
                 query=models.OrderByQuery(order_by="metadata.index"),
                 limit=vectors_count,
             )
-            
-            
+
+
             page_content = ''.join([point.payload['page_content'] for point in results.points])
             metadata = {
                 'document_name': doc.metadata['document_name'],
@@ -182,7 +414,7 @@ class QdrantConnection(LoggerMixin):
         for idx, doc in enumerate(sorted_documents_list[:3]):
             self.logger.info(f"[HEADERS] Final Top {idx+1}: document_name={doc.metadata.get('document_name')}, "
                          f"headers={doc.metadata.get('headers')[:500]}..., content_length={len(doc.page_content)}")
-            
+
         return sorted_documents_list
 
     # async def query_headers( 
@@ -381,6 +613,54 @@ class QdrantConnection(LoggerMixin):
                 batch_size=batch_size,
             )
 
+    async def _upload_documents_async(
+        self,
+        collection_name: str,
+        documents: List[Document],
+        batch_size: int = 4,
+        organization_id: Optional[str] = None
+    ) -> None:
+        """Async version of _upload_documents - runs in thread pool to avoid blocking"""
+        device_type = "GPU" if torch.cuda.is_available() else "CPU"
+        self.logger.info(f"Generating embeddings for {len(documents)} documents using {device_type}")
+
+        for batch_start in range(0, len(documents), batch_size):
+            batch = documents[batch_start:batch_start + batch_size]
+
+            # Extract page_content for embedding generation
+            texts = [doc.page_content for doc in batch]
+            dense_embeddings = list(self.text_embedding_model.passage_embed(texts))
+            bm25_embeddings = list(self.bm25_embedding_model.passage_embed(texts))
+            late_interaction_embeddings = list(self.late_interaction_text_embedding_model.passage_embed(texts))
+
+            # Create points with organization_id in metadata
+            points = []
+            for i, doc in enumerate(batch):
+                # Make sure metadata is a dictionary
+                metadata = doc.metadata.copy() if isinstance(doc.metadata, dict) else dict(doc.metadata)
+
+                # Add organization_id to metadata if present
+                if organization_id:
+                    metadata['organization_id'] = organization_id
+
+                points.append(
+                    models.PointStruct(
+                        id=str(uuid.uuid4()),
+                        vector={
+                            TEXT_EMBEDDING_MODEL: dense_embeddings[i].tolist(),
+                            LATE_INTERACTION_TEXT_EMBEDDING_MODEL: late_interaction_embeddings[i].tolist(),
+                            BM25_EMBEDDING_MODEL: bm25_embeddings[i].as_object(),
+                        },
+                        payload={
+                            "page_content": doc.page_content,
+                            "metadata": metadata
+                        }
+                    )
+                )
+
+            # Use async wrapper to upload points without blocking
+            await self.upload_points_async(collection_name, points=points, batch_size=batch_size)
+
     def _point_to_document(self, point: models.ScoredPoint) -> Document:
         return Document(page_content=point.payload['page_content'], metadata=point.payload['metadata'])
 
@@ -428,20 +708,20 @@ class QdrantConnection(LoggerMixin):
         return models.Filter(must=conditions)
         
     async def delete_document_by_file_name(
-            self, 
-            document_name: str = None, 
+            self,
+            document_name: str = None,
             collection_name: str = settings.QDRANT_COLLECTION_NAME,
             organization_id: Optional[str] = None
     ):
         try:
-            # Tạo filter với document_name và organization_id (nếu có)
+            # Create filter with document_name and organization_id (if present)
             conditions = [
                 models.FieldCondition(
                     key="metadata.document_name",
                     match=models.MatchValue(value=document_name),
                 )
             ]
-            
+
             if organization_id:
                 conditions.append(
                     models.FieldCondition(
@@ -449,8 +729,9 @@ class QdrantConnection(LoggerMixin):
                         match=models.MatchValue(value=organization_id),
                     )
                 )
-            
-            self.client.delete(
+
+            # Use async wrapper to avoid blocking event loop
+            await self.delete_async(
                 collection_name=collection_name,
                 points_selector=models.Filter(must=conditions),
             )
@@ -458,9 +739,9 @@ class QdrantConnection(LoggerMixin):
             self.logger.error('event=delete-document-by-file-name-in-qdrant '
                                 'message="Delete document by file name in Qdrant Failed. '
                                 f'error="Got unexpected error." error="{str(e)}"')
-        
+
     async def delete_document_by_batch_ids(
-            self, 
+            self,
             document_ids: list[str] = None,
             collection_name: str = settings.QDRANT_COLLECTION_NAME,
             organization_id: Optional[str] = None
@@ -474,9 +755,9 @@ class QdrantConnection(LoggerMixin):
                 )
                 for document_id in document_ids
             ]
-            
+
             filter_params = models.Filter(should=conditions)
-            
+
             # Add organization_id condition if present
             if organization_id:
                 filter_params = models.Filter(
@@ -488,11 +769,12 @@ class QdrantConnection(LoggerMixin):
                     ],
                     should=conditions
                 )
-            
-            self.client.delete(
+
+            # Use async wrapper to avoid blocking event loop
+            await self.delete_async(
                 collection_name=collection_name,
                 points_selector=filter_params,
-            )       
+            )
         except Exception as e:
             self.logger.error('event=delete-document-by-batch-ids-in-qdrant '
                               'message="Delete document by batch ids in Qdrant Failed. '

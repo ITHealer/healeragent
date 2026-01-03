@@ -9,7 +9,8 @@ import asyncio
 import logging
 from datetime import datetime
 
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.handlers.content_processor import ContentProcessor, ContentTypeDetector
 from src.media.handlers.content_processor_manager import processor_manager
 from src.utils.logger.custom_logging import LoggerMixin
@@ -32,7 +33,7 @@ logger = LoggerMixin().logger
 # API Router
 router = APIRouter(prefix="/summarizer-url")
 
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 chat_service = ChatService()
 api_key_auth = APIKeyAuth()
@@ -215,35 +216,35 @@ async def save_content_to_memory(
         response = "\n\n".join(response_parts)
         
         # Analyze importance based on content
-        importance_score = await analyze_conversation_importance(
-            query=query,
-            response=response,
-            llm_provider=llm_provider,
-            model_name=model_name,
-            provider_type=provider_type
-        )
+        # importance_score = await analyze_conversation_importance(
+        #     query=query,
+        #     response=response,
+        #     llm_provider=llm_provider,
+        #     model_name=model_name,
+        #     provider_type=provider_type
+        # )
         
-        # Store in memory
-        await memory_manager.store_conversation_turn(
-            session_id=session_id,
-            user_id=user_id,
-            query=query,
-            response=response,
-            metadata={
-                "type": "content_processing",
-                "content_type": content_type,
-                "url": url,
-                "source_language": metadata.get("source_language"),
-                "target_language": metadata.get("target_language"),
-                **metadata
-            },
-            importance_score=importance_score
-        )
+        # # Store in memory
+        # await memory_manager.store_conversation_turn(
+        #     session_id=session_id,
+        #     user_id=user_id,
+        #     query=query,
+        #     response=response,
+        #     metadata={
+        #         "type": "content_processing",
+        #         "content_type": content_type,
+        #         "url": url,
+        #         "source_language": metadata.get("source_language"),
+        #         "target_language": metadata.get("target_language"),
+        #         **metadata
+        #     },
+        #     importance_score=importance_score
+        # )
         
         # Trigger background summary update
-        trigger_summary_update_nowait(session_id=session_id, user_id=user_id)
+        # trigger_summary_update_nowait(session_id=session_id, user_id=user_id)
         
-        logger.info(f"Saved content to memory: {content_type} from {url} with importance {importance_score}")
+        # logger.info(f"Saved content to memory: {content_type} from {url} with importance {importance_score}")
         
     except Exception as e:
         logger.error(f"Error saving content to memory: {e}")
@@ -515,10 +516,10 @@ async def process_content_stream(
                         response_time=0.1
                     )
                     
-                    trigger_summary_update_nowait(
-                        session_id=data.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=data.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to chat history: {e}")
             
@@ -644,8 +645,8 @@ async def batch_process_content(
             batch_info["status"] = "completed"
             
             # Trigger memory update if used
-            if data.session_id and user_id:
-                trigger_summary_update_nowait(session_id=data.session_id, user_id=user_id)
+            # if data.session_id and user_id:
+                # trigger_summary_update_nowait(session_id=data.session_id, user_id=user_id)
         
         # Add to background tasks
         background_tasks.add_task(process_batch)

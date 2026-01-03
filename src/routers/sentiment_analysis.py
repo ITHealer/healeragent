@@ -20,7 +20,8 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from datetime import datetime
 from src.services.background_tasks import trigger_summary_update_nowait
@@ -32,7 +33,7 @@ logger = logger_mixin.logger
 news_service = NewsService()
 FMP_API_KEY = settings.FMP_API_KEY
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_generator = LLMGeneratorProvider()
 
 
@@ -198,19 +199,19 @@ async def get_analyzed_social_sentiment_stream(
             # Get memory context
             context = ""
             memory_stats = {}
-            if request_body.session_id and user_id:
-                try:
-                    query_text = request_body.question_input or f"Analyze social sentiment for {request_body.symbol}"
-                    context, memory_stats, _ = await memory_manager.get_relevant_context(
-                        session_id=request_body.session_id,
-                        user_id=user_id,
-                        current_query=query_text,
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory context: {e}")
+            # if request_body.session_id and user_id:
+            #     try:
+            #         query_text = request_body.question_input or f"Analyze social sentiment for {request_body.symbol}"
+            #         context, memory_stats, _ = await memory_manager.get_relevant_context(
+            #             session_id=request_body.session_id,
+            #             user_id=user_id,
+            #             current_query=query_text,
+            #             llm_provider=llm_generator,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory context: {e}")
             
             # Build enhanced history
             enhanced_history = ""
@@ -283,15 +284,15 @@ async def get_analyzed_social_sentiment_stream(
             importance_score = 0.5
             if request_body.session_id and user_id and market_impact_analysis:
                 try:
-                    analysis_model = "gpt-4.1-nano" if request_body.provider_type == ProviderType.OPENAI else request_body.model_name
+                    # analysis_model = "gpt-4.1-nano" if request_body.provider_type == ProviderType.OPENAI else request_body.model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=request_body.question_input or f"Analyze social sentiment for {request_body.symbol}",
-                        response=market_impact_analysis,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=request_body.provider_type
-                    )
+                    # importance_score = await analyze_conversation_importance(
+                    #     query=request_body.question_input or f"Analyze social sentiment for {request_body.symbol}",
+                    #     response=market_impact_analysis,
+                    #     llm_provider=llm_generator,
+                    #     model_name=analysis_model,
+                    #     provider_type=request_body.provider_type
+                    # )
                     
                     # Boost importance for extreme sentiment
                     if sentiment_data and len(sentiment_data) > 0:
@@ -314,19 +315,19 @@ async def get_analyzed_social_sentiment_stream(
                             "sentiment_count": len(sentiment_scores)
                         }
                     
-                    await memory_manager.store_conversation_turn(
-                        session_id=request_body.session_id,
-                        user_id=user_id,
-                        query=request_body.question_input or f"Analyze social sentiment for {request_body.symbol}",
-                        response=market_impact_analysis,
-                        metadata={
-                            "type": "social_sentiment_analysis",
-                            "symbol": request_body.symbol,
-                            "page": page,
-                            "sentiment_metrics": sentiment_metrics
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=request_body.session_id,
+                    #     user_id=user_id,
+                    #     query=request_body.question_input or f"Analyze social sentiment for {request_body.symbol}",
+                    #     response=market_impact_analysis,
+                    #     metadata={
+                    #         "type": "social_sentiment_analysis",
+                    #         "symbol": request_body.symbol,
+                    #         "page": page,
+                    #         "sentiment_metrics": sentiment_metrics
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -337,10 +338,10 @@ async def get_analyzed_social_sentiment_stream(
                             response_time=0.1
                         )
                     
-                    trigger_summary_update_nowait(
-                        session_id=request_body.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=request_body.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             

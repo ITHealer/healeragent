@@ -1,30 +1,52 @@
 import json
 import asyncio
 from typing import Optional, Any, List, Type, TypeVar, AsyncGenerator
-import logging 
+import logging
 
 from pydantic import BaseModel
-import aioredis
 from contextlib import asynccontextmanager
 from src.models.equity import PaginatedData
 from src.utils.config import settings
 from src.utils.logger.set_up_log_dataFMP import setup_logger
 
+try:
+    import aioredis
+    try:
+        from aioredis.connection import BlockingConnectionPool
+    except ImportError:
+        try:
+            from aioredis import BlockingConnectionPool
+        except ImportError:
+            from redis.asyncio.connection import BlockingConnectionPool
+    HAS_BLOCKING_POOL = True
+except ImportError:
+    import aioredis
+    HAS_BLOCKING_POOL = False
+
 logger = setup_logger(__name__, log_level=logging.INFO)
 T = TypeVar("T", bound=BaseModel)
 
-# Timeout settings 
+# Timeout settings
 REDIS_CONNECT_TIMEOUT = 10  # seconds - was 5
 REDIS_SOCKET_TIMEOUT = 10   # seconds
 REDIS_CLOSE_TIMEOUT = 8     # seconds - for graceful close
 
-# Connection pool settings
-REDIS_MAX_CONNECTIONS = 50  # Max concurrent connections
+# Connection pool settings - PRODUCTION READY
+REDIS_MAX_CONNECTIONS = 100  # Increased for high traffic (was 50)
 REDIS_HEALTH_CHECK_INTERVAL = 30  # seconds
+REDIS_POOL_TIMEOUT = 20  # seconds - time to wait for available connection
 
 # Retry settings
 REDIS_RETRY_ATTEMPTS = 3
 REDIS_RETRY_BASE_DELAY = 0.5  # seconds - exponential backoff base
+
+
+# =============================================================================
+# SINGLETON REDIS CLIENT FOR LLM OPERATIONS
+# =============================================================================
+
+_redis_llm_client: Optional[aioredis.Redis] = None
+_redis_llm_lock: asyncio.Lock = asyncio.Lock()
 
 
 # =============================================================================
@@ -47,22 +69,42 @@ async def _create_redis_connection(
     decode_responses: bool = False
 ) -> Optional[aioredis.Redis]:
     """
-    Create a single Redis connection with proper timeout settings.
-    
+    Create a Redis client with BlockingConnectionPool for production.
+
+    BlockingConnectionPool WAITS for available connection instead of throwing
+    ConnectionError when pool is exhausted. Critical for high-traffic production.
+
     Returns:
         Redis client or None if connection failed
     """
     try:
-        client = await aioredis.from_url(
-            redis_url,
-            encoding="utf-8",
-            decode_responses=decode_responses,
-            socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
-            socket_timeout=REDIS_SOCKET_TIMEOUT,
-            max_connections=REDIS_MAX_CONNECTIONS,
-            retry_on_timeout=True,  
-            health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
-        )
+        if HAS_BLOCKING_POOL:
+            pool = BlockingConnectionPool.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=decode_responses,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                timeout=REDIS_POOL_TIMEOUT,  # Wait up to 20s for available connection
+                retry_on_timeout=True,
+                health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
+            )
+            client = aioredis.Redis(connection_pool=pool)
+            logger.info(f"Redis BlockingConnectionPool created (max={REDIS_MAX_CONNECTIONS}, timeout={REDIS_POOL_TIMEOUT}s)")
+        else:
+            # FALLBACK MODE: Regular ConnectionPool (will throw error if exhausted)
+            logger.warning("BlockingConnectionPool not available, using regular pool (may throw ConnectionError under load)")
+            client = await aioredis.from_url(
+                redis_url,
+                encoding="utf-8",
+                decode_responses=decode_responses,
+                socket_connect_timeout=REDIS_CONNECT_TIMEOUT,
+                socket_timeout=REDIS_SOCKET_TIMEOUT,
+                max_connections=REDIS_MAX_CONNECTIONS,
+                retry_on_timeout=True,
+                health_check_interval=REDIS_HEALTH_CHECK_INTERVAL
+            )
         return client
     except Exception as e:
         logger.error(f"Failed to create Redis connection: {e}")
@@ -132,7 +174,11 @@ async def get_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             return response_model.model_validate_json(cached_json_string)
             
     except asyncio.TimeoutError:
@@ -220,7 +266,11 @@ async def get_list_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for list key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             list_of_dicts = json.loads(cached_json_string)
             return [item_response_model.model_validate(item) for item in list_of_dicts]
             
@@ -315,7 +365,11 @@ async def get_paginated_cache(
         
         if cached_data_bytes:
             logger.info(f"Cache HIT for paginated key: {cache_key}")
-            cached_json_string = cached_data_bytes.decode('utf-8')
+            # Handle both bytes and str (depending on decode_responses setting)
+            if isinstance(cached_data_bytes, bytes):
+                cached_json_string = cached_data_bytes.decode('utf-8')
+            else:
+                cached_json_string = cached_data_bytes
             return response_model.model_validate_json(cached_json_string)
             
     except asyncio.TimeoutError:
@@ -526,35 +580,76 @@ async def get_redis_client_for_scheduler() -> AsyncGenerator[Optional[aioredis.R
 
 async def get_redis_client_llm() -> Optional[aioredis.Redis]:
     """
-    Get Redis client for LLM operations (non-context manager version).
-    
-    Note: Caller is responsible for closing the connection!
-    
+    Get SINGLETON Redis client for LLM operations.
+
+    Uses a shared connection to prevent connection leaks.
+    DO NOT close this connection after use - it's shared across the application.
+
     Returns:
-        Redis client or None
+        Redis client singleton or None
     """
+    global _redis_llm_client
+
     if not settings.REDIS_HOST:
         logger.warning("Redis host (LLM) not configured. Cache disabled.")
         return None
-    
-    try:
-        redis_url = await _make_redis_url()
-        redis_conn = await _create_redis_connection(redis_url, decode_responses=True)
-        
-        if redis_conn:
-            await asyncio.wait_for(
-                redis_conn.ping(),
-                timeout=REDIS_CONNECT_TIMEOUT
-            )
-            logger.info(f"Connected to Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-            return redis_conn
-            
-    except (aioredis.ConnectionError, ConnectionRefusedError, asyncio.TimeoutError) as e:
-        logger.error(f"Cannot connect to Redis (LLM): {e}. Cache disabled.")
-    except Exception as e:
-        logger.error(f"Unexpected error connecting to Redis (LLM): {e}")
-    
+
+    # Fast path - already connected
+    if _redis_llm_client is not None:
+        try:
+            # Quick health check
+            await asyncio.wait_for(_redis_llm_client.ping(), timeout=2.0)
+            return _redis_llm_client
+        except Exception:
+            # Connection lost, need to reconnect
+            _redis_llm_client = None
+
+    # Slow path - create new connection with lock
+    async with _redis_llm_lock:
+        # Double-check after acquiring lock
+        if _redis_llm_client is not None:
+            return _redis_llm_client
+
+        try:
+            redis_url = await _make_redis_url()
+            redis_conn = await _create_redis_connection(redis_url, decode_responses=True)
+
+            if redis_conn:
+                await asyncio.wait_for(
+                    redis_conn.ping(),
+                    timeout=REDIS_CONNECT_TIMEOUT
+                )
+                logger.info(f"Connected to Redis (LLM) {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+                _redis_llm_client = redis_conn
+                return _redis_llm_client
+
+        except (aioredis.ConnectionError, ConnectionRefusedError, asyncio.TimeoutError) as e:
+            logger.error(f"Cannot connect to Redis (LLM): {e}. Cache disabled.")
+        except Exception as e:
+            logger.error(f"Unexpected error connecting to Redis (LLM): {e}")
+
     return None
+
+
+async def close_redis_llm_client() -> None:
+    """
+    Close the singleton Redis LLM client.
+    Call this on application shutdown.
+    """
+    global _redis_llm_client
+
+    async with _redis_llm_lock:
+        if _redis_llm_client is not None:
+            try:
+                await asyncio.wait_for(
+                    _redis_llm_client.close(),
+                    timeout=REDIS_CLOSE_TIMEOUT
+                )
+                logger.info("Redis LLM client closed")
+            except Exception as e:
+                logger.warning(f"Error closing Redis LLM client: {e}")
+            finally:
+                _redis_llm_client = None
 
 
 # =============================================================================

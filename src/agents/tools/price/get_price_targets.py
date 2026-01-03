@@ -18,13 +18,13 @@ from src.helpers.redis_cache import get_redis_client_llm
 
 class GetPriceTargetsTool(BaseTool):
     """
-    Atomic tool for analyst price targets with ratings
-    
-    Data sources:
-    - FMP /v4/price-target-consensus (price targets)
-    - FMP /stable/grades-summary (analyst ratings)
-    
-    Cache: 4 hours (analyst targets don't change frequently)
+        Atomic tool for analyst price targets with ratings
+        
+        Data sources:
+        - FMP /v4/price-target-consensus (price targets)
+        - FMP /stable/grades-consensus (analyst ratings)
+        
+        Cache: 4 hours (analyst targets don't change frequently)
     """
     
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
@@ -123,7 +123,12 @@ class GetPriceTargetsTool(BaseTool):
                     cached_bytes = await redis_client.get(cache_key)
                     if cached_bytes:
                         self.logger.info(f"[CACHE HIT] {cache_key}")
-                        cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        if isinstance(cached_bytes, bytes):
+                            cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        else:
+                            cached_data = json.loads(cached_bytes)
+
+                        # cached_data = json.loads(cached_bytes.decode('utf-8'))
                         
                         execution_time = (datetime.now() - start_time).total_seconds() * 1000
                         
@@ -208,7 +213,7 @@ class GetPriceTargetsTool(BaseTool):
                 tool_name=self.schema.name,
                 data=formatted_data,
                 metadata={
-                    "source": "FMP price-target-consensus + grades-summary",
+                    "source": "FMP price-target-consensus + grades-consensus",
                     "symbol_queried": symbol_upper,
                     "execution_time_ms": int(execution_time),
                     "from_cache": False,
@@ -260,7 +265,7 @@ class GetPriceTargetsTool(BaseTool):
     
     async def _fetch_analyst_ratings(self, symbol: str) -> Optional[Dict]:
         """
-        Fetch analyst ratings from FMP grades-summary API
+        Fetch analyst ratings from FMP grades-consensus API
         
         Response format:
         {
@@ -272,7 +277,7 @@ class GetPriceTargetsTool(BaseTool):
           "strongSell": 0
         }
         """
-        url = f"{self.FMP_STABLE_BASE}/grades-summary"
+        url = f"{self.FMP_STABLE_BASE}/grades-consensus"
         
         params = {
             "symbol": symbol,
@@ -295,7 +300,7 @@ class GetPriceTargetsTool(BaseTool):
                 return None
                 
         except Exception as e:
-            self.logger.error(f"FMP grades-summary error: {e}")
+            self.logger.error(f"FMP grades-consensus error: {e}")
             return None
     
     def _format_targets_data(

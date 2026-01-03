@@ -11,7 +11,8 @@ from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.routers.llm_chat import analyze_conversation_importance
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ProviderType
 from fastapi.responses import StreamingResponse                
@@ -24,7 +25,7 @@ router = APIRouter(prefix="/trading-agents")
 api_key_auth = APIKeyAuth()
 logger = LoggerMixin().logger
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 llm_provider = LLMGeneratorProvider()
 
 class TradingAnalysisRequest(BaseModel):
@@ -358,13 +359,13 @@ async def analyze_ticker(
         if request.session_id and user_id:
             try:
                 # Use the quick_think_llm for importance analysis
-                importance_score = await analyze_conversation_importance(
-                    query=request.question_input or f"Analyze {request.ticker} for {request.trade_date}",
-                    response=analysis_summary,
-                    llm_provider=llm_provider,
-                    model_name=request.quick_think_llm,
-                    provider_type=request.llm_provider
-                )
+                # importance_score = await analyze_conversation_importance(
+                #     query=request.question_input or f"Analyze {request.ticker} for {request.trade_date}",
+                #     response=analysis_summary,
+                #     llm_provider=llm_provider,
+                #     model_name=request.quick_think_llm,
+                #     provider_type=request.llm_provider
+                # )
                 
                 # Boost importance for significant trading decisions
                 if result.get("final_decision", {}).get("action") in ["BUY", "STRONG_BUY", "SELL", "STRONG_SELL"]:
@@ -396,14 +397,14 @@ async def analyze_ticker(
                 }
                 
                 # Store in memory system
-                await memory_manager.store_conversation_turn(
-                    session_id=request.session_id,
-                    user_id=user_id,
-                    query=request.question_input or f"Analyze {request.ticker} for {request.trade_date}",
-                    response=analysis_summary,
-                    metadata=metadata,
-                    importance_score=importance_score
-                )
+                # await memory_manager.store_conversation_turn(
+                #     session_id=request.session_id,
+                #     user_id=user_id,
+                #     query=request.question_input or f"Analyze {request.ticker} for {request.trade_date}",
+                #     response=analysis_summary,
+                #     metadata=metadata,
+                #     importance_score=importance_score
+                # )
                 
                 # Save to chat history
                 question_id = chat_service.save_user_question(

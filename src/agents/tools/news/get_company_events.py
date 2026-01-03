@@ -169,7 +169,12 @@ class GetCompanyEventsTool(BaseTool):
                     cached_bytes = await redis_client.get(cache_key)
                     if cached_bytes:
                         self.logger.info(f"[CACHE HIT] {cache_key}")
-                        cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        # cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        if isinstance(cached_bytes, bytes):
+                            cached_data = json.loads(cached_bytes.decode('utf-8'))
+                        else:
+                            cached_data = json.loads(cached_bytes)
+                            
                 except Exception as e:
                     self.logger.warning(f"[CACHE] Error reading: {e}")
             

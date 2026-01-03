@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.memory.core_memory import CoreMemory
+from src.agents.memory.core_memory import get_core_memory
 from src.helpers.token_counter import TokenCounter
 from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.helpers.chat_management_helper import ChatService
@@ -27,14 +27,14 @@ class ContextAssembler(LoggerMixin):
     MAX_CONTEXT_TOKENS = 180000  # Reserve 20K for response
     SYSTEM_PROMPT_BUDGET = 800
     CORE_MEMORY_BUDGET = 2000
-    SUMMARY_BUDGET = 1000  # ✨ NEW - For recursive summary
+    SUMMARY_BUDGET = 1000  # 
     HISTORY_BUDGET = 4000
     QUERY_BUDGET = 500
     
     def __init__(self):
         """Initialize Context Assembler"""
         super().__init__()
-        self.core_memory = CoreMemory()
+        self.core_memory = get_core_memory()
         self.token_counter = TokenCounter()
         self.chat_service = ChatService()
     

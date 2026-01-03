@@ -24,7 +24,7 @@ from src.helpers.llm_helper import LLMGenerator, LLMGeneratorProvider
 from src.helpers.chat_management_helper import ChatService
 from src.helpers.qdrant_connection_helper import QdrantConnection
 from src.helpers.prompt_template_helper import ContextualizeQuestionHistoryTemplate, QuestionAnswerTemplate
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
 from src.utils.config import settings
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -42,7 +42,7 @@ class ChatHandler(LoggerMixin):
         self.search_retrieval = SearchRetrieval()
         self.llm_generator = LLMGenerator()
         self.llm_generator_provider = LLMGeneratorProvider()
-        self.memory_manager = MemoryManager()
+        self.memory_manager = get_memory_manager()
     
     def create_session_id(self, user_id: str, organization_id: Optional[str] = None) -> BasicResponse:
         try:

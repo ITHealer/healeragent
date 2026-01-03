@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.hedge_fund_agent_chat_handler import AgentChatHandler
-from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.handlers.llm_chat_handler import ChatHandler, ChatMessageHistory, ChatService
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.hedge_fund.llm.models import ModelProvider
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/agents")
 # Initialize services
 api_key_auth = APIKeyAuth()
 agent_handler = AgentChatHandler()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 chat_service = ChatService()
 llm_provider = LLMGeneratorProvider()
 logger = logging.getLogger(__name__)
@@ -349,35 +349,35 @@ async def stream_agent_chat(
             complete_response = ''.join(full_response)
             
             # Analyze importance
-            importance_score = 0.5
-            if data.session_id and user_id and complete_response:
-                try:
-                    importance_score = await agent_handler.analyze_importance(
-                        query=data.message,
-                        response=complete_response,
-                        agent_id=agent_id,
-                        llm_provider=llm_provider,
-                        model_name=data.model_name,
-                        provider_type=data.provider_type
-                    )
-                except Exception as e:
-                    logger.error(f"Error analyzing importance: {e}")
+            # importance_score = 0.5
+            # if data.session_id and user_id and complete_response:
+            #     try:
+            #         importance_score = await agent_handler.analyze_importance(
+            #             query=data.message,
+            #             response=complete_response,
+            #             agent_id=agent_id,
+            #             llm_provider=llm_provider,
+            #             model_name=data.model_name,
+            #             provider_type=data.provider_type
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing importance: {e}")
             
             # Store in memory
             if data.session_id and user_id and complete_response:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=data.session_id,
-                        user_id=user_id,
-                        query=data.message,
-                        response=complete_response,
-                        metadata={
-                            "agent_id": agent_id,
-                            "agent_name": AVAILABLE_AGENTS[agent_id]["name"],
-                            "tickers_analyzed": tickers_analyzed
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=data.session_id,
+                    #     user_id=user_id,
+                    #     query=data.message,
+                    #     response=complete_response,
+                    #     metadata={
+                    #         "agent_id": agent_id,
+                    #         "agent_name": AVAILABLE_AGENTS[agent_id]["name"],
+                    #         "tickers_analyzed": tickers_analyzed
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     chat_service.save_assistant_response(
                         session_id=data.session_id,

@@ -14,9 +14,9 @@ from src.services.memory_search_service import MemorySearchService
 from src.helpers.context_assembler import ContextAssembler
 
 # Memory components
-from src.agents.memory.core_memory import CoreMemory
-from src.agents.memory.recursive_summary import RecursiveSummaryManager
-from src.agents.memory.memory_update_agent import MemoryUpdateAgent
+from src.agents.memory.core_memory import get_core_memory
+from src.agents.memory.recursive_summary import get_recursive_summary_manager
+from src.agents.memory.memory_update_agent import get_memory_update_agent
 from src.agents.memory.working_memory_integration import (
     WorkingMemoryIntegration,
     setup_working_memory_for_request,
@@ -104,9 +104,9 @@ class ChatHandler(LoggerMixin):
         # ====================================================================
         self.memory_search = MemorySearchService()
         self.context_assembler = ContextAssembler()
-        self.core_memory = CoreMemory()
-        self.summary_manager = RecursiveSummaryManager()
-        self.memory_update = MemoryUpdateAgent()
+        self.core_memory = get_core_memory()
+        self.summary_manager = get_recursive_summary_manager()
+        self.memory_update = get_memory_update_agent()
         
         # ====================================================================
         # THINK TOOL SERVICE (initialized per request)
@@ -116,9 +116,16 @@ class ChatHandler(LoggerMixin):
         # ====================================================================
         # CONTEXT MANAGEMENT SERVICE
         # ====================================================================
+        # self.context_manager = ContextManagementService(
+        #     enable_compaction=True,
+        #     compaction_threshold=100000,
+        #     compaction_strategy="smart_summary"
+        # )
+
         self.context_manager = ContextManagementService(
             enable_compaction=True,
-            compaction_threshold=100000,
+            max_context_tokens=100000,
+            trigger_percent=85.0,
             compaction_strategy="smart_summary"
         )
         

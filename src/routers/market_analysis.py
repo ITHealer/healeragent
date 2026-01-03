@@ -27,7 +27,8 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
-from src.agents.memory.memory_manager import MemoryManager
+# from src.agents.memory.memory_manager import MemoryManager
+from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.language_detector import language_detector, DetectionMethod
 from src.services.background_tasks import trigger_summary_update_nowait
 
@@ -41,7 +42,7 @@ discovery_service = DiscoveryService()
 llm_generator = LLMGeneratorProvider()
 chat_service = ChatService()
 chat_service = ChatService()
-memory_manager = MemoryManager()
+memory_manager = get_memory_manager()
 
 
 async def analyze_market_movers_with_llm(
@@ -78,7 +79,7 @@ async def analyze_market_movers_with_llm(
     
     # Create analysis prompt
     prompt = f"""You are an expert financial analyst. Analyze the following top {movers_type} in the market and provide actionable insights.
-ALWAYS begin with: "I'm your DeepInvest assistant, As your financial market analyst, I've reviewed the current market data and here are my insights:"
+ALWAYS begin with: "I'm your ToponeLogic Assistant, As your financial market analyst, I've reviewed the current market data and here are my insights:"
 
 Market {movers_type.upper()} Data:
 {json.dumps(data_summary, indent=2)}
@@ -408,19 +409,19 @@ async def analyze_market_gainers_stream(
 
             context = ""
             memory_stats = {}
-            if analysis_request.session_id and user_id:
-                try:
-                    query_text = analysis_request.question_input or "Analyze market gainers"
-                    context, memory_stats, _ = await memory_manager.get_relevant_context(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id,
-                        current_query=query_text,
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory context: {e}")
+            # if analysis_request.session_id and user_id:
+            #     try:
+            #         query_text = analysis_request.question_input or "Analyze market gainers"
+            #         context, memory_stats, _ = await memory_manager.get_relevant_context(
+            #             session_id=analysis_request.session_id,
+            #             user_id=user_id,
+            #             current_query=query_text,
+            #             llm_provider=llm_generator,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory context: {e}")
             
             enhanced_history = ""
             if context:
@@ -514,15 +515,15 @@ async def analyze_market_gainers_stream(
             importance_score = 0.5
             if analysis_request.session_id and user_id and analysis:
                 try:
-                    analysis_model = "gpt-4.1-nano" if analysis_request.provider_type == ProviderType.OPENAI else analysis_request.model_name
+                    # analysis_model = "gpt-4.1-nano" if analysis_request.provider_type == ProviderType.OPENAI else analysis_request.model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=analysis_request.question_input or "Analyze market gainers",
-                        response=analysis,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=analysis_request.provider_type
-                    )
+                    # importance_score = await analyze_conversation_importance(
+                    #     query=analysis_request.question_input or "Analyze market gainers",
+                    #     response=analysis,
+                    #     llm_provider=llm_generator,
+                    #     model_name=analysis_model,
+                    #     provider_type=analysis_request.provider_type
+                    # )
                     
                     if raw_data_dicts:
                         avg_gain = sum(float(d.get('changePercent', 0)) for d in raw_data_dicts[:5]) / 5
@@ -539,20 +540,20 @@ async def analyze_market_gainers_stream(
                         for item in raw_data_dicts[:5]
                     ]
                     
-                    await memory_manager.store_conversation_turn(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id,
-                        query=f"Analyze market gainers: {analysis_request.question_input}",
-                        response=analysis,
-                        metadata={
-                            "type": "market_movers_analysis",
-                            "movers_type": "gainers",
-                            "count": len(gainers_data),
-                            "top_movers": top_movers,
-                            "avg_gain": sum(float(d.get('changePercent', 0)) for d in raw_data_dicts) / len(raw_data_dicts) if raw_data_dicts else 0
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=analysis_request.session_id,
+                    #     user_id=user_id,
+                    #     query=f"Analyze market gainers: {analysis_request.question_input}",
+                    #     response=analysis,
+                    #     metadata={
+                    #         "type": "market_movers_analysis",
+                    #         "movers_type": "gainers",
+                    #         "count": len(gainers_data),
+                    #         "top_movers": top_movers,
+                    #         "avg_gain": sum(float(d.get('changePercent', 0)) for d in raw_data_dicts) / len(raw_data_dicts) if raw_data_dicts else 0
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -563,10 +564,10 @@ async def analyze_market_gainers_stream(
                             response_time=0.1
                         )
 
-                    trigger_summary_update_nowait(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=analysis_request.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             
@@ -732,19 +733,19 @@ async def analyze_market_losers_stream(
 
             context = ""
             memory_stats = {}
-            if analysis_request.session_id and user_id:
-                try:
-                    query_text = analysis_request.question_input or "Analyze market losers"
-                    context, memory_stats, _ = await memory_manager.get_relevant_context(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id,
-                        current_query=query_text,
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory context: {e}")
+            # if analysis_request.session_id and user_id:
+            #     try:
+            #         query_text = analysis_request.question_input or "Analyze market losers"
+            #         context, memory_stats, _ = await memory_manager.get_relevant_context(
+            #             session_id=analysis_request.session_id,
+            #             user_id=user_id,
+            #             current_query=query_text,
+            #             llm_provider=llm_generator,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory context: {e}")
             
             enhanced_history = ""
             if context:
@@ -838,15 +839,15 @@ async def analyze_market_losers_stream(
             importance_score = 0.5
             if analysis_request.session_id and user_id and analysis:
                 try:
-                    analysis_model = "gpt-4.1-nano" if analysis_request.provider_type == ProviderType.OPENAI else analysis_request.model_name
+                    # analysis_model = "gpt-4.1-nano" if analysis_request.provider_type == ProviderType.OPENAI else analysis_request.model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=analysis_request.question_input or "Analyze market losers",
-                        response=analysis,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=analysis_request.provider_type
-                    )
+                    # importance_score = await analyze_conversation_importance(
+                    #     query=analysis_request.question_input or "Analyze market losers",
+                    #     response=analysis,
+                    #     llm_provider=llm_generator,
+                    #     model_name=analysis_model,
+                    #     provider_type=analysis_request.provider_type
+                    # )
                     
                     if raw_data_dicts:
                         avg_loss = sum(float(d.get('changePercent', 0)) for d in raw_data_dicts[:5]) / 5
@@ -863,20 +864,20 @@ async def analyze_market_losers_stream(
                         for item in raw_data_dicts[:5]
                     ]
                     
-                    await memory_manager.store_conversation_turn(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id,
-                        query=f"Analyze market losers: {analysis_request.question_input}",
-                        response=analysis,
-                        metadata={
-                            "type": "market_movers_analysis",
-                            "movers_type": "losers",
-                            "count": len(losers_data),
-                            "top_movers": top_movers,
-                            "avg_loss": sum(float(d.get('changePercent', 0)) for d in raw_data_dicts) / len(raw_data_dicts) if raw_data_dicts else 0
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=analysis_request.session_id,
+                    #     user_id=user_id,
+                    #     query=f"Analyze market losers: {analysis_request.question_input}",
+                    #     response=analysis,
+                    #     metadata={
+                    #         "type": "market_movers_analysis",
+                    #         "movers_type": "losers",
+                    #         "count": len(losers_data),
+                    #         "top_movers": top_movers,
+                    #         "avg_loss": sum(float(d.get('changePercent', 0)) for d in raw_data_dicts) / len(raw_data_dicts) if raw_data_dicts else 0
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -887,10 +888,10 @@ async def analyze_market_losers_stream(
                             response_time=0.1
                         )
 
-                    trigger_summary_update_nowait(
-                        session_id=analysis_request.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=analysis_request.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             

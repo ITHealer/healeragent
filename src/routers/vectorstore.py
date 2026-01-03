@@ -2,7 +2,7 @@ from fastapi.routing import APIRouter
 from fastapi import status, Response, Depends, Request, HTTPException, Query
 from typing import Dict, Any, List, Optional
 
-from src.handlers.vector_store_handler import VectorStoreQdrant
+from src.agents.memory.memory_manager import get_vector_store
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.schemas.response import BasicResponse
 from src.database.services.collection_management import CollectionManagementService
@@ -55,8 +55,9 @@ async def create_collection(
             "role": getattr(request.state, "role", None)
         }
         
-        resp = VectorStoreQdrant().create_qdrant_collection(
-            collection_name=collection_name, 
+        vector_store = get_vector_store()
+        resp = await vector_store.create_qdrant_collection(
+            collection_name=collection_name,
             user=user,
             organization_id=organization_id if not is_personal else None,
             is_personal=is_personal
@@ -122,9 +123,9 @@ async def delete_collection_with_documents(
         # 2. Delete all documents in PostgreSQL
         file_management_dal.delete_record_by_collection(collection_name, organization_id)
         
-        # 3. Delete collection in Qdrant
-        vector_store = VectorStoreQdrant()
-        result = vector_store.delete_qdrant_collection(
+        # 3. Delete collection in Qdrant (using singleton and async)
+        vector_store = get_vector_store()
+        result = await vector_store.delete_qdrant_collection(
             collection_name=collection_name,
             user={"id": user_id, "role": user_role},
             organization_id=organization_id,
@@ -172,10 +173,11 @@ async def list_collections(
             "is_admin": user_role == "ADMIN"
         }
         
-        # Get collection list with filtering by organization_id
+        # Get collection list with filtering by organization_id (using singleton)
         try:
-            collections = VectorStoreQdrant().list_qdrant_collections(
-                user=user, 
+            vector_store = get_vector_store()
+            collections = await vector_store.list_qdrant_collections(
+                user=user,
                 organization_id=organization_id,
                 include_personal=include_personal,
                 include_organizational=include_organizational

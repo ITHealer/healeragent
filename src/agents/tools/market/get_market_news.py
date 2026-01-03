@@ -143,10 +143,14 @@ class GetMarketNewsTool(BaseTool):
             cached_data = None
             if redis_client:
                 try:
-                    cached_bytes = await redis_client.get(cache_key)
-                    if cached_bytes:
-                        self.logger.info(f"[CACHE HIT] {cache_key}")
-                        cached_data = json.loads(cached_bytes.decode("utf-8"))
+                    cached_data = await redis_client.get(cache_key)
+                    if cached_data:
+                        # Handle both bytes and str (depending on decode_responses setting)
+                        if isinstance(cached_data, bytes):
+                            cached_str = cached_data.decode('utf-8')
+                        else:
+                            cached_str = cached_data
+                        return json.loads(cached_str)
                 except Exception as e:
                     self.logger.warning(f"[CACHE] Error reading: {e}")
 

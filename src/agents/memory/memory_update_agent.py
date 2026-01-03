@@ -3,9 +3,9 @@ from typing import Dict, Optional, List, TypedDict, Any
 from datetime import datetime
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.memory.core_memory import CoreMemory
+from src.agents.memory.core_memory import get_core_memory
 from src.agents.memory.consolidation_agent import (
-    MemoryConsolidationAgent,
+    get_consolidation_agent,
     ConsolidationAction,
     ConsolidationDecision
 )
@@ -22,6 +22,34 @@ class MemoryUpdateResult(TypedDict, total=False):
     categories: List[str]
     extracted_info: Dict[str, Any]
     error: str
+
+
+# Singleton instance
+_memory_update_agent_instance: Optional['MemoryUpdateAgent'] = None
+
+
+def get_memory_update_agent(use_consolidation: bool = True) -> 'MemoryUpdateAgent':
+    """
+    Get singleton MemoryUpdateAgent instance
+
+    Args:
+        use_consolidation: Whether to use ConsolidationAgent for smart merging
+
+    Returns:
+        MemoryUpdateAgent singleton instance
+    """
+    global _memory_update_agent_instance
+
+    if _memory_update_agent_instance is None:
+        _memory_update_agent_instance = MemoryUpdateAgent(use_consolidation=use_consolidation)
+
+    return _memory_update_agent_instance
+
+
+def reset_memory_update_agent():
+    """Reset singleton instance (for testing)"""
+    global _memory_update_agent_instance
+    _memory_update_agent_instance = None
 
 
 class MemoryUpdateAgent(LoggerMixin):
@@ -41,13 +69,13 @@ class MemoryUpdateAgent(LoggerMixin):
             use_consolidation: Whether to use ConsolidationAgent for smart merging
         """
         super().__init__()
-        self.core_memory = CoreMemory()
+        self.core_memory = get_core_memory()
         self.llm_provider = LLMGeneratorProvider()
         self.use_consolidation = use_consolidation
-        
+
         # Initialize consolidation agent if enabled
         if use_consolidation:
-            self.consolidation_agent = MemoryConsolidationAgent()
+            self.consolidation_agent = get_consolidation_agent()
         else:
             self.consolidation_agent = None
         
@@ -101,10 +129,10 @@ class MemoryUpdateAgent(LoggerMixin):
             return {"updated": False, "reason": "Empty user message"}
         
         try:
-            # Use defaults if not specified
-            model = model_name or settings.MODEL_DEFAULT
-            provider = provider_type or settings.PROVIDER_DEFAULT
-            
+            # Use MEMORY_MODEL settings if not specified (cheaper model for background task)
+            model = model_name or settings.MEMORY_MODEL or settings.MODEL_DEFAULT or "gpt-4.1-nano"
+            provider = provider_type or settings.MEMORY_PROVIDER or settings.PROVIDER_DEFAULT or "openai"
+
             self.logger.info(f"[MEMORY_UPDATE] Using model: {model}, provider: {provider}")
             
             # ================================================================
