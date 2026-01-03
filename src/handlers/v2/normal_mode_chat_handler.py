@@ -224,10 +224,12 @@ class NormalModeChatHandler(LoggerMixin):
         model = model_name or self.model_name
         provider = provider_type or self.provider_type
 
-        self.logger.info(f"[{flow_id}] ========================================")
-        self.logger.info(f"[{flow_id}] NORMAL MODE HANDLER START")
-        self.logger.info(f"[{flow_id}] Query: {query[:100]}...")
-        self.logger.info(f"[{flow_id}] ========================================")
+        self.logger.info("")
+        self.logger.info("═" * 60)
+        self.logger.info(f"🚀 REQUEST START | Session: {session_id[:8]}... | User: {user_id}")
+        self.logger.info("═" * 60)
+        display_query = query[:50] + "..." if len(query) > 50 else query
+        self.logger.info(f"📥 Query: \"{display_query}\"")
 
         # Setup working memory
         wm_integration = setup_working_memory_for_request(
@@ -285,13 +287,7 @@ class NormalModeChatHandler(LoggerMixin):
                     classification.requires_tools = True
                 self.logger.info(f"[{flow_id}] Web search enabled - forced web category")
 
-            # Log classification result
-            self.logger.info(
-                f"[{flow_id}] Classification: type={classification.query_type.value}, "
-                f"requires_tools={classification.requires_tools}, "
-                f"symbols={classification.symbols}, "
-                f"categories={classification.tool_categories}"
-            )
+            # Classification result logged by UnifiedClassifier with visual structure
 
             # ================================================================
             # STEP 2.3: CHECK SYMBOL AMBIGUITY
@@ -354,7 +350,10 @@ class NormalModeChatHandler(LoggerMixin):
 
             if needs_deep_research and self.fallback_handler:
                 # Deep Research Mode - use full ChatHandler pipeline
-                self.logger.info(f"[{flow_id}] Routing to Deep Research Mode (fallback handler)")
+                self.logger.info("")
+                self.logger.info("─" * 50)
+                self.logger.info(f"🛤️ ROUTING: Deep Research Mode")
+                self.logger.info("─" * 50)
 
                 async for chunk in self.fallback_handler.handle_chat_with_reasoning(
                     query=query,
@@ -381,13 +380,13 @@ class NormalModeChatHandler(LoggerMixin):
                         yield chunk
             else:
                 # Normal Mode - optimized 2-3 LLM call path
+                self.logger.info("")
+                self.logger.info("─" * 50)
                 if needs_deep_research:
-                    self.logger.warning(
-                        f"[{flow_id}] Query suggests Deep Research but no fallback handler - "
-                        f"using Normal Mode"
-                    )
+                    self.logger.info(f"🛤️ ROUTING: Normal Mode (Deep Research unavailable)")
                 else:
-                    self.logger.info(f"[{flow_id}] Running Normal Mode")
+                    self.logger.info(f"🛤️ ROUTING: Normal Mode")
+                self.logger.info("─" * 50)
 
                 async for event in self._run_normal_mode(
                     flow_id=flow_id,
@@ -470,9 +469,11 @@ class NormalModeChatHandler(LoggerMixin):
             except Exception as e:
                 self.logger.warning(f"[{flow_id}] Failed to update memory: {e}")
 
-            self.logger.info(
-                f"[{flow_id}] Flow completed in {flow_time:.2f}s"
-            )
+            self.logger.info("")
+            self.logger.info("═" * 60)
+            self.logger.info(f"✨ REQUEST COMPLETE | Total: {flow_time:.2f}s")
+            self.logger.info("═" * 60)
+            self.logger.info("")
 
         except Exception as e:
             self.logger.error(f"[{flow_id}] Error: {e}", exc_info=True)
@@ -605,7 +606,10 @@ class NormalModeChatHandler(LoggerMixin):
         """
         start = time.time()
 
-        self.logger.info(f"[{flow_id}] Loading context...")
+        self.logger.info("")
+        self.logger.info("─" * 50)
+        self.logger.info(f"📋 CONTEXT LOADING")
+        self.logger.info("─" * 50)
 
         # Working memory (request-level context)
         working_context = wm_integration.get_context_for_planning(max_tokens=500)
@@ -645,17 +649,14 @@ class NormalModeChatHandler(LoggerMixin):
 
                 # Log compaction result
                 if prepared_context.was_compacted:
-                    self.logger.info(
-                        f"[{flow_id}] ✅ Context COMPACTED: "
-                        f"{prepared_context.compaction_result.original_tokens if prepared_context.compaction_result else '?'} → "
-                        f"{prepared_context.compaction_result.final_tokens if prepared_context.compaction_result else '?'} tokens"
-                    )
+                    original = prepared_context.compaction_result.original_tokens if prepared_context.compaction_result else '?'
+                    final = prepared_context.compaction_result.final_tokens if prepared_context.compaction_result else '?'
+                    self.logger.info(f"  ├─ 🗜️ Context COMPACTED: {original} → {final} tokens")
 
-                self.logger.info(
-                    f"[{flow_id}] Context loaded in {elapsed:.2f}s: "
-                    f"history={len(prepared_context.messages)}, symbols={current_symbols}, "
-                    f"compacted={prepared_context.was_compacted}, tokens={prepared_context.total_tokens}"
-                )
+                self.logger.info(f"  ├─ History: {len(prepared_context.messages)} messages")
+                self.logger.info(f"  ├─ Symbols: {current_symbols}")
+                self.logger.info(f"  ├─ Tokens: {prepared_context.total_tokens}")
+                self.logger.info(f"  └─ ⏱️ Time: {elapsed:.2f}s")
 
                 return {
                     "core_memory": prepared_context.core_memory,
@@ -705,11 +706,10 @@ class NormalModeChatHandler(LoggerMixin):
                 chat_history.append({"role": role, "content": content})
 
         elapsed = time.time() - start
-        self.logger.info(
-            f"[{flow_id}] Context loaded in {elapsed:.2f}s (no compaction): "
-            f"history={len(chat_history)}, symbols={current_symbols}, "
-            f"has_summary={conversation_summary is not None}"
-        )
+        self.logger.info(f"  ├─ History: {len(chat_history)} messages")
+        self.logger.info(f"  ├─ Symbols: {current_symbols}")
+        self.logger.info(f"  ├─ Summary: {'Yes' if conversation_summary else 'No'}")
+        self.logger.info(f"  └─ ⏱️ Time: {elapsed:.2f}s (no compaction)")
 
         return {
             "core_memory": core_memory,
@@ -729,8 +729,7 @@ class NormalModeChatHandler(LoggerMixin):
     ) -> UnifiedClassificationResult:
         """Run unified classification."""
         start = time.time()
-
-        self.logger.info(f"[{flow_id}] Classifying query...")
+        # Classification logging is handled by UnifiedClassifier with visual structure
 
         # Build classifier context
         context = ClassifierContext(
@@ -742,12 +741,8 @@ class NormalModeChatHandler(LoggerMixin):
             ui_context=context_data.get("ui_context"),
         )
 
-        # Classify
+        # Classify (detailed logging handled by UnifiedClassifier)
         result = await self.classifier.classify(context)
-
-        elapsed = time.time() - start
-        self.logger.info(f"[{flow_id}] Classification completed in {elapsed:.2f}s")
-
         return result
 
     def _needs_deep_research(
@@ -909,7 +904,10 @@ class NormalModeChatHandler(LoggerMixin):
         """
         start = time.time()
 
-        self.logger.info(f"[{flow_id}] Running agent loop with streaming...")
+        self.logger.info("")
+        self.logger.info("─" * 50)
+        self.logger.info(f"🤖 AGENT LOOP")
+        self.logger.info("─" * 50)
 
         total_turns = 0
         total_tool_calls = 0
@@ -956,18 +954,19 @@ class NormalModeChatHandler(LoggerMixin):
 
                 elif event_type == "turn_start":
                     total_turns = event.get("turn", total_turns)
-                    self.logger.debug(f"[{flow_id}] Turn {total_turns} started")
+                    self.logger.info(f"  ├─ [TURN {total_turns}] Processing...")
                     yield {"type": "turn_start", "turn": total_turns}
 
                 elif event_type == "tool_calls":
                     tools = event.get("tools", [])
                     total_tool_calls += len(tools)
-                    self.logger.debug(f"[{flow_id}] Tool calls: {[t['name'] for t in tools]}")
+                    tool_names = [t['name'] for t in tools]
+                    self.logger.info(f"  │  🔧 Tools: {tool_names}")
                     yield {"type": "tool_calls", "tools": tools}
 
                 elif event_type == "tool_results":
                     results = event.get("results", [])
-                    self.logger.debug(f"[{flow_id}] Tool results: {len(results)} items")
+                    self.logger.info(f"  │  ✅ Results: {len(results)} items")
                     yield {"type": "tool_results", "results": results}
 
                 elif event_type == "done":
@@ -993,10 +992,7 @@ class NormalModeChatHandler(LoggerMixin):
                     yield {"type": "thinking", "content": f"Reached maximum turns ({event.get('turns', 10)})", "phase": "max_turns"}
 
             elapsed = time.time() - start
-            self.logger.info(
-                f"[{flow_id}] Agent completed: {total_turns} turns, "
-                f"{total_tool_calls} tool calls, {elapsed:.2f}s"
-            )
+            self.logger.info(f"  └─ ✅ Agent complete: {total_turns} turns, {total_tool_calls} tools, {elapsed:.2f}s")
 
         except Exception as e:
             self.logger.error(f"[{flow_id}] Agent stream error: {e}", exc_info=True)

@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Any
 from functools import lru_cache
 
 from src.utils.logger.custom_logging import LoggerMixin
+from src.utils.logger.log_formatter import LogFormatter
 from src.utils.config import settings
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
@@ -295,10 +296,15 @@ class UnifiedClassifier(LoggerMixin):
                     cached = self._apply_ui_context_override(cached, context)
 
                 elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-                self.logger.info(
-                    f"[CLASSIFIER] Cache hit: type={cached.query_type.value}, "
-                    f"time={elapsed_ms}ms (cached)"
-                )
+                # Enhanced logging with visual structure
+                self.logger.info("─" * 50)
+                self.logger.info(f"🎯 CLASSIFICATION (cached)")
+                self.logger.info("─" * 50)
+                self.logger.info(f"  ├─ 💾 [CACHE HIT] key={context.query[:20]}...")
+                self.logger.info(f"  ├─ Type: {cached.query_type.value}")
+                self.logger.info(f"  ├─ Symbols: {cached.symbols}")
+                self.logger.info(f"  ├─ Categories: {cached.tool_categories}")
+                self.logger.info(f"  └─ ⏱️ Time: {elapsed_ms}ms")
                 return cached
 
         try:
@@ -325,14 +331,17 @@ class UnifiedClassifier(LoggerMixin):
                 )
 
             elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            self.logger.info(
-                f"[CLASSIFIER] Success: type={classification.query_type.value}, "
-                f"requires_tools={classification.requires_tools}, "
-                f"symbols={classification.symbols}, "
-                f"categories={classification.tool_categories}, "
-                f"clarification_needed={classification.clarification_needed}, "
-                f"time={elapsed_ms}ms"
-            )
+            # Enhanced logging with visual structure
+            self.logger.info("─" * 50)
+            self.logger.info(f"🎯 CLASSIFICATION (LLM)")
+            self.logger.info("─" * 50)
+            self.logger.info(f"  ├─ Type: {classification.query_type.value}")
+            self.logger.info(f"  ├─ Symbols: {classification.symbols}")
+            self.logger.info(f"  ├─ Categories: {classification.tool_categories}")
+            self.logger.info(f"  ├─ Requires Tools: {classification.requires_tools}")
+            if classification.clarification_needed:
+                self.logger.info(f"  ├─ ⚠️ Clarification Needed: {classification.clarification_messages}")
+            self.logger.info(f"  └─ ⏱️ Time: {elapsed_ms}ms")
 
             # Cache the result (async Redis, fire and forget style) - include ui_context
             if use_cache:
@@ -366,10 +375,9 @@ class UnifiedClassifier(LoggerMixin):
 
         # Stock tab + crypto_specific → check if could be stock
         if active_tab == "stock" and classification.query_type == QueryType.CRYPTO_SPECIFIC:
-            self.logger.info(
-                f"[CLASSIFIER] UI Context Override: crypto_specific → stock_specific "
-                f"(active_tab=stock, symbols={classification.symbols})"
-            )
+            self.logger.info(f"  ├─ 🔄 UI Context Override:")
+            self.logger.info(f"  │    crypto_specific → stock_specific")
+            self.logger.info(f"  │    (active_tab=stock, symbols={classification.symbols})")
             classification.query_type = QueryType.STOCK_SPECIFIC
             classification.market_type = MarketType.STOCK
             # Update tool categories: remove crypto, add stock-related
@@ -380,10 +388,9 @@ class UnifiedClassifier(LoggerMixin):
 
         # Crypto tab + stock_specific → check if could be crypto
         elif active_tab == "crypto" and classification.query_type == QueryType.STOCK_SPECIFIC:
-            self.logger.info(
-                f"[CLASSIFIER] UI Context Override: stock_specific → crypto_specific "
-                f"(active_tab=crypto, symbols={classification.symbols})"
-            )
+            self.logger.info(f"  ├─ 🔄 UI Context Override:")
+            self.logger.info(f"  │    stock_specific → crypto_specific")
+            self.logger.info(f"  │    (active_tab=crypto, symbols={classification.symbols})")
             classification.query_type = QueryType.CRYPTO_SPECIFIC
             classification.market_type = MarketType.CRYPTO
             # Update tool categories: add crypto
@@ -836,9 +843,7 @@ Now analyze the query and provide your classification:
             # Has symbols but marked conversational - likely wrong
             classification.query_type = QueryType.STOCK_SPECIFIC
             classification.requires_tools = True
-            self.logger.info(
-                "[CLASSIFIER] Override: conversational → stock_specific (has symbols)"
-            )
+            self.logger.info(f"  ├─ 🔄 Override: conversational → stock_specific (has symbols)")
 
         return classification
 

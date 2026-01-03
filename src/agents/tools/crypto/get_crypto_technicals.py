@@ -729,17 +729,16 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
             # Map timeframe
             api_timeframe = self.TIMEFRAME_MAP.get(timeframe, "1hour")
             
-            self.logger.info(
-                f"[{self.schema.name}] Fetching: {original_symbol} → {symbol}, "
-                f"timeframe={api_timeframe}"
-            )
+            self.logger.info(f"  ┌─ 🔧 TOOL: {self.schema.name}")
+            self.logger.info(f"  │  Input: {{symbol={original_symbol} → {symbol}, timeframe={api_timeframe}}}")
             
             # Check cache
             cache_key = f"getCryptoTechnicals_{symbol}_{api_timeframe}"
             cached_result = await self._get_cached_result(cache_key)
             if cached_result:
-                self.logger.info(f"[{self.schema.name}] Cache HIT")
                 execution_time = int((time.time() - start_time) * 1000)
+                self.logger.info(f"  │  🎯 [CACHE HIT]")
+                self.logger.info(f"  └─ ✅ SUCCESS ({execution_time}ms)")
                 
                 return ToolOutput(
                     tool_name=self.schema.name,
@@ -783,10 +782,10 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
             await self._set_cached_result(cache_key, result_data)
             
             execution_time = int((time.time() - start_time) * 1000)
-            
-            self.logger.info(
-                f"[{self.schema.name}] ✅ SUCCESS ({execution_time}ms)"
-            )
+
+            rsi_val = indicators.get("rsi", {}).get("value", "N/A")
+            self.logger.info(f"  │  Result: RSI={rsi_val}, Trend={result_data['trend'][:20]}")
+            self.logger.info(f"  └─ ✅ SUCCESS ({execution_time}ms)")
             
             return ToolOutput(
                 tool_name=self.schema.name,
@@ -804,10 +803,8 @@ class GetCryptoTechnicalsTool(BaseTool, LoggerMixin):
             
         except Exception as e:
             execution_time = int((time.time() - start_time) * 1000)
-            self.logger.error(
-                f"[{self.schema.name}] Error: {e}",
-                exc_info=True
-            )
+            self.logger.info(f"  │  Error: {str(e)[:50]}")
+            self.logger.info(f"  └─ ❌ FAILED ({execution_time}ms)")
             return ToolOutput(
                 tool_name=self.schema.name,
                 status="error",

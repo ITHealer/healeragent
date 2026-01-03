@@ -211,9 +211,8 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
             symbol = self._normalize_crypto_symbol(symbol)
             base_symbol = self._extract_base_symbol(symbol)
             
-            self.logger.info(
-                f"[{self.schema.name}] Fetching: {original_symbol} → {symbol}"
-            )
+            self.logger.info(f"  ┌─ 🔧 TOOL: {self.schema.name}")
+            self.logger.info(f"  │  Input: {{symbol={original_symbol} → {symbol}}}")
             
             # Validate base symbol is a known crypto
             if base_symbol not in self.KNOWN_CRYPTO:
@@ -226,8 +225,9 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
             cache_key = f"getCryptoPrice_{symbol}"
             cached_result = await self._get_cached_result(cache_key)
             if cached_result:
-                self.logger.info(f"[{self.schema.name}] Cache HIT for {symbol}")
                 execution_time = int((time.time() - start_time) * 1000)
+                self.logger.info(f"  │  🎯 [CACHE HIT] {symbol}")
+                self.logger.info(f"  └─ ✅ SUCCESS ({execution_time}ms)")
                 
                 return ToolOutput(
                     tool_name=self.schema.name,
@@ -308,11 +308,9 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
             await self._set_cached_result(cache_key, result_data)
             
             execution_time = int((time.time() - start_time) * 1000)
-            
-            self.logger.info(
-                f"[{self.schema.name}] ✅ SUCCESS ({execution_time}ms) - "
-                f"{symbol} @ ${result_data['price']:,.2f}"
-            )
+
+            self.logger.info(f"  │  Result: {symbol} @ ${result_data['price']:,.2f}")
+            self.logger.info(f"  └─ ✅ SUCCESS ({execution_time}ms)")
             
             return ToolOutput(
                 tool_name=self.schema.name,
@@ -329,9 +327,8 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
             
         except httpx.HTTPStatusError as e:
             execution_time = int((time.time() - start_time) * 1000)
-            self.logger.error(
-                f"[{self.schema.name}] HTTP error for {symbol}: {e}"
-            )
+            self.logger.info(f"  │  Error: HTTP {e.response.status_code}")
+            self.logger.info(f"  └─ ❌ FAILED ({execution_time}ms)")
             return ToolOutput(
                 tool_name=self.schema.name,
                 status="error",
@@ -342,10 +339,8 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
             
         except Exception as e:
             execution_time = int((time.time() - start_time) * 1000)
-            self.logger.error(
-                f"[{self.schema.name}] Error for {symbol}: {e}",
-                exc_info=True
-            )
+            self.logger.info(f"  │  Error: {str(e)[:50]}")
+            self.logger.info(f"  └─ ❌ FAILED ({execution_time}ms)")
             return ToolOutput(
                 tool_name=self.schema.name,
                 status="error",
