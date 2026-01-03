@@ -33,7 +33,7 @@ Usage:
 import time
 import uuid
 from datetime import datetime
-from typing import AsyncGenerator, Dict, List, Optional, Any
+from typing import AsyncGenerator, Dict, List, Optional, Any, Tuple
 
 from src.utils.logger.custom_logging import LoggerMixin
 from src.utils.config import settings
@@ -45,6 +45,11 @@ from src.agents.classification import (
     UnifiedClassificationResult,
     QueryType,
     get_unified_classifier,
+    # UI Context (Soft Context Inheritance)
+    UIContext,
+    AssetContext,
+    ContextSource,
+    SymbolResolution,
 )
 
 # Asset Resolution (Symbol disambiguation)
@@ -192,6 +197,7 @@ class NormalModeChatHandler(LoggerMixin):
         stream: bool = True,
         enable_web_search: bool = False,
         classification: Optional[UnifiedClassificationResult] = None,
+        ui_context: Optional[UIContext] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Handle chat request with optimized Normal Mode flow.
@@ -294,23 +300,30 @@ class NormalModeChatHandler(LoggerMixin):
             )
 
             # ================================================================
-            # STEP 2.3: CHECK SYMBOL AMBIGUITY
+            # STEP 2.3: SOFT CONTEXT RESOLUTION (Symbol Disambiguation)
             # ================================================================
+            # Use UI context to resolve ambiguous symbols automatically
+            # Only ask for clarification if no context available
+            symbol_resolutions = []
+            needs_clarification = False
+
             if classification.symbols:
-                ambiguous_symbols = await self._check_symbol_ambiguity(
+                symbol_resolutions, needs_clarification = await self._resolve_symbols_with_context(
                     flow_id=flow_id,
                     symbols=classification.symbols,
+                    query=query,
+                    ui_context=ui_context,
                     language=classification.response_language,
                 )
 
-                if ambiguous_symbols:
-                    # Found ambiguous symbol - ask user to clarify
-                    disambiguation_msg = ambiguous_symbols[0].get("message", "")
+                if needs_clarification:
+                    # No UI context and symbol is ambiguous - ask user
+                    disambiguation_msg = symbol_resolutions[0].get("message", "")
                     self.logger.info(
-                        f"[{flow_id}] Ambiguous symbol found - asking user to clarify"
+                        f"[{flow_id}] Ambiguous symbol found (no UI context) - asking user to clarify"
                     )
 
-                    yield {"type": "disambiguation", "data": ambiguous_symbols}
+                    yield {"type": "disambiguation", "data": symbol_resolutions}
                     yield {"type": "content", "content": disambiguation_msg}
                     yield {"type": "done", "requires_clarification": True}
 
@@ -328,6 +341,10 @@ class NormalModeChatHandler(LoggerMixin):
                             self.logger.warning(f"Failed to save disambiguation response: {e}")
 
                     return  # Early return - wait for user clarification
+
+                # Emit symbol resolution info (for UI to show alternatives)
+                if symbol_resolutions:
+                    yield {"type": "symbol_resolution", "data": symbol_resolutions}
 
             # ================================================================
             # STEP 2.5: RESOLVE CHARTS FROM CLASSIFICATION
@@ -794,28 +811,290 @@ class NormalModeChatHandler(LoggerMixin):
         self,
         flow_id: str,
         symbols: List[str],
-        language: str = "vi",
+        query: str,
+        context_data: Dict[str, Any],
     ) -> List[Dict[str, Any]]:
         """
         Check if any symbols are ambiguous (exist in both crypto and stock).
 
-        Simple O(1) check - no LLM, no context resolution.
-        Just check cache and return options.
-
         Args:
             flow_id: Flow identifier for logging
             symbols: List of symbols from classification
-            language: Response language (vi/en)
+            query: User query for context-based resolution
+            context_data: Context data including chat history
 
         Returns:
             List of disambiguation data for ambiguous symbols (empty if none)
         """
         try:
-            resolver = get_asset_resolver()
-            return resolver.check_symbols(symbols, language)
+            symbol_cache = get_symbol_cache()
+            asset_resolver = get_asset_resolver()
+
+            ambiguous_results = []
+
+            for symbol in symbols:
+                if symbol_cache.is_ambiguous(symbol):
+                    # Try to resolve using context
+                    chat_history = context_data.get("chat_history", [])
+
+                    resolved, _ = await asset_resolver.resolve(
+                        query=query,
+                        conversation_context=chat_history,
+                        skip_confirmation=False,
+                        use_llm=False,  # Fast check without LLM
+                    )
+
+                    # Check if this symbol needs confirmation
+                    for asset in resolved:
+                        if asset.symbol == symbol and asset.needs_confirmation:
+                            # Get disambiguation options
+                            options = asset_resolver.get_disambiguation_options(symbol)
+
+                            ambiguous_results.append({
+                                "symbol": symbol,
+                                "options": options,
+                                "message": asset.disambiguation_message or self._build_disambiguation_message(symbol, options),
+                            })
+
+                            self.logger.info(
+                                f"[{flow_id}] Symbol '{symbol}' is ambiguous: "
+                                f"{len(options)} options"
+                            )
+                            break
+
+            return ambiguous_results
+
         except Exception as e:
             self.logger.warning(f"[{flow_id}] Symbol ambiguity check failed: {e}")
             return []  # Don't block on errors
+
+    def _build_disambiguation_message(
+        self,
+        symbol: str,
+        options: List[Dict[str, Any]],
+    ) -> str:
+        """Build user-friendly disambiguation message"""
+        lines = [f"Tôi thấy '{symbol}' có thể là:"]
+
+        for i, opt in enumerate(options, 1):
+            asset_type = opt.get("asset_class", "unknown")
+            name = opt.get("name", symbol)
+            exchange = opt.get("exchange", "")
+
+            if asset_type == "crypto":
+                desc = opt.get("description", "Cryptocurrency")
+                lines.append(f"  {i}. {name} ({desc})")
+            elif asset_type == "stock":
+                exchange_info = f" - {exchange}" if exchange else ""
+                lines.append(f"  {i}. {name} (Stock{exchange_info})")
+            else:
+                lines.append(f"  {i}. {name} ({asset_type})")
+
+        lines.append("\nBạn muốn phân tích loại nào? Vui lòng trả lời với số hoặc tên loại tài sản.")
+
+        return "\n".join(lines)
+
+    async def _resolve_symbols_with_context(
+        self,
+        flow_id: str,
+        symbols: List[str],
+        query: str,
+        ui_context: Optional[UIContext],
+        language: str = "vi",
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """
+        Resolve symbols using Soft Context Inheritance.
+
+        Priority order:
+        1. Explicit keywords in query (e.g., "stock BTC", "cổ phiếu SOL")
+        2. UI Tab context (if user is on Crypto tab, resolve ambiguous as crypto)
+        3. Query hint words (e.g., "mining" → crypto, "dividend" → stock)
+        4. Ask user (only if no context available and symbol is truly ambiguous)
+
+        Args:
+            flow_id: Flow identifier for logging
+            symbols: List of symbols from classification
+            query: User query for context analysis
+            ui_context: UI context from frontend
+            language: Response language
+
+        Returns:
+            Tuple of (resolutions, needs_clarification)
+            - resolutions: List of symbol resolutions with context_source
+            - needs_clarification: True if user needs to clarify
+        """
+        try:
+            symbol_cache = get_symbol_cache()
+            resolutions = []
+            needs_clarification = False
+
+            # Keywords that explicitly indicate asset type
+            EXPLICIT_CRYPTO_KEYWORDS = {
+                "crypto", "cryptocurrency", "tiền điện tử", "coin",
+                "blockchain", "defi", "nft", "mining", "đào",
+                "加密货币", "数字货币", "币", "代币",
+            }
+            EXPLICIT_STOCK_KEYWORDS = {
+                "stock", "cổ phiếu", "equity", "share", "chứng khoán",
+                "股票", "股份", "dividend", "cổ tức", "earnings",
+            }
+
+            # Context hint words (less explicit)
+            CRYPTO_HINTS = {
+                "staking", "wallet", "ví", "pump", "dump", "hodl",
+                "whale", "gas", "swap", "dex", "cex", "airdrop",
+                "挖矿", "钱包", "链",
+            }
+            STOCK_HINTS = {
+                "eps", "revenue", "quarterly", "report", "sec",
+                "valuation", "pe ratio", "balance sheet",
+                "báo cáo", "doanh thu", "lợi nhuận", "quý",
+                "收入", "利润", "报告",
+            }
+
+            query_lower = query.lower()
+            query_words = set(query_lower.split())
+
+            # Determine context source priority
+            has_explicit_crypto = bool(query_words & EXPLICIT_CRYPTO_KEYWORDS)
+            has_explicit_stock = bool(query_words & EXPLICIT_STOCK_KEYWORDS)
+            has_crypto_hints = bool(query_words & CRYPTO_HINTS)
+            has_stock_hints = bool(query_words & STOCK_HINTS)
+
+            # Get UI context preference
+            ui_preference = None
+            if ui_context and ui_context.current_tab != AssetContext.AUTO:
+                ui_preference = ui_context.current_tab.value
+
+            for symbol in symbols:
+                is_ambiguous = symbol_cache.is_ambiguous(symbol)
+
+                if not is_ambiguous:
+                    # Not ambiguous - determine type from cache
+                    info, _ = symbol_cache.lookup(symbol)
+                    if info:
+                        resolutions.append({
+                            "symbol": symbol,
+                            "resolved_type": info.asset_class.value,
+                            "context_source": ContextSource.UNAMBIGUOUS.value,
+                            "confidence": 1.0,
+                            "alternatives": [],
+                        })
+                    continue
+
+                # Symbol is ambiguous - apply resolution priority
+                resolved_type = None
+                context_source = None
+                confidence = 0.9
+
+                # Priority 1: Explicit keywords in query
+                if has_explicit_crypto and not has_explicit_stock:
+                    resolved_type = "crypto"
+                    context_source = ContextSource.EXPLICIT
+                    confidence = 1.0
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' resolved as CRYPTO (explicit keyword)"
+                    )
+                elif has_explicit_stock and not has_explicit_crypto:
+                    resolved_type = "stock"
+                    context_source = ContextSource.EXPLICIT
+                    confidence = 1.0
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' resolved as STOCK (explicit keyword)"
+                    )
+
+                # Priority 2: UI Tab context
+                elif ui_preference:
+                    resolved_type = ui_preference
+                    context_source = ContextSource.UI_TAB
+                    confidence = 0.9
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' resolved as {resolved_type.upper()} (UI tab context)"
+                    )
+
+                # Priority 3: Query hint words
+                elif has_crypto_hints and not has_stock_hints:
+                    resolved_type = "crypto"
+                    context_source = ContextSource.QUERY_HINT
+                    confidence = 0.8
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' resolved as CRYPTO (query hints)"
+                    )
+                elif has_stock_hints and not has_crypto_hints:
+                    resolved_type = "stock"
+                    context_source = ContextSource.QUERY_HINT
+                    confidence = 0.8
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' resolved as STOCK (query hints)"
+                    )
+
+                # Priority 4: Default to crypto (most common case for this app)
+                else:
+                    # No context available - need clarification
+                    # But for simple queries, default to crypto (common use case)
+                    resolved_type = "crypto"
+                    context_source = ContextSource.DEFAULT
+                    confidence = 0.6
+                    self.logger.info(
+                        f"[{flow_id}] Symbol '{symbol}' defaulted to CRYPTO (no context)"
+                    )
+
+                # Get alternatives for UI to show "Did you mean...?"
+                options = symbol_cache.get_ambiguous_options(symbol)
+                alternatives = [
+                    {
+                        "asset_class": opt.asset_class.value,
+                        "name": opt.name,
+                        "exchange": opt.exchange,
+                    }
+                    for opt in options
+                    if opt.asset_class.value != resolved_type
+                ]
+
+                resolutions.append({
+                    "symbol": symbol,
+                    "resolved_type": resolved_type,
+                    "context_source": context_source.value if context_source else "default",
+                    "confidence": confidence,
+                    "alternatives": alternatives,
+                    "ui_hint": self._get_ui_hint(symbol, resolved_type, alternatives, language),
+                })
+
+                # Only need clarification if confidence is very low and symbol is ambiguous
+                # With new design, we assume smartly and allow user to correct
+                # So we don't set needs_clarification=True here
+
+            return resolutions, needs_clarification
+
+        except Exception as e:
+            self.logger.warning(f"[{flow_id}] Symbol resolution failed: {e}")
+            return [], False
+
+    def _get_ui_hint(
+        self,
+        symbol: str,
+        resolved_type: str,
+        alternatives: List[Dict[str, Any]],
+        language: str,
+    ) -> Optional[str]:
+        """Generate UI hint for showing alternatives"""
+        if not alternatives:
+            return None
+
+        alt = alternatives[0]
+        alt_type = alt.get("asset_class", "")
+        alt_name = alt.get("name", symbol)
+
+        if language == "vi":
+            if alt_type == "stock":
+                return f"Bạn có muốn xem {alt_name} (Cổ phiếu) không?"
+            else:
+                return f"Bạn có muốn xem {alt_name} (Crypto) không?"
+        else:
+            if alt_type == "stock":
+                return f"Did you mean {alt_name} (Stock)?"
+            else:
+                return f"Did you mean {alt_name} (Crypto)?"
 
     async def _run_normal_mode(
         self,

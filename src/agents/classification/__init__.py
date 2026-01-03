@@ -38,6 +38,11 @@ from .models import (
     QueryType,
     MarketType,
     VALID_CATEGORIES,
+    # UI Context (Soft Context Inheritance)
+    UIContext,
+    AssetContext,
+    ContextSource,
+    SymbolResolution,
 )
 
 from .unified_classifier import (
@@ -55,6 +60,11 @@ __all__ = [
     "QueryType",
     "MarketType",
     "VALID_CATEGORIES",
+    # UI Context (Soft Context Inheritance)
+    "UIContext",
+    "AssetContext",
+    "ContextSource",
+    "SymbolResolution",
     # Classifier
     "UnifiedClassifier",
     "get_unified_classifier",

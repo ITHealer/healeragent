@@ -4,6 +4,130 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
+# ============================================================================
+# UI CONTEXT - Soft Context Inheritance from Frontend
+# ============================================================================
+
+class AssetContext(str, Enum):
+    """
+    Asset context from UI tab selection.
+
+    Frontend sends this based on which tab user is currently viewing.
+    Used for soft disambiguation of ambiguous symbols.
+    """
+    CRYPTO = "crypto"   # User is on Crypto tab
+    STOCK = "stock"     # User is on Stock tab
+    AUTO = "auto"       # No preference, use query analysis
+
+
+@dataclass
+class UIContext:
+    """
+    Context inherited from frontend UI state.
+
+    This enables "Soft Context Inheritance" where:
+    1. Chat inherits context from current tab (crypto/stock)
+    2. Ambiguous symbols are resolved using this context
+    3. User can override with explicit keywords
+    4. Response shows what context was used
+
+    Example:
+        User on Crypto tab asks "giá BTC"
+        → BTC resolved as Bitcoin (crypto) not BTC Digital (stock)
+        → Response shows: "Đang xem: BTC (Crypto)" + alternative link
+    """
+
+    # Primary context from UI tab
+    current_tab: AssetContext = AssetContext.AUTO
+
+    # Recent symbols user viewed (for context reinforcement)
+    recent_symbols: List[str] = field(default_factory=list)
+
+    # Watchlist type currently displayed
+    watchlist_type: Optional[str] = None
+
+    # User's language preference from UI
+    language: str = "vi"
+
+    def __post_init__(self):
+        """Normalize after initialization"""
+        # Ensure current_tab is AssetContext enum
+        if isinstance(self.current_tab, str):
+            try:
+                self.current_tab = AssetContext(self.current_tab.lower())
+            except ValueError:
+                self.current_tab = AssetContext.AUTO
+
+        # Uppercase recent symbols
+        self.recent_symbols = [s.upper() for s in self.recent_symbols]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        return {
+            "current_tab": self.current_tab.value,
+            "recent_symbols": self.recent_symbols,
+            "watchlist_type": self.watchlist_type,
+            "language": self.language,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "UIContext":
+        """Create from dictionary (API request)"""
+        if not data:
+            return cls()
+
+        return cls(
+            current_tab=data.get("current_tab", "auto"),
+            recent_symbols=data.get("recent_symbols", []),
+            watchlist_type=data.get("watchlist_type"),
+            language=data.get("language", "vi"),
+        )
+
+    def get_preferred_asset_class(self) -> Optional[str]:
+        """Get preferred asset class from context"""
+        if self.current_tab == AssetContext.CRYPTO:
+            return "crypto"
+        elif self.current_tab == AssetContext.STOCK:
+            return "stock"
+        return None
+
+
+# ============================================================================
+# CONTEXT RESOLUTION SOURCE - Track how symbol was resolved
+# ============================================================================
+
+class ContextSource(str, Enum):
+    """How a symbol's asset type was determined"""
+    EXPLICIT = "explicit"       # User said "stock BTC" or "crypto SOL"
+    UI_TAB = "ui_tab"          # Inherited from current UI tab
+    QUERY_HINT = "query_hint"   # Keywords in query (e.g., "cổ phiếu", "coin")
+    UNAMBIGUOUS = "unambiguous" # Symbol only exists in one asset class
+    DEFAULT = "default"         # No context, used default (crypto)
+
+
+@dataclass
+class SymbolResolution:
+    """Resolution result for a single symbol"""
+    symbol: str
+    resolved_type: str              # "crypto" or "stock"
+    context_source: ContextSource   # How it was resolved
+    confidence: float = 1.0
+    alternatives: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "resolved_type": self.resolved_type,
+            "context_source": self.context_source.value,
+            "confidence": self.confidence,
+            "alternatives": self.alternatives,
+        }
+
+
+# ============================================================================
+# QUERY TYPE ENUM
+# ============================================================================
+
 class QueryType(str, Enum):
     """Types of user queries"""
     STOCK_SPECIFIC = "stock_specific"      # Query about specific stock(s)
@@ -167,6 +291,7 @@ class ClassifierContext:
     Context provided to the classifier.
 
     Assembled from various memory sources before classification.
+    Now includes UI context for soft disambiguation.
     """
 
     # User query
@@ -179,8 +304,31 @@ class ClassifierContext:
     core_memory_summary: str = ""      # User profile, preferences
     working_memory_summary: str = ""   # Current session state, recent symbols
 
+    # UI Context - Soft Context Inheritance
+    ui_context: Optional[UIContext] = None
+
     # Token limits
     max_history_tokens: int = 2000
+
+    def get_ui_context(self) -> UIContext:
+        """Get UI context, creating default if not set"""
+        return self.ui_context or UIContext()
+
+    def format_ui_context(self) -> str:
+        """Format UI context for classifier prompt"""
+        ui = self.get_ui_context()
+
+        lines = []
+        if ui.current_tab != AssetContext.AUTO:
+            lines.append(f"Current UI Tab: {ui.current_tab.value.upper()}")
+
+        if ui.recent_symbols:
+            lines.append(f"Recently Viewed: {', '.join(ui.recent_symbols[:5])}")
+
+        if ui.watchlist_type:
+            lines.append(f"Watchlist Type: {ui.watchlist_type}")
+
+        return "\n".join(lines) if lines else ""
 
     def format_history(self, max_turns: int = 5) -> str:
         """Format conversation history for prompt"""

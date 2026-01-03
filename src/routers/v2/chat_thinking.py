@@ -49,17 +49,49 @@ OPENROUTER_MODEL_PRESETS = {
 # REQUEST/RESPONSE SCHEMAS
 # ============================================================================
 
+class UIContextRequest(BaseModel):
+    """
+    UI Context for Soft Context Inheritance.
+
+    Frontend sends this to indicate the current UI state,
+    enabling smart disambiguation of ambiguous symbols.
+
+    Example:
+        User is on Crypto tab, asks "giá BTC"
+        → BTC resolved as Bitcoin (crypto) not BTC Digital (stock)
+    """
+
+    current_tab: str = Field(
+        default="auto",
+        description="Current UI tab: 'crypto', 'stock', or 'auto'",
+        examples=["crypto", "stock", "auto"]
+    )
+    recent_symbols: List[str] = Field(
+        default_factory=list,
+        description="Recently viewed symbols (for context reinforcement)",
+        examples=[["BTC", "ETH", "SOL"]]
+    )
+    watchlist_type: Optional[str] = Field(
+        default=None,
+        description="Type of watchlist currently displayed"
+    )
+    language: str = Field(
+        default="vi",
+        description="User's preferred language"
+    )
+
+
 class ThinkingChatRequest(BaseModel):
     """Request schema for thinking chat endpoints"""
-    
+
     session_id: Optional[str] = Field(
-        default=None, 
+        default=None,
         description="Session ID for conversation continuity"
     )
     question_input: str = Field(
-        ..., 
-        description="User question/query", 
-        min_length=1, 
+        ...,
+        description="User question/query",
+        min_length=1,
         max_length=10000
     )
     chart_displayed: bool = Field(
@@ -67,17 +99,26 @@ class ThinkingChatRequest(BaseModel):
         description="Whether a chart is currently displayed to the user"
     )
     model_name: str = Field(
-        default=APIModelName.GPT41Nano, 
+        default=APIModelName.GPT41Nano,
         description="LLM model name",
         examples=["gpt-4.1-nano", "gpt-4o-mini", "gpt-5-nano", "gpt-oss:20b", "gemma-3-27b-it", "llama-3.1-70b"]
     )
     provider_type: str = Field(
-        default=ProviderType.OPENAI, 
+        default=ProviderType.OPENAI,
         description="LLM provider type (openai, openrouter, gemini, ollama)"
     )
     enable_thinking: bool = Field(
-        default=True, 
+        default=True,
         description="Enable thinking display in stream"
+    )
+
+    # UI Context for Soft Context Inheritance
+    ui_context: Optional[UIContextRequest] = Field(
+        default=None,
+        description=(
+            "UI context from frontend for soft symbol disambiguation. "
+            "If provided, ambiguous symbols will be resolved based on current tab."
+        )
     )
     enable_tools: bool = Field(
         default=True, 

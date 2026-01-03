@@ -1,26 +1,23 @@
-# src/services/asset/__init__.py
-"""
-Asset Resolution Services (Simplified)
-
-Simple symbol disambiguation for multi-exchange scenarios.
-No LLM extraction, no quote currency mapping.
-
-Components:
-1. SymbolCacheService - O(1) symbol lookup with ambiguity detection
-2. AssetResolver - Simple disambiguation message builder
-"""
-
 from src.services.asset.symbol_cache import (
     SymbolCacheService,
     SymbolInfo,
     AssetClass,
+    AssetSubClass,
+    QuoteCurrencyConfig,
     get_symbol_cache,
     initialize_symbol_cache,
+)
+
+from src.services.asset.crypto_validator import (
+    CryptoSymbolValidator,
+    CryptoSearchResult,
+    get_crypto_validator,
 )
 
 from src.services.asset.asset_resolver import (
     AssetResolver,
     ResolvedAsset,
+    ExtractedEntity,
     get_asset_resolver,
 )
 
@@ -29,10 +26,17 @@ __all__ = [
     "SymbolCacheService",
     "SymbolInfo",
     "AssetClass",
+    "AssetSubClass",
+    "QuoteCurrencyConfig",
     "get_symbol_cache",
     "initialize_symbol_cache",
+    # Crypto Validator
+    "CryptoSymbolValidator",
+    "CryptoSearchResult",
+    "get_crypto_validator",
     # Asset Resolver
     "AssetResolver",
     "ResolvedAsset",
+    "ExtractedEntity",
     "get_asset_resolver",
 ]

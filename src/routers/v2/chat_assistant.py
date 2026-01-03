@@ -118,6 +118,36 @@ def _get_classifier() -> UnifiedClassifier:
 
 # --- Request/Response Schemas ---
 
+class UIContextRequest(BaseModel):
+    """
+    UI Context for Soft Context Inheritance.
+
+    Frontend sends this to indicate the current UI state,
+    enabling smart disambiguation of ambiguous symbols like SOL, BTC.
+
+    Principle: "Assume smartly, Confirm explicitly, Correct gracefully"
+    """
+
+    current_tab: str = Field(
+        default="auto",
+        description="Current UI tab: 'crypto', 'stock', or 'auto'. Used to resolve ambiguous symbols.",
+        examples=["crypto", "stock", "auto"]
+    )
+    recent_symbols: List[str] = Field(
+        default_factory=list,
+        description="Recently viewed symbols on current tab (for context reinforcement)",
+        examples=[["BTC", "ETH", "SOL"]]
+    )
+    watchlist_type: Optional[str] = Field(
+        default=None,
+        description="Type of watchlist currently displayed"
+    )
+    language: str = Field(
+        default="vi",
+        description="User's preferred language for responses"
+    )
+
+
 class ChatRequest(BaseModel):
     """Chat request schema."""
 
@@ -180,6 +210,16 @@ class ChatRequest(BaseModel):
     stream_config: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom stream configuration"
+    )
+
+    # UI Context for Soft Context Inheritance
+    ui_context: Optional[UIContextRequest] = Field(
+        default=None,
+        description=(
+            "UI context from frontend for soft symbol disambiguation. "
+            "When user is on Crypto tab and asks about 'BTC', it resolves to Bitcoin (not BTC stock). "
+            "If not provided, uses query analysis and context hints."
+        )
     )
 
     class Config:
@@ -433,6 +473,7 @@ async def stream_chat(
                     enable_llm_events=data.enable_llm_events,
                     enable_compaction=data.enable_compaction,
                     enable_web_search=data.enable_web_search,
+                    ui_context=data.ui_context,
                 ):
                     pending_events.append(event)
 
@@ -490,12 +531,13 @@ async def _stream_normal_mode(
     enable_thinking: bool,
     emitter: StreamEventEmitter,
     classification,
-    stats: Dict[str, Any], 
+    stats: Dict[str, Any],
     enable_tools: bool = True,
     enable_think_tool: bool = False,
     enable_llm_events: bool = True,
     enable_compaction: bool = True,
     enable_web_search: bool = False,
+    ui_context: Optional[UIContextRequest] = None,
     ) -> AsyncGenerator[str, None]:
     """Stream Normal Mode responses as SSE events."""
 
@@ -555,6 +597,12 @@ async def _stream_normal_mode(
             summary=f"Type: {classification.query_type.value}, Symbols: {classification.symbols}, Categories: {classification.tool_categories}",
         )
 
+    # Convert UIContextRequest to UIContext for handler
+    from src.agents.classification import UIContext
+    ui_ctx = None
+    if ui_context:
+        ui_ctx = UIContext.from_dict(ui_context.model_dump())
+
     async for chunk in handler.handle_chat(
         query=query,
         session_id=session_id,
@@ -568,6 +616,7 @@ async def _stream_normal_mode(
         stream=True,
         enable_web_search=enable_web_search,
         classification=classification,
+        ui_context=ui_ctx,
     ):
         # Convert handler output to SSE events
         if isinstance(chunk, dict):
