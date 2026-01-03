@@ -4,7 +4,12 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from src.agents.tools.base import BaseTool, ToolSchema, ToolOutput
-
+from src.utils.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+    CircuitState,
+    get_circuit_breaker
+)
 
 class ToolRegistry:
     """
@@ -25,7 +30,12 @@ class ToolRegistry:
             cls._instance._initialized = False
         return cls._instance
     
-    def __init__(self):
+    def __init__(
+        self,
+        circuit_breaker_enabled: bool = True,
+        circuit_failure_threshold: int = 5,
+        circuit_reset_timeout: float = 60.0
+    ):
         if self._initialized:
             return
         
@@ -35,6 +45,21 @@ class ToolRegistry:
         self._categories: Dict[str, List[str]] = {}
         self._execution_stats: Dict[str, Dict[str, Any]] = {}
         
+        # Circuit breaker configuration
+        self._circuit_breaker_enabled = circuit_breaker_enabled
+        if circuit_breaker_enabled:
+            self._circuit_breaker = get_circuit_breaker(
+                failure_threshold=circuit_failure_threshold,
+                reset_timeout=circuit_reset_timeout
+            )
+            self.logger.info(
+                f"ToolRegistry initialized with circuit breaker "
+                f"(threshold={circuit_failure_threshold}, timeout={circuit_reset_timeout}s)"
+            )
+        else:
+            self._circuit_breaker = None
+            self.logger.info("ToolRegistry initialized (circuit breaker disabled)")
+
         self._initialized = True
         self.logger.info("ToolRegistry initialized")
     
@@ -124,9 +149,10 @@ class ToolRegistry:
     async def execute_tool(
         self,
         tool_name: str,
-        params: Dict[str, Any]
+        params: Dict[str, Any],
+        bypass_circuit_breaker: bool = False
     ) -> ToolOutput:
-        """Execute a tool by name"""
+        """Execute a tool by name with circuit breaker protection"""
         tool = self.get_tool(tool_name)
         
         if not tool:
@@ -136,9 +162,55 @@ class ToolRegistry:
                 error=f"Tool '{tool_name}' not found"
             )
         
-        result = await tool.safe_execute(**params)
-        self._update_stats(tool_name, result)
-        return result
+        # Check circuit breaker
+        if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
+            if not self._circuit_breaker.allow_request(tool_name):
+                retry_after = self._circuit_breaker.get_retry_after(tool_name)
+                self.logger.warning(
+                    f"[CIRCUIT_BREAKER] Tool '{tool_name}' is unavailable. "
+                    f"Circuit open, retry after {retry_after:.1f}s"
+                )
+                return ToolOutput(
+                    tool_name=tool_name,
+                    status="error",
+                    error=f"Tool '{tool_name}' temporarily unavailable (circuit breaker open). "
+                          f"Retry after {retry_after:.1f} seconds.",
+                    metadata={
+                        "circuit_breaker": True,
+                        "retry_after_seconds": retry_after,
+                        "circuit_state": self._circuit_breaker.get_state(tool_name).value
+                    }
+                )
+
+        try:
+            result = await tool.safe_execute(**params)
+            # Record success/failure with circuit breaker
+            if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
+                if result.status == "success" or result.status == "200":
+                    self._circuit_breaker.record_success(tool_name)
+                elif result.status == "error":
+                    # Only count as failure if it's a system/network error, not validation error
+                    error_msg = result.error or ""
+                    is_transient_error = any(
+                        keyword in error_msg.lower()
+                        for keyword in ["timeout", "connection", "network", "unavailable", "503", "502", "500"]
+                    )
+                    if is_transient_error:
+                        self._circuit_breaker.record_failure(tool_name, Exception(error_msg))
+            self._update_stats(tool_name, result)
+            return result
+        except Exception as e:
+            # Record failure for unexpected exceptions
+            if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
+                self._circuit_breaker.record_failure(tool_name, e)
+            self.logger.error(f"[TOOL_EXECUTION] Unexpected error in {tool_name}: {e}")
+            return ToolOutput(
+                tool_name=tool_name,
+                status="error",
+                error=str(e),
+                metadata={"exception_type": type(e).__name__}
+            )
+
     
     async def execute_tools_parallel(
         self,
@@ -241,6 +313,83 @@ class ToolRegistry:
                 "avg_execution_time_ms": 0
             })
 
+    # ========================================================================
+    # CIRCUIT BREAKER MANAGEMENT
+    # ========================================================================
+
+    def get_circuit_breaker_stats(self, tool_name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get circuit breaker statistics
+
+        Args:
+            tool_name: Specific tool or None for all
+
+        Returns:
+            Circuit breaker stats dictionary
+        """
+        if not self._circuit_breaker_enabled or not self._circuit_breaker:
+            return {"enabled": False}
+
+        stats = self._circuit_breaker.get_stats(tool_name)
+        return {
+            "enabled": True,
+            "failure_threshold": self._circuit_breaker.failure_threshold,
+            "reset_timeout": self._circuit_breaker.reset_timeout,
+            "circuits": stats
+        }
+
+    def get_tool_health(self) -> Dict[str, Any]:
+        """
+        Get health status of all tools based on circuit breaker state
+
+        Returns:
+            Health status for each tool
+        """
+        health = {}
+
+        for tool_name in self._tools.keys():
+            if self._circuit_breaker_enabled and self._circuit_breaker:
+                state = self._circuit_breaker.get_state(tool_name)
+                retry_after = self._circuit_breaker.get_retry_after(tool_name)
+
+                health[tool_name] = {
+                    "status": "healthy" if state == CircuitState.CLOSED else
+                            "degraded" if state == CircuitState.HALF_OPEN else
+                            "unhealthy",
+                    "circuit_state": state.value,
+                    "retry_after_seconds": retry_after if state == CircuitState.OPEN else None
+                }
+            else:
+                health[tool_name] = {
+                    "status": "healthy",
+                    "circuit_state": "disabled",
+                    "retry_after_seconds": None
+                }
+
+        return health
+
+    def reset_circuit_breaker(self, tool_name: Optional[str] = None) -> None:
+        """
+        Reset circuit breaker for tool(s)
+
+        Args:
+            tool_name: Specific tool or None for all
+        """
+        if self._circuit_breaker_enabled and self._circuit_breaker:
+            self._circuit_breaker.reset(tool_name)
+            self.logger.info(
+                f"[CIRCUIT_BREAKER] Reset circuit for: {tool_name or 'all tools'}"
+            )
+
+    def force_open_circuit(self, tool_name: str) -> None:
+        """Force open circuit for a tool (for maintenance)"""
+        if self._circuit_breaker_enabled and self._circuit_breaker:
+            self._circuit_breaker.force_open(tool_name)
+
+    def force_close_circuit(self, tool_name: str) -> None:
+        """Force close circuit for a tool"""
+        if self._circuit_breaker_enabled and self._circuit_breaker:
+            self._circuit_breaker.force_close(tool_name)
 
 # ============================================================================
 # GLOBAL INSTANCE

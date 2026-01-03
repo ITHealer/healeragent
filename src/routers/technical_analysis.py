@@ -22,6 +22,7 @@ from src.providers.provider_factory import ModelProviderFactory
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.routers.llm_chat import analyze_conversation_importance
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ProviderType
@@ -167,25 +168,25 @@ async def technical_analysis_chat(
         context = ""
         memory_stats = {}
         document_references = [] 
-        if chat_request.session_id and user_id:
-            try:
-                context, memory_stats, document_references = await memory_manager.get_relevant_context( 
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                    llm_provider=llm_provider,
-                    max_short_term=5,  # Top 5 relevant recent conversations
-                    max_long_term=3    # Top 3 important past conversations
-                )
-                logger.info(f"Retrieved memory context for technical analysis: {memory_stats}")
-                if document_references:
-                    logger.info(f"Found {len(document_references)} document references")
-            except Exception as e:
-                logger.error(f"Error getting memory context: {e}")
+        # if chat_request.session_id and user_id:
+        #     try:
+        #         context, memory_stats, document_references = await memory_manager.get_relevant_context( 
+        #             session_id=chat_request.session_id,
+        #             user_id=user_id,
+        #             current_query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+        #             llm_provider=llm_provider,
+        #             max_short_term=5,  # Top 5 relevant recent conversations
+        #             max_long_term=3    # Top 3 important past conversations
+        #         )
+        #         logger.info(f"Retrieved memory context for technical analysis: {memory_stats}")
+        #         if document_references:
+        #             logger.info(f"Found {len(document_references)} document references")
+        #     except Exception as e:
+        #         logger.error(f"Error getting memory context: {e}")
         
         enhanced_history = ""
-        if context:
-            enhanced_history = f"{context}\n\n"
+        # if context:
+        #     enhanced_history = f"{context}\n\n"
         if chat_history:
             enhanced_history += f"[Conversation History]\n{chat_history}"
         
@@ -203,39 +204,39 @@ async def technical_analysis_chat(
         # 3. Analyze conversation importance
         importance_score = 0.5  # Default score
         
-        if chat_request.session_id and user_id:
-            try:
-                analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+        # if chat_request.session_id and user_id:
+        #     try:
+        #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
                 
-                importance_score = await analyze_conversation_importance(
-                    query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                    response=result["llm_interpretation"],
-                    llm_provider=llm_provider,
-                    model_name=analysis_model,
-                    provider_type=chat_request.provider_type
-                )
+        #         importance_score = await analyze_conversation_importance(
+        #             query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+        #             response=result["llm_interpretation"],
+        #             llm_provider=llm_provider,
+        #             model_name=analysis_model,
+        #             provider_type=chat_request.provider_type
+        #         )
                 
-                logger.info(f"Technical analysis importance score: {importance_score}")
+        #         logger.info(f"Technical analysis importance score: {importance_score}")
                 
-            except Exception as e:
-                logger.error(f"Error analyzing conversation importance: {e}")
+        #     except Exception as e:
+        #         logger.error(f"Error analyzing conversation importance: {e}")
         
         # 4. Store conversation in memory system
         if chat_request.session_id and user_id:
             try:
                 # Store in memory system
-                await memory_manager.store_conversation_turn(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                    response=result["llm_interpretation"],
-                    metadata={
-                        "type": "technical_analysis",
-                        "symbol": chat_request.symbol,
-                        "indicators": result.get("technical_data", {})
-                    },
-                    importance_score=importance_score
-                )
+                # await memory_manager.store_conversation_turn(
+                #     session_id=chat_request.session_id,
+                #     user_id=user_id,
+                #     query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+                #     response=result["llm_interpretation"],
+                #     metadata={
+                #         "type": "technical_analysis",
+                #         "symbol": chat_request.symbol,
+                #         "indicators": result.get("technical_data", {})
+                #     },
+                #     importance_score=importance_score
+                # )
 
                 question_content = chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}"
                 question_id = chat_service.save_user_question(
@@ -379,35 +380,35 @@ async def technical_analysis_chat_stream(
             complete_response = ''.join(full_response)
             response_time = (datetime.now() - start_time).total_seconds()
             
-            # 8. Analyze importance
-            importance_score = 0.5
-            if chat_request.session_id and user_id and complete_response:
-                try:
-                    analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                        response=complete_response,
-                        llm_provider=llm_provider,
-                        model_name=analysis_model,
-                        provider_type=chat_request.provider_type
-                    )
-                except Exception as e:
-                    logger.error(f"Error analyzing importance: {e}")
+            # # 8. Analyze importance
+            # importance_score = 0.5
+            # if chat_request.session_id and user_id and complete_response:
+            #     try:
+            #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+            #         importance_score = await analyze_conversation_importance(
+            #             query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+            #             response=complete_response,
+            #             llm_provider=llm_provider,
+            #             model_name=analysis_model,
+            #             provider_type=chat_request.provider_type
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing importance: {e}")
             
             # 9. Store in memory
             if chat_request.session_id and user_id and complete_response:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                        response=complete_response,
-                        metadata={
-                            "type": "technical_analysis",
-                            "symbol": chat_request.symbol
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+                    #     response=complete_response,
+                    #     metadata={
+                    #         "type": "technical_analysis",
+                    #         "symbol": chat_request.symbol
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -418,10 +419,10 @@ async def technical_analysis_chat_stream(
                             response_time=response_time
                         )
                     
-                    trigger_summary_update_nowait(
-                        session_id=chat_request.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             

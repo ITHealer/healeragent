@@ -102,7 +102,7 @@ async def app_lifespan(app: FastAPI):
     """Application lifecycle manager"""
 
     # Track resources for cleanup
-    consumer_process: Optional[subprocess.Popen] = None
+    # consumer_process: Optional[subprocess.Popen] = None
     scheduler = None
 
     # ----------------------------------------------------
@@ -131,14 +131,31 @@ async def app_lifespan(app: FastAPI):
         logger.warning("Application will continue with legacy tools only")
     
     # -------------------------------------------------------------------------
+    # 1.5 Initialize Symbol Cache (for asset disambiguation)
+    # -------------------------------------------------------------------------
+    try:
+        from src.services.asset import initialize_symbol_cache
+        symbol_cache = await initialize_symbol_cache()
+        stats = symbol_cache.get_statistics()
+        logger.info(
+            f"[SYMBOL CACHE] Initialized: "
+            f"crypto={stats['crypto_count']}, "
+            f"stock={stats['stock_count']}, "
+            f"ambiguous={stats['ambiguous_count']}"
+        )
+    except Exception as e:
+        logger.warning(f"[SYMBOL CACHE] Failed to initialize: {e}")
+        logger.warning("Symbol disambiguation will use defaults")
+        
+    # -------------------------------------------------------------------------
     # 2. Start Consumer Manager Process
     # -------------------------------------------------------------------------
-    logger.info("Starting consumer manager process...")
-    try:
-        consumer_process = subprocess.Popen([sys.executable, "-m", "src.run_consumers"])
-        logger.info(f"Consumer manager process started with PID: {consumer_process.pid}")
-    except Exception as e:
-        logger.error(f"Failed to start consumer manager process: {e}", exc_info=True)
+    # logger.info("Starting consumer manager process...")
+    # try:
+    #     consumer_process = subprocess.Popen([sys.executable, "-m", "src.run_consumers"])
+    #     logger.info(f"Consumer manager process started with PID: {consumer_process.pid}")
+    # except Exception as e:
+    #     logger.error(f"Failed to start consumer manager process: {e}", exc_info=True)
 
     logger.info(CODEMIND_LLM)
     logger.info('event=app-startup')
@@ -252,16 +269,24 @@ async def app_lifespan(app: FastAPI):
             logger.warning(f"Scheduler shutdown error: {e}")
 
     # 2. Terminate Consumer Process
-    if consumer_process:
-        logger.info(f"Terminating consumer manager process with PID: {consumer_process.pid}...")
-        consumer_process.terminate()
-        try:
-            # Wait for the process to terminate
-            consumer_process.wait(timeout=5)
-            logger.info("Consumer manager process terminated successfully.")
-        except subprocess.TimeoutExpired:
-            logger.warning("Consumer manager process did not terminate in time. Killing it.")
-            consumer_process.kill()
+    # if consumer_process:
+    #     logger.info(f"Terminating consumer manager process with PID: {consumer_process.pid}...")
+    #     consumer_process.terminate()
+    #     try:
+    #         # Wait for the process to terminate
+    #         consumer_process.wait(timeout=5)
+    #         logger.info("Consumer manager process terminated successfully.")
+    #     except subprocess.TimeoutExpired:
+    #         logger.warning("Consumer manager process did not terminate in time. Killing it.")
+    #         consumer_process.kill()
+
+    # 3. Close Redis LLM client
+    logger.info("Closing Redis LLM client...")
+    try:
+        from src.helpers.redis_cache import close_redis_llm_client
+        await close_redis_llm_client()
+    except Exception as e:
+        logger.warning(f"Redis LLM client close error: {e}")
 
     # 3. Close Redis LLM client (singleton)
     logger.info("Closing Redis LLM client...")

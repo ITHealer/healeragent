@@ -650,8 +650,43 @@ Respond with ONLY valid JSON:
 
 
 # ============================================================================
-# Factory Function
+# Factory Function & Singleton
 # ============================================================================
+
+# Singleton instance
+_consolidation_agent_instance: Optional[MemoryConsolidationAgent] = None
+
+
+def get_consolidation_agent(
+    model_name: str = "gpt-4.1-nano",
+    provider_type: str = ProviderType.OPENAI
+) -> MemoryConsolidationAgent:
+    """
+    Get singleton MemoryConsolidationAgent instance
+
+    Args:
+        model_name: LLM model
+        provider_type: LLM provider
+
+    Returns:
+        MemoryConsolidationAgent singleton instance
+    """
+    global _consolidation_agent_instance
+
+    if _consolidation_agent_instance is None:
+        _consolidation_agent_instance = MemoryConsolidationAgent(
+            model_name=model_name,
+            provider_type=provider_type
+        )
+
+    return _consolidation_agent_instance
+
+
+def reset_consolidation_agent():
+    """Reset singleton instance (for testing)"""
+    global _consolidation_agent_instance
+    _consolidation_agent_instance = None
+
 
 def create_consolidation_agent(
     model_name: str = "gpt-4.1-nano",
@@ -659,11 +694,12 @@ def create_consolidation_agent(
 ) -> MemoryConsolidationAgent:
     """
     Create a configured MemoryConsolidationAgent instance
-    
+    (Non-singleton factory - for special cases)
+
     Args:
         model_name: LLM model
         provider_type: LLM provider
-        
+
     Returns:
         Configured agent instance
     """

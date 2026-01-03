@@ -24,6 +24,7 @@ from src.utils.config import settings
 from src.models.equity import APIResponse, APIResponseData
 from src.services.background_tasks import trigger_summary_update_nowait
 
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.helpers.chat_management_helper import ChatService
@@ -119,7 +120,7 @@ class MultiAgentService:
         # Initialize existing components
         self.chat_service = ChatService()
         
-        # Initialize memory manager with singleton
+        # Initialize memory manager with default model
         self.memory_manager = get_memory_manager()
         
         # Initialize LLM provider for analysis
@@ -399,40 +400,40 @@ class MultiAgentService:
             )
             
             # 10. Analyze conversation importance (if session exists)
-            importance_score = 0.5
-            if session_id and user_id:
-                try:
-                    analysis_model = "gpt-4.1-nano" if provider.lower() == "openai" else model_name
+            # importance_score = 0.5
+            # if session_id and user_id:
+            #     try:
+            #         analysis_model = "gpt-4.1-nano" if provider.lower() == "openai" else model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=f"Analyze {', '.join(tickers)} using agents: {', '.join(valid_agents)}",
-                        response=response_text,
-                        llm_provider=self.llm_provider,
-                        model_name=analysis_model,
-                        provider_type=provider
-                    )
+            #         importance_score = await analyze_conversation_importance(
+            #             query=f"Analyze {', '.join(tickers)} using agents: {', '.join(valid_agents)}",
+            #             response=response_text,
+            #             llm_provider=self.llm_provider,
+            #             model_name=analysis_model,
+            #             provider_type=provider
+            #         )
                     
-                    logger.info(f"LLM analysis - Importance: {importance_score}")
-                except Exception as e:
-                    logger.error(f"Error analyzing conversation: {e}")
+            #         logger.info(f"LLM analysis - Importance: {importance_score}")
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing conversation: {e}")
             
             # 11. Store conversation in memory
             if session_id and user_id:
                 try:
-                    await self.memory_manager.store_conversation_turn(
-                        session_id=session_id,
-                        user_id=user_id,
-                        query=f"Analyze {', '.join(tickers)} using agents: {', '.join(valid_agents)}",
-                        response=response_text,
-                        metadata={
-                            "tickers": tickers,
-                            "agents": valid_agents,
-                            "model": model_name,
-                            "provider": provider
-                        },
-                        importance_score=importance_score,
-                        base_collection=collection_name
-                    )
+                    # await self.memory_manager.store_conversation_turn(
+                    #     session_id=session_id,
+                    #     user_id=user_id,
+                    #     query=f"Analyze {', '.join(tickers)} using agents: {', '.join(valid_agents)}",
+                    #     response=response_text,
+                    #     metadata={
+                    #         "tickers": tickers,
+                    #         "agents": valid_agents,
+                    #         "model": model_name,
+                    #         "provider": provider
+                    #     },
+                    #     importance_score=importance_score,
+                    #     base_collection=collection_name
+                    # )
                     
                     # Save assistant response
                     if question_id:
@@ -445,7 +446,7 @@ class MultiAgentService:
                         )
                     
                     # Trigger summary update
-                    trigger_summary_update_nowait(session_id=session_id, user_id=user_id)
+                    # trigger_summary_update_nowait(session_id=session_id, user_id=user_id)
                     
                 except Exception as save_error:
                     logger.error(f"Error saving to memory: {str(save_error)}")

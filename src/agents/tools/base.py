@@ -19,6 +19,10 @@ class ToolParameter(BaseModel):
     min_value: Optional[float] = None
     max_value: Optional[float] = None
     examples: List[Any] = Field(default_factory=list)
+    # For array types: define the type of items in the array
+    items_type: Optional[str] = None  # "string", "number", "object", etc.
+    # Alternative: allowed_values for enum-like arrays
+    allowed_values: Optional[List[str]] = None
 
 class ToolOutput(BaseModel):
     """Standardized tool output"""
@@ -83,22 +87,34 @@ class ToolSchema(BaseModel):
     
     def to_json_schema(self) -> Dict[str, Any]:
         """
-        Convert to OpenAI function calling format
-        
-        This is used by Planning Agent để hiểu tools
+        Convert to OpenAI function calling format (FULL schema)
+
+        Use this when executing tools - includes all parameters for accurate input.
+        Token cost: ~200-400 tokens per tool
         """
         parameters_obj = {
             "type": "object",
             "properties": {},
             "required": []
         }
-        
+
         for param in self.parameters:
             prop = {
                 "type": param.type,
                 "description": param.description
             }
-            
+
+            # Handle array types - OpenAI requires 'items' property
+            if param.type == "array":
+                items_type = param.items_type or "string"  # Default to string
+                if param.allowed_values:
+                    prop["items"] = {
+                        "type": items_type,
+                        "enum": param.allowed_values
+                    }
+                else:
+                    prop["items"] = {"type": items_type}
+
             if param.enum:
                 prop["enum"] = param.enum
             if param.pattern:
@@ -111,12 +127,12 @@ class ToolSchema(BaseModel):
                 prop["minimum"] = param.min_value
             if param.max_value is not None:
                 prop["maximum"] = param.max_value
-            
+
             parameters_obj["properties"][param.name] = prop
-            
+
             if param.required:
                 parameters_obj["required"].append(param.name)
-        
+
         return {
             "name": self.name,
             "description": self.description,
@@ -128,6 +144,87 @@ class ToolSchema(BaseModel):
                 "usage_hints": self.usage_hints,
                 "requires_symbol": self.requires_symbol
             }
+        }
+
+    def to_summary(self) -> Dict[str, Any]:
+        """
+        Convert to lightweight summary format for tool SELECTION.
+
+        Use this when LLM needs to choose which tools to call.
+        Token cost: ~50-100 tokens per tool
+
+        Returns:
+            Lightweight dict with essential info only
+        """
+        # Truncate description to first sentence or 100 chars
+        short_desc = self.description
+        if ". " in short_desc:
+            short_desc = short_desc.split(". ")[0] + "."
+        if len(short_desc) > 100:
+            short_desc = short_desc[:97] + "..."
+
+        return {
+            "name": self.name,
+            "category": self.category,
+            "description": short_desc,
+            "requires_symbol": self.requires_symbol,
+            # Include parameter names only (not full schema)
+            "params": [p.name for p in self.parameters if p.required],
+        }
+
+    def to_openai_function(self) -> Dict[str, Any]:
+        """
+        Convert to OpenAI function calling format for agent loop.
+
+        This is the format used by OpenAI's chat completions API
+        with tool_choice parameter.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self._build_parameters_schema(),
+            }
+        }
+
+    def _build_parameters_schema(self) -> Dict[str, Any]:
+        """Build JSON schema for parameters (OpenAI function calling format)"""
+        properties = {}
+        required = []
+
+        for param in self.parameters:
+            prop = {
+                "type": param.type,
+                "description": param.description,
+            }
+
+            # Handle array types - OpenAI requires 'items' property
+            if param.type == "array":
+                items_type = param.items_type or "string"  # Default to string
+                if param.allowed_values:
+                    # Array of enum values
+                    prop["items"] = {
+                        "type": items_type,
+                        "enum": param.allowed_values
+                    }
+                else:
+                    prop["items"] = {"type": items_type}
+
+            if param.enum:
+                prop["enum"] = param.enum
+            if param.examples:
+                prop["examples"] = param.examples[:2]  # Limit examples
+
+            properties[param.name] = prop
+
+            if param.required:
+                required.append(param.name)
+
+        return {
+            "type": "object",
+            "properties": properties,
+            "required": required,
         }
     
     def get_required_fields(self) -> List[str]:

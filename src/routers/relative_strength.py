@@ -13,6 +13,7 @@ from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.helpers.chat_management_helper import ChatService
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.routers.llm_chat import analyze_conversation_importance
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.helpers.language_detector import language_detector, DetectionMethod
@@ -83,18 +84,18 @@ async def relative_strength_chat(
         context = ""
         memory_stats = {}
         document_references = []
-        if chat_request.session_id and user_id:
-            try:
-                context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    current_query=chat_request.question_input,
-                    llm_provider=llm_provider,
-                    max_short_term=5,
-                    max_long_term=3
-                )
-            except Exception as e:
-                logger.error(f"Error getting memory context: {e}")
+        # if chat_request.session_id and user_id:
+        #     try:
+        #         context, memory_stats, document_references = await memory_manager.get_relevant_context(
+        #             session_id=chat_request.session_id,
+        #             user_id=user_id,
+        #             current_query=chat_request.question_input,
+        #             llm_provider=llm_provider,
+        #             max_short_term=5,
+        #             max_long_term=3
+        #         )
+        #     except Exception as e:
+        #         logger.error(f"Error getting memory context: {e}")
 
         # Get RS data
         rs_handler = RelativeStrengthHandler()
@@ -122,32 +123,32 @@ async def relative_strength_chat(
             chat_history=context 
         )
         
-        # 3. Analyze importance
-        importance_score = 0.5
-        if chat_request.session_id and user_id:
-            try:
-                analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                importance_score = await analyze_conversation_importance(
-                    query=chat_request.question_input,
-                    response=llm_interpretation, 
-                    llm_provider=llm_provider,
-                    model_name=analysis_model,
-                    provider_type=chat_request.provider_type
-                )
-            except Exception as e:
-                logger.error(f"Error analyzing importance: {e}")
+        # # 3. Analyze importance
+        # importance_score = 0.5
+        # if chat_request.session_id and user_id:
+        #     try:
+        #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+        #         importance_score = await analyze_conversation_importance(
+        #             query=chat_request.question_input,
+        #             response=llm_interpretation, 
+        #             llm_provider=llm_provider,
+        #             model_name=analysis_model,
+        #             provider_type=chat_request.provider_type
+        #         )
+        #     except Exception as e:
+        #         logger.error(f"Error analyzing importance: {e}")
         
         # 4. Store in memory
         if chat_request.session_id and user_id:
             try:
-                await memory_manager.store_conversation_turn(
-                    session_id=chat_request.session_id,
-                    user_id=user_id,
-                    query=chat_request.question_input,
-                    response=llm_interpretation,
-                    metadata={"type": "relative_strength"},
-                    importance_score=importance_score
-                )
+                # await memory_manager.store_conversation_turn(
+                #     session_id=chat_request.session_id,
+                #     user_id=user_id,
+                #     query=chat_request.question_input,
+                #     response=llm_interpretation,
+                #     metadata={"type": "relative_strength"},
+                #     importance_score=importance_score
+                # )
                 
                 question_content = chat_request.question_input or f"Analyze relative strength of {chat_request.symbol} vs {benchmark}"
                 question_id = chat_service.save_user_question(
@@ -224,18 +225,18 @@ async def relative_strength_chat_stream(
             context = ""
             memory_stats = {}
             document_references = []
-            if chat_request.session_id and user_id:
-                try:
-                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=chat_request.question_input,
-                        llm_provider=llm_provider,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory context: {e}")
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         context, memory_stats, document_references = await memory_manager.get_relevant_context(
+            #             session_id=chat_request.session_id,
+            #             user_id=user_id,
+            #             current_query=chat_request.question_input,
+            #             llm_provider=llm_provider,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory context: {e}")
             
             enhanced_history = ""
             if context:
@@ -282,32 +283,32 @@ async def relative_strength_chat_stream(
             # Save complete response
             complete_response = ''.join(full_response)
             
-            # 3. Analyze importance
-            importance_score = 0.5
-            if chat_request.session_id and user_id:
-                try:
-                    analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input,
-                        response=complete_response,  
-                        llm_provider=llm_provider,
-                        model_name=analysis_model,
-                        provider_type=chat_request.provider_type
-                    )
-                except Exception as e:
-                    logger.error(f"Error analyzing importance: {e}")
+            # # 3. Analyze importance
+            # importance_score = 0.5
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+            #         importance_score = await analyze_conversation_importance(
+            #             query=chat_request.question_input,
+            #             response=complete_response,  
+            #             llm_provider=llm_provider,
+            #             model_name=analysis_model,
+            #             provider_type=chat_request.provider_type
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing importance: {e}")
             
             # 4. Store in memory
             if chat_request.session_id and user_id and complete_response:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input,
-                        response=complete_response,
-                        metadata={"type": "relative_strength"},
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input,
+                    #     response=complete_response,
+                    #     metadata={"type": "relative_strength"},
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -318,7 +319,7 @@ async def relative_strength_chat_stream(
                             response_time=0.1
                         )
                         
-                    trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
+                    # trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
     
                 except Exception as e:
                     logger.error(f"Error saving: {e}")

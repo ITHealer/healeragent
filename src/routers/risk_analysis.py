@@ -11,6 +11,7 @@ from src.helpers.risk_analysis_llm_helper import RiskAnalysisLLMHelper
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_chat_helper import (
     stream_with_heartbeat,
@@ -276,18 +277,18 @@ async def risk_analysis_chat_stream(
             # Get memory context
             context = ""
             memory_stats = {}
-            if chat_request.session_id and user_id:
-                try:
-                    context, memory_stats, _ = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
-                        llm_provider=llm_provider,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory: {e}")
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         context, memory_stats, _ = await memory_manager.get_relevant_context(
+            #             session_id=chat_request.session_id,
+            #             user_id=user_id,
+            #             current_query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
+            #             llm_provider=llm_provider,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory: {e}")
             
             # Build enhanced history
             enhanced_history = ""
@@ -356,38 +357,38 @@ async def risk_analysis_chat_stream(
             complete_response = ''.join(full_response)
             
             # 6. Analyze importance
-            importance_score = 0.7
-            if chat_request.session_id and user_id and complete_response:
-                try:
-                    analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
-                        response=complete_response,
-                        llm_provider=llm_provider,
-                        model_name=analysis_model,
-                        provider_type=chat_request.provider_type
-                    )
+            # importance_score = 0.7
+            # if chat_request.session_id and user_id and complete_response:
+            #     try:
+            #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+            #         importance_score = await analyze_conversation_importance(
+            #             query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
+            #             response=complete_response,
+            #             llm_provider=llm_provider,
+            #             model_name=analysis_model,
+            #             provider_type=chat_request.provider_type
+            #         )
                     
-                    if stop_levels_result and stop_levels_result.get("risk_level") in ["high", "extreme"]:
-                        importance_score = min(1.0, importance_score + 0.2)
-                except Exception as e:
-                    logger.error(f"Error analyzing importance: {e}")
+            #         if stop_levels_result and stop_levels_result.get("risk_level") in ["high", "extreme"]:
+            #             importance_score = min(1.0, importance_score + 0.2)
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing importance: {e}")
             
             # 7. Store in memory
             if chat_request.session_id and user_id and complete_response:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
-                        response=complete_response,
-                        metadata={
-                            "type": "risk_analysis",
-                            "symbol": chat_request.symbol,
-                            "risk_level": stop_levels_result.get("risk_level") if stop_levels_result else None
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Analyze risk management for {chat_request.symbol}",
+                    #     response=complete_response,
+                    #     metadata={
+                    #         "type": "risk_analysis",
+                    #         "symbol": chat_request.symbol,
+                    #         "risk_level": stop_levels_result.get("risk_level") if stop_levels_result else None
+                    #     },
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(

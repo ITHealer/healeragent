@@ -358,29 +358,33 @@ class GetCryptoPriceTool(BaseTool, LoggerMixin):
         """Build human-readable formatted context for LLM"""
         symbol = data.get('symbol', 'Unknown')
         name = data.get('name', symbol)
-        price = data.get('price', 0)
-        change = data.get('change', 0)
-        change_pct = data.get('changes_percentage', 0)
-        volume = data.get('volume', 0)
-        market_cap = data.get('market_cap', 0)
-        
+        price = data.get('price') or 0
+        change = data.get('change') or 0
+        change_pct = data.get('changes_percentage') or 0
+        volume = data.get('volume') or 0
+        market_cap = data.get('market_cap') or 0
+        day_low = data.get('day_low') or 0
+        day_high = data.get('day_high') or 0
+        year_low = data.get('year_low') or 0
+        year_high = data.get('year_high') or 0
+
         # Emoji for direction
         emoji = "📈" if change >= 0 else "📉"
         sign = "+" if change >= 0 else ""
-        
+
         lines = [
             f"💰 CRYPTO PRICE - {name} ({symbol}):",
             f"",
             f"💵 Price: ${price:,.2f}",
             f"{emoji} Change: {sign}{change:,.2f} ({sign}{change_pct:.2f}%)",
             f"",
-            f"📊 Day Range: ${data.get('day_low', 0):,.2f} - ${data.get('day_high', 0):,.2f}",
-            f"📅 52-Week: ${data.get('year_low', 0):,.2f} - ${data.get('year_high', 0):,.2f}",
+            f"📊 Day Range: ${day_low:,.2f} - ${day_high:,.2f}",
+            f"📅 52-Week: ${year_low:,.2f} - ${year_high:,.2f}",
             f"",
             f"📦 Volume: {volume:,.0f}",
             f"💎 Market Cap: ${market_cap:,.0f}"
         ]
-        
+
         return '\n'.join(lines)
 
 

@@ -1,0 +1,126 @@
+services:
+  stock_qdrant_dev:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    container_name: stock_qdrant_dev
+    networks:
+      - public-network
+    ports:
+      - 6336:6336
+    expose:
+      - 6336
+    environment:
+      - QDRANT__SERVICE__HOST=0.0.0.0
+    volumes:
+      - stock_qdrant_data_dev:/qdrant/storage
+      - ./config.yaml:/qdrant/config/production.yaml
+
+  stock_pg_dev:
+    image: postgres:17
+    container_name: stock_pg_dev
+    networks:
+      - public-network
+    restart: always
+    volumes:
+      - stock_pg_data_dev:/var/lib/postgresql/data/
+    ports:
+      - 5051:5432
+    environment:
+      - POSTGRES_DB=stock_db_dev
+      - POSTGRES_USER=stock_pg_dev
+      - POSTGRES_PASSWORD=stock_pg_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U stock_pg_dev -d stock_db_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  redis_stock_dev:
+    image: redis:7-alpine
+    container_name: redis_stock_dev
+    command: ["redis-server", "--port", "6380"]
+    ports:
+      - "6380:6380"
+    volumes:
+      - redis_data_dev:/data
+    restart: always
+    networks:
+      - public-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6380", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend_dev:
+    build:
+      dockerfile: Dockerfile
+    container_name: stockbot_dev_api
+    networks:
+      - public-network
+    restart: on-failure
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: bash -c "alembic upgrade head && python3 -m src.main"
+    ports:
+      - 8051:8051
+    volumes:
+      - ./alembic:/app/alembic
+      - .:/app
+      - ./logs:/app/logs
+      - ./hf_cache:/app/cache:rw
+    depends_on:
+      stock_pg_dev:
+        condition: service_healthy
+      stock_qdrant_dev:
+        condition: service_started
+      redis_stock_dev:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - PG_HOST=stock_pg_dev
+      - FASTEMBED_CACHE_DIR=/app/hf_cache
+      - HF_HOME=/app/hf_cache
+      - SCHEDULER_MODE=standalone
+      - SCHEDULER_PROCESS=false
+
+  scheduler_worker:
+    build:
+      dockerfile: Dockerfile
+    container_name: stockbot_scheduler_worker
+    networks:
+      - public-network
+    restart: on-failure
+    command: python3 -m src.scheduler.worker
+    volumes:
+      - .:/app
+      - ./logs:/app/logs
+      - ./hf_cache:/app/cache:rw
+    depends_on:
+      stock_pg_dev:
+        condition: service_healthy
+      redis_stock_dev:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - PG_HOST=stock_pg_dev
+      - FASTEMBED_CACHE_DIR=/app/hf_cache
+      - HF_HOME=/app/hf_cache
+      - SCHEDULER_MODE=standalone
+      - SCHEDULER_PROCESS=true
+
+volumes:
+  stock_qdrant_data_dev:
+  stock_pg_data_dev:
+  redis_data_dev:
+
+networks:
+  public-network:
+    external: true
+    name: nginx_public-network

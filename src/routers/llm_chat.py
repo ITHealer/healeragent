@@ -16,6 +16,7 @@ from src.helpers.llm_chat_helper import (
 from src.helpers.token_counter import TokenCounter
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.llm_chat_handler import ChatHandler, ChatService, ConversationAnalysis
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.utils.logger.custom_logging import LoggerMixin
@@ -467,11 +468,11 @@ async def trending_analysis_stream_api(
     user_id = getattr(request.state, "user_id", None)
     
     # Ensure memory collections exist
-    if data.session_id and user_id:
-        await memory_manager.ensure_session_memory_collections(
-            session_id=data.session_id,
-            user_id=user_id
-        )
+    # if data.session_id and user_id:
+    #     await memory_manager.ensure_session_memory_collections(
+    #         session_id=data.session_id,
+    #         user_id=user_id
+    #     )
     
     question_content = data.question_input or "Trending stocks analysis"
     question_id = save_user_question(data.session_id, user_id, question_content)
@@ -509,11 +510,11 @@ async def stock_analysis_stream_api(
     user_id = getattr(request.state, "user_id", None)
     
     # Check memory collections exist
-    if data.session_id and user_id:
-        await memory_manager.ensure_session_memory_collections(
-            session_id=data.session_id,
-            user_id=user_id
-        )
+    # if data.session_id and user_id:
+    #     await memory_manager.ensure_session_memory_collections(
+    #         session_id=data.session_id,
+    #         user_id=user_id
+    #     )
 
     # Save question
     question_content = data.question_input or f"Analysis for {data.symbol}"
@@ -559,11 +560,11 @@ async def heatmap_analysis_stream_api(
     user_id = getattr(request.state, "user_id", None)
     
     # Check memory collections exist
-    if data.session_id and user_id:
-        await memory_manager.ensure_session_memory_collections(
-            session_id=data.session_id,
-            user_id=user_id
-        )
+    # if data.session_id and user_id:
+    #     await memory_manager.ensure_session_memory_collections(
+    #         session_id=data.session_id,
+    #         user_id=user_id
+    #     )
     
     question_content = data.question_input or "S&P 500 heatmap analysis"
     question_id = save_user_question(data.session_id, user_id, question_content)

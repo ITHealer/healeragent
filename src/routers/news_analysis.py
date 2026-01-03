@@ -282,19 +282,19 @@ async def get_news_with_analysis_stream(
             # Get memory context
             context = ""
             memory_stats = {}
-            if chat_request.session_id and user_id:
-                try:
-                    query_text = chat_request.question_input or f"Analyze news for {chat_request.symbol}"
-                    context, memory_stats, _ = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=query_text,
-                        llm_provider=llm_generator,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                except Exception as e:
-                    logger.error(f"Error getting memory context: {e}")
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         query_text = chat_request.question_input or f"Analyze news for {chat_request.symbol}"
+            #         context, memory_stats, _ = await memory_manager.get_relevant_context(
+            #             session_id=chat_request.session_id,
+            #             user_id=user_id,
+            #             current_query=query_text,
+            #             llm_provider=llm_generator,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory context: {e}")
             
             # Build enhanced history
             enhanced_history = ""
@@ -415,15 +415,15 @@ async def get_news_with_analysis_stream(
             importance_score = 0.5
             if chat_request.session_id and user_id and analysis_text:
                 try:
-                    analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
+                    # analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Analyze news for {symbol}",
-                        response=analysis_text,
-                        llm_provider=llm_generator,
-                        model_name=analysis_model,
-                        provider_type=provider_type
-                    )
+                    # importance_score = await analyze_conversation_importance(
+                    #     query=chat_request.question_input or f"Analyze news for {symbol}",
+                    #     response=analysis_text,
+                    #     llm_provider=llm_generator,
+                    #     model_name=analysis_model,
+                    #     provider_type=provider_type
+                    # )
                     
                     if "breaking" in analysis_text.lower() or "major" in analysis_text.lower():
                         importance_score = min(1.0, importance_score + 0.1)
@@ -442,14 +442,14 @@ async def get_news_with_analysis_stream(
                         "news_titles": [n.get("title", "") for n in sorted_news[:5]]
                     }
                     
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Analyze news for {symbol}",
-                        response=analysis_text,
-                        metadata=metadata,
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Analyze news for {symbol}",
+                    #     response=analysis_text,
+                    #     metadata=metadata,
+                    #     importance_score=importance_score
+                    # )
                     
                     if question_id:
                         chat_service.save_assistant_response(
@@ -460,10 +460,10 @@ async def get_news_with_analysis_stream(
                             response_time=0.1
                         )
 
-                    trigger_summary_update_nowait(
-                        session_id=chat_request.session_id,
-                        user_id=user_id
-                    )
+                    # trigger_summary_update_nowait(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id
+                    # )
                 except Exception as e:
                     logger.error(f"Error saving to memory: {e}")
             

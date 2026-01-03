@@ -21,6 +21,7 @@ from src.helpers.llm_chat_helper import (
     sse_error,
     sse_done
 )
+# from src.agents.memory.memory_manager import MemoryManager
 from src.agents.memory.memory_manager import get_memory_manager
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ProviderType
@@ -235,19 +236,19 @@ async def chart_analysis_chat_stream(
             context = ""
             memory_stats = {}
             document_references = []
-            if chat_request.session_id and user_id:
-                try:
-                    context, memory_stats, document_references = await memory_manager.get_relevant_context(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        current_query=chat_request.question_input or f"Analyze pattern recognition for {chat_request.symbol}",
-                        llm_provider=llm_provider,
-                        max_short_term=5,
-                        max_long_term=3
-                    )
-                    logger.info(f"Retrieved memory context for streaming: {memory_stats}")
-                except Exception as e:
-                    logger.error(f"Error getting memory: {e}")
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         context, memory_stats, document_references = await memory_manager.get_relevant_context(
+            #             session_id=chat_request.session_id,
+            #             user_id=user_id,
+            #             current_query=chat_request.question_input or f"Analyze pattern recognition for {chat_request.symbol}",
+            #             llm_provider=llm_provider,
+            #             max_short_term=5,
+            #             max_long_term=3
+            #         )
+            #         logger.info(f"Retrieved memory context for streaming: {memory_stats}")
+            #     except Exception as e:
+            #         logger.error(f"Error getting memory: {e}")
 
             enhanced_history = ""
             if context:
@@ -299,39 +300,39 @@ async def chart_analysis_chat_stream(
             llm_interpretation = ''.join(full_response)
             
             # Analyze conversation importance
-            importance_score = 0.5
+            # importance_score = 0.5
             
-            if chat_request.session_id and user_id:
-                try:
-                    analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
+            # if chat_request.session_id and user_id:
+            #     try:
+            #         analysis_model = "gpt-4.1-nano" if chat_request.provider_type == ProviderType.OPENAI else chat_request.model_name
                     
-                    importance_score = await analyze_conversation_importance(
-                        query=chat_request.question_input or f"Analyze pattern recognition for {chat_request.symbol}",
-                        response=llm_interpretation,
-                        llm_provider=llm_provider,
-                        model_name=analysis_model,
-                        provider_type=chat_request.provider_type
-                    )
+            #         importance_score = await analyze_conversation_importance(
+            #             query=chat_request.question_input or f"Analyze pattern recognition for {chat_request.symbol}",
+            #             response=llm_interpretation,
+            #             llm_provider=llm_provider,
+            #             model_name=analysis_model,
+            #             provider_type=chat_request.provider_type
+            #         )
                     
-                    logger.info(f"Pattern recognition analysis stream importance: {importance_score}")
+            #         logger.info(f"Pattern recognition analysis stream importance: {importance_score}")
                     
-                except Exception as e:
-                    logger.error(f"Error analyzing conversation: {e}")
+            #     except Exception as e:
+            #         logger.error(f"Error analyzing conversation: {e}")
             
             # Store in memory system
             if chat_request.session_id and user_id and llm_interpretation:
                 try:
-                    await memory_manager.store_conversation_turn(
-                        session_id=chat_request.session_id,
-                        user_id=user_id,
-                        query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
-                        response=llm_interpretation,
-                        metadata={
-                            "type": "pattern_recognition",
-                            "symbol": chat_request.symbol
-                        },
-                        importance_score=importance_score
-                    )
+                    # await memory_manager.store_conversation_turn(
+                    #     session_id=chat_request.session_id,
+                    #     user_id=user_id,
+                    #     query=chat_request.question_input or f"Analyze technical indicators for {chat_request.symbol}",
+                    #     response=llm_interpretation,
+                    #     metadata={
+                    #         "type": "pattern_recognition",
+                    #         "symbol": chat_request.symbol
+                    #     },
+                    #     importance_score=importance_score
+                    # )
 
                     chat_service.save_assistant_response(
                         session_id=chat_request.session_id,
@@ -341,7 +342,7 @@ async def chart_analysis_chat_stream(
                         response_time=0.1
                     )
 
-                    trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
+                    # trigger_summary_update_nowait(session_id=chat_request.session_id, user_id=user_id)
 
                 except Exception as e:
                     logger.error(f"Error saving to chat history: {str(e)}")

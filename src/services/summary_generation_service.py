@@ -20,18 +20,24 @@ class SummaryGenerationService(LoggerMixin):
     """
     
     # Use cheap, fast model for summarization
-    DEFAULT_MODEL = "gpt-4.1-nano"
     MAX_SUMMARY_TOKENS = 1000  # Target summary length
     
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(
+        self,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None
+    ):
         """
         Initialize summary generation service
         
         Args:
             model_name: LLM model to use (default: gpt-4o-mini)
         """
+        from src.utils.config import settings
+
         super().__init__()
-        self.model_name = model_name or self.DEFAULT_MODEL
+        self.model_name = model_name or settings.SUMMARY_MODEL or "gpt-4.1-nano"
+        self.provider_type = provider_type or settings.SUMMARY_PROVIDER or ProviderType.OPENAI
         self.llm_provider = LLMGeneratorProvider()
         self.token_counter = TokenCounter()
     
@@ -53,24 +59,28 @@ class SummaryGenerationService(LoggerMixin):
             Dict with summary_text and token_count
         """
         try:
+            # Use defaults if not provided
+            effective_model = model_name or self.model_name
+            effective_provider = provider_type or self.provider_type
+
             # Build conversation text
             conversation_text = self._format_messages_for_summary(messages)
-            
+
             # Create summarization prompt
             prompt = self._build_initial_summary_prompt(conversation_text)
-            
+
             # Generate summary
-            api_key = ModelProviderFactory._get_api_key(provider_type)
-            
+            api_key = ModelProviderFactory._get_api_key(effective_provider)
+
             summary_messages = [
                 {"role": "system", "content": self._get_summarization_system_prompt()},
                 {"role": "user", "content": prompt}
             ]
-            
+
             response = await self.llm_provider.generate_response(
-                model_name=model_name,
+                model_name=effective_model,
                 messages=summary_messages,
-                provider_type=provider_type,
+                provider_type=effective_provider,
                 api_key=api_key
             )
             
@@ -118,27 +128,31 @@ class SummaryGenerationService(LoggerMixin):
             Dict with summary_text and token_count
         """
         try:
+            # Use defaults if not provided
+            effective_model = model_name or self.model_name
+            effective_provider = provider_type or self.provider_type
+
             # Format new messages
             new_conversation = self._format_messages_for_summary(new_messages)
-            
+
             # Create recursive summarization prompt
             prompt = self._build_recursive_summary_prompt(
                 previous_summary,
                 new_conversation
             )
-            
+
             # Generate summary
-            api_key = ModelProviderFactory._get_api_key(provider_type)
-            
+            api_key = ModelProviderFactory._get_api_key(effective_provider)
+
             summary_messages = [
                 {"role": "system", "content": self._get_summarization_system_prompt()},
                 {"role": "user", "content": prompt}
             ]
-            
+
             response = await self.llm_provider.generate_response(
-                model_name=model_name,
+                model_name=effective_model,
                 messages=summary_messages,
-                provider_type=provider_type,
+                provider_type=effective_provider,
                 api_key=api_key
             )
             
@@ -164,7 +178,6 @@ class SummaryGenerationService(LoggerMixin):
                 'token_count': self.token_counter.count_tokens(previous_summary),
                 'error': str(e)
             }
-    
     
     def _get_summarization_system_prompt(self) -> str:
         """System prompt for summarization"""

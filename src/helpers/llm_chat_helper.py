@@ -361,11 +361,17 @@ class LLMStreamingService(LoggerMixin):
         self,
         session_id: str,
         user_id: int,
-        question_input: str
+        question_input: str,
+        timeout_seconds: float = 5.0  # Default 5 second timeout
     ) -> str:
-        """Get chat history + memory context."""
+        """
+        Get chat history + memory context with timeout protection.
+
+        This method has a timeout to prevent blocking the main request
+        if memory retrieval is slow or hangs.
+        """
         enhanced_history = ""
-        
+
         chat_history = ""
         if session_id:
             try:
@@ -374,26 +380,33 @@ class LLMStreamingService(LoggerMixin):
                 )
             except Exception as e:
                 self.logger.error(f"Error fetching chat history: {e}")
-        
+
         memory_context = ""
         if session_id and user_id:
             try:
-                memory_context, _, _ = await self.memory_manager.get_relevant_context(
-                    session_id=session_id,
-                    user_id=user_id,
-                    current_query=question_input,
-                    llm_provider=self.llm_provider,
-                    max_short_term=5,
-                    max_long_term=3
+                # Add timeout to prevent blocking if memory retrieval is slow
+                memory_context, _, _ = await asyncio.wait_for(
+                    self.memory_manager.get_relevant_context(
+                        session_id=session_id,
+                        user_id=user_id,
+                        current_query=question_input,
+                        llm_provider=self.llm_provider,
+                        max_short_term=5,
+                        max_long_term=3
+                    ),
+                    timeout=timeout_seconds
                 )
+            except asyncio.TimeoutError:
+                self.logger.warning(f"Memory context retrieval timed out after {timeout_seconds}s")
+                # Continue without memory context rather than blocking
             except Exception as e:
                 self.logger.error(f"Error getting memory context: {e}")
-        
+
         if memory_context:
             enhanced_history = f"[Memory Context]\n{memory_context}\n\n"
         if chat_history:
             enhanced_history += f"[Conversation History]\n{chat_history}"
-        
+
         return enhanced_history
     
     # =========================================================================
@@ -1078,22 +1091,33 @@ class LLMStreamingService(LoggerMixin):
         model_name: str,
         provider_type: str,
         response_time: float,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
+        skip_importance_analysis: bool = True  # Skip by default to avoid blocking
     ) -> None:
         """Store conversation to memory and chat history."""
         try:
             importance_score = 0.5
-            try:
-                analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
-                importance_score = await analyze_conversation_importance(
-                    query=query,
-                    response=response,
-                    llm_provider=self.llm_provider,
-                    model_name=analysis_model,
-                    provider_type=provider_type
-                )
-            except Exception as e:
-                self.logger.warning(f"Importance analysis failed: {e}")
+
+            # Skip importance analysis by default to avoid extra LLM call that blocks
+            # Can be enabled for important conversations
+            if not skip_importance_analysis:
+                try:
+                    analysis_model = "gpt-4.1-nano" if provider_type == ProviderType.OPENAI else model_name
+                    # Add timeout to prevent blocking
+                    importance_score = await asyncio.wait_for(
+                        analyze_conversation_importance(
+                            query=query,
+                            response=response,
+                            llm_provider=self.llm_provider,
+                            model_name=analysis_model,
+                            provider_type=provider_type
+                        ),
+                        timeout=5.0  # 5 second timeout
+                    )
+                except asyncio.TimeoutError:
+                    self.logger.warning("Importance analysis timed out, using default score")
+                except Exception as e:
+                    self.logger.warning(f"Importance analysis failed: {e}")
             
             store_metadata = metadata or {}
             store_metadata.update({
