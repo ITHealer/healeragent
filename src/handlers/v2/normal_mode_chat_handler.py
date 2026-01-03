@@ -300,8 +300,7 @@ class NormalModeChatHandler(LoggerMixin):
                 ambiguous_symbols = await self._check_symbol_ambiguity(
                     flow_id=flow_id,
                     symbols=classification.symbols,
-                    query=query,
-                    context_data=context_data,
+                    language=classification.response_language,
                 )
 
                 if ambiguous_symbols:
@@ -795,88 +794,28 @@ class NormalModeChatHandler(LoggerMixin):
         self,
         flow_id: str,
         symbols: List[str],
-        query: str,
-        context_data: Dict[str, Any],
+        language: str = "vi",
     ) -> List[Dict[str, Any]]:
         """
         Check if any symbols are ambiguous (exist in both crypto and stock).
 
+        Simple O(1) check - no LLM, no context resolution.
+        Just check cache and return options.
+
         Args:
             flow_id: Flow identifier for logging
             symbols: List of symbols from classification
-            query: User query for context-based resolution
-            context_data: Context data including chat history
+            language: Response language (vi/en)
 
         Returns:
             List of disambiguation data for ambiguous symbols (empty if none)
         """
         try:
-            symbol_cache = get_symbol_cache()
-            asset_resolver = get_asset_resolver()
-
-            ambiguous_results = []
-
-            for symbol in symbols:
-                if symbol_cache.is_ambiguous(symbol):
-                    # Try to resolve using context
-                    chat_history = context_data.get("chat_history", [])
-
-                    resolved, _ = await asset_resolver.resolve(
-                        query=query,
-                        conversation_context=chat_history,
-                        skip_confirmation=False,
-                        use_llm=False,  # Fast check without LLM
-                    )
-
-                    # Check if this symbol needs confirmation
-                    for asset in resolved:
-                        if asset.symbol == symbol and asset.needs_confirmation:
-                            # Get disambiguation options
-                            options = asset_resolver.get_disambiguation_options(symbol)
-
-                            ambiguous_results.append({
-                                "symbol": symbol,
-                                "options": options,
-                                "message": asset.disambiguation_message or self._build_disambiguation_message(symbol, options),
-                            })
-
-                            self.logger.info(
-                                f"[{flow_id}] Symbol '{symbol}' is ambiguous: "
-                                f"{len(options)} options"
-                            )
-                            break
-
-            return ambiguous_results
-
+            resolver = get_asset_resolver()
+            return resolver.check_symbols(symbols, language)
         except Exception as e:
             self.logger.warning(f"[{flow_id}] Symbol ambiguity check failed: {e}")
             return []  # Don't block on errors
-
-    def _build_disambiguation_message(
-        self,
-        symbol: str,
-        options: List[Dict[str, Any]],
-    ) -> str:
-        """Build user-friendly disambiguation message"""
-        lines = [f"Tôi thấy '{symbol}' có thể là:"]
-
-        for i, opt in enumerate(options, 1):
-            asset_type = opt.get("asset_class", "unknown")
-            name = opt.get("name", symbol)
-            exchange = opt.get("exchange", "")
-
-            if asset_type == "crypto":
-                desc = opt.get("description", "Cryptocurrency")
-                lines.append(f"  {i}. {name} ({desc})")
-            elif asset_type == "stock":
-                exchange_info = f" - {exchange}" if exchange else ""
-                lines.append(f"  {i}. {name} (Stock{exchange_info})")
-            else:
-                lines.append(f"  {i}. {name} ({asset_type})")
-
-        lines.append("\nBạn muốn phân tích loại nào? Vui lòng trả lời với số hoặc tên loại tài sản.")
-
-        return "\n".join(lines)
 
     async def _run_normal_mode(
         self,
