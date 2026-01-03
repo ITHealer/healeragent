@@ -77,17 +77,22 @@ class ClassificationCache(LoggerMixin):
         self._local_cache: Dict[str, tuple] = {}
         self._local_max_size = 100
 
-    def _make_key(self, query: str, symbols_context: List[str]) -> str:
-        """Create cache key from query and context."""
+    def _make_key(self, query: str, symbols_context: List[str], ui_context: Optional[Dict[str, Any]] = None) -> str:
+        """Create cache key from query, context, and UI context."""
         normalized = query.lower().strip()
         context_str = ",".join(sorted(symbols_context)) if symbols_context else ""
-        key_str = f"{normalized}|{context_str}"
+        # Include UI context in cache key (active_tab affects classification)
+        ui_context_str = ""
+        if ui_context:
+            active_tab = ui_context.get("active_tab", "none")
+            ui_context_str = f"|tab:{active_tab}"
+        key_str = f"{normalized}|{context_str}{ui_context_str}"
         key_hash = hashlib.md5(key_str.encode()).hexdigest()
         return f"{CACHE_KEY_PREFIX}{key_hash}"
 
-    async def get(self, query: str, symbols_context: List[str]) -> Optional[UnifiedClassificationResult]:
+    async def get(self, query: str, symbols_context: List[str], ui_context: Optional[Dict[str, Any]] = None) -> Optional[UnifiedClassificationResult]:
         """Get cached result from Redis (with in-memory fallback)."""
-        cache_key = self._make_key(query, symbols_context)
+        cache_key = self._make_key(query, symbols_context, ui_context)
 
         # Try Redis first
         try:
@@ -126,10 +131,11 @@ class ClassificationCache(LoggerMixin):
         self,
         query: str,
         symbols_context: List[str],
-        result: UnifiedClassificationResult
+        result: UnifiedClassificationResult,
+        ui_context: Optional[Dict[str, Any]] = None
     ) -> None:
         """Cache result to Redis (with in-memory fallback)."""
-        cache_key = self._make_key(query, symbols_context)
+        cache_key = self._make_key(query, symbols_context, ui_context)
 
         # Serialize result to JSON
         result_dict = {
@@ -275,10 +281,19 @@ class UnifiedClassifier(LoggerMixin):
         # Extract symbols from working memory for cache key
         symbols_context = self._extract_symbols_from_context(context)
 
-        # Check cache first (async Redis)
+        # Check cache first (async Redis) - include ui_context in cache key
         if use_cache:
-            cached = await _classification_cache.get(context.query, symbols_context)
+            cached = await _classification_cache.get(
+                context.query, symbols_context, context.ui_context
+            )
             if cached:
+                # Still run symbol resolution on cache hit if symbols exist
+                # This ensures UI context is applied to resolve ambiguous symbols
+                if resolve_symbols and cached.symbols:
+                    cached = await self._resolve_classification_symbols(cached, context)
+                    # Apply UI context override to query type
+                    cached = self._apply_ui_context_override(cached, context)
+
                 elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 self.logger.info(
                     f"[CLASSIFIER] Cache hit: type={cached.query_type.value}, "
@@ -300,6 +315,9 @@ class UnifiedClassifier(LoggerMixin):
             # Post-processing
             classification = self._post_process(classification, context)
 
+            # Apply UI context override to query type (before symbol resolution)
+            classification = self._apply_ui_context_override(classification, context)
+
             # Symbol Resolution (Soft Context Inheritance)
             if resolve_symbols and classification.symbols:
                 classification = await self._resolve_classification_symbols(
@@ -316,10 +334,10 @@ class UnifiedClassifier(LoggerMixin):
                 f"time={elapsed_ms}ms"
             )
 
-            # Cache the result (async Redis, fire and forget style)
+            # Cache the result (async Redis, fire and forget style) - include ui_context
             if use_cache:
                 asyncio.create_task(_classification_cache.set(
-                    context.query, symbols_context, classification
+                    context.query, symbols_context, classification, context.ui_context
                 ))
 
             return classification
@@ -327,6 +345,52 @@ class UnifiedClassifier(LoggerMixin):
         except Exception as e:
             self.logger.error(f"[CLASSIFIER] Failed: {e}", exc_info=True)
             return UnifiedClassificationResult.fallback(str(e))
+
+    def _apply_ui_context_override(
+        self,
+        classification: UnifiedClassificationResult,
+        context: ClassifierContext,
+    ) -> UnifiedClassificationResult:
+        """
+        Apply UI context override to query type.
+
+        If user is on Stock tab and query is classified as crypto_specific,
+        override to stock_specific if the symbol could be a stock.
+
+        Principle: "Assume smartly" based on UI context.
+        """
+        if not context.ui_context:
+            return classification
+
+        active_tab = context.ui_context.get("active_tab", "none")
+
+        # Stock tab + crypto_specific → check if could be stock
+        if active_tab == "stock" and classification.query_type == QueryType.CRYPTO_SPECIFIC:
+            self.logger.info(
+                f"[CLASSIFIER] UI Context Override: crypto_specific → stock_specific "
+                f"(active_tab=stock, symbols={classification.symbols})"
+            )
+            classification.query_type = QueryType.STOCK_SPECIFIC
+            classification.market_type = MarketType.STOCK
+            # Update tool categories: remove crypto, add stock-related
+            if "crypto" in classification.tool_categories:
+                classification.tool_categories.remove("crypto")
+            if "price" not in classification.tool_categories:
+                classification.tool_categories.append("price")
+
+        # Crypto tab + stock_specific → check if could be crypto
+        elif active_tab == "crypto" and classification.query_type == QueryType.STOCK_SPECIFIC:
+            self.logger.info(
+                f"[CLASSIFIER] UI Context Override: stock_specific → crypto_specific "
+                f"(active_tab=crypto, symbols={classification.symbols})"
+            )
+            classification.query_type = QueryType.CRYPTO_SPECIFIC
+            classification.market_type = MarketType.CRYPTO
+            # Update tool categories: add crypto
+            if "crypto" not in classification.tool_categories:
+                classification.tool_categories.append("crypto")
+
+        return classification
 
     async def _resolve_classification_symbols(
         self,
@@ -474,13 +538,23 @@ STEP 1: Determine Query Type
 - general_knowledge: Static financial concepts that never change (what is P/E ratio?)
 - real_time_info: Current events, latest news, current leaders/positions, recent changes - anything that requires up-to-date information from the web
 
+IMPORTANT - UI Context (Soft Context Inheritance):
+If <ui_context> is provided, the Active Tab strongly indicates user intent:
+- If Active Tab is "stock": Interpret ambiguous symbols (like BTC, SOL, COMP) as STOCKS, use query_type=stock_specific
+- If Active Tab is "crypto": Interpret ambiguous symbols as CRYPTOCURRENCY, use query_type=crypto_specific
+- The Active Tab reflects which section of the app the user is currently viewing
+- Follow the principle: "Assume smartly" based on UI context
+
 STEP 2: Extract Symbols
 - Look for explicit tickers: AAPL, NVDA, BTC
 - Resolve references from Working Memory: "it", "that stock", "cổ phiếu đó"
+- Consider UI context when interpreting ambiguous symbols
 
 STEP 3: Determine Tool Categories Needed
 Categories: price, technical, fundamentals, news, market, risk, crypto, discovery, memory, web
-- Use "web" category ONLY when other categories cannot provide the needed information (e.g., recent events not in financial data)
+- If Active Tab is "stock": Use price, technical, fundamentals, news, etc. (NOT crypto)
+- If Active Tab is "crypto": Include crypto category
+- Use "web" category ONLY when other categories cannot provide the needed information
 
 STEP 4: Determine if Tools Are Required
 Tools ARE needed for:
