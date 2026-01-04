@@ -511,14 +511,20 @@ class NormalModeAgent(LoggerMixin):
                             "phase": "synthesis",
                         }
 
-                    # If assistant provided content directly, stream it
-                    if assistant_content:
-                        # Stream final response using LLM (TRUE STREAMING)
-                        async for chunk in self._stream_final_response(
-                            messages=messages,
-                            flow_id=flow_id,
-                        ):
-                            yield {"type": "content", "content": chunk}
+                    # Stream final response using LLM (TRUE STREAMING)
+                    # Note: We ALWAYS call _stream_final_response even if assistant_content
+                    # is empty, because some LLMs return empty content when not calling tools
+                    # but we still need to generate a proper response.
+                    response_generated = False
+                    async for chunk in self._stream_final_response(
+                        messages=messages,
+                        flow_id=flow_id,
+                    ):
+                        response_generated = True
+                        yield {"type": "content", "content": chunk}
+
+                    if not response_generated:
+                        self.logger.warning(f"[{flow_id}] No response generated - LLM may have failed")
 
                     yield {
                         "type": "done",
