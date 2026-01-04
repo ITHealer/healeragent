@@ -458,6 +458,7 @@ class ImageProcessor(LoggerMixin):
     """
 
     def __init__(self, max_size_bytes: int = MAX_IMAGE_SIZE_BYTES):
+        super().__init__()  # Initialize LoggerMixin to get self.logger
         self.max_size_bytes = max_size_bytes
 
     async def process(
