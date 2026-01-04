@@ -192,6 +192,7 @@ class NormalModeChatHandler(LoggerMixin):
         stream: bool = True,
         enable_web_search: bool = False,
         classification: Optional[UnifiedClassificationResult] = None,
+        images: Optional[List[Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Handle chat request with optimized Normal Mode flow.
@@ -212,6 +213,7 @@ class NormalModeChatHandler(LoggerMixin):
             enable_thinking: Enable thinking events (Manus AI style)
             enable_llm_events: Enable LLM decision events
             stream: Enable streaming
+            images: Optional list of ProcessedImage for multimodal analysis
 
         Yields:
             Dict events with types: thinking, llm_thought, turn_start,
@@ -400,6 +402,7 @@ class NormalModeChatHandler(LoggerMixin):
                     enable_thinking=enable_thinking,
                     enable_llm_events=enable_llm_events,
                     charts=charts_data,
+                    images=images,
                 ):
                     # Collect content for saving to database
                     if event.get("type") == "content":
@@ -888,6 +891,7 @@ class NormalModeChatHandler(LoggerMixin):
         enable_thinking: bool = True,
         enable_llm_events: bool = True,
         charts: Optional[List[Dict[str, Any]]] = None,
+        images: Optional[List[Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run the Normal Mode agent with TRUE STREAMING from LLM.
@@ -925,6 +929,7 @@ class NormalModeChatHandler(LoggerMixin):
                 conversation_summary=context_data.get("conversation_summary"),
                 enable_thinking=enable_thinking,
                 enable_llm_events=enable_llm_events,
+                images=images,
             ):
                 event_type = event.get("type", "")
 

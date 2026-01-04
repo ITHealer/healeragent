@@ -7,6 +7,13 @@ from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from src.utils.logger.custom_logging import LoggerMixin
+from src.utils.image import (
+    ImageProcessor,
+    ProcessedImage,
+    process_image_input,
+    ImageContent,
+    ImageSource,
+)
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.llm_chat_handler import ChatService
 from src.providers.provider_factory import ProviderType
@@ -116,7 +123,95 @@ def _get_classifier() -> UnifiedClassifier:
     return _classifier
 
 
+# --- Image Processing ---
+
+_image_processor: Optional[ImageProcessor] = None
+
+
+def _get_image_processor() -> ImageProcessor:
+    """Get or create ImageProcessor singleton."""
+    global _image_processor
+    if _image_processor is None:
+        _image_processor = ImageProcessor()
+    return _image_processor
+
+
+async def _process_images(
+    images: Optional[List["ImageInput"]],
+) -> Optional[List[ProcessedImage]]:
+    """
+    Process image inputs from request into ProcessedImages.
+
+    Args:
+        images: List of ImageInput from request
+
+    Returns:
+        List of ProcessedImage or None if no images
+    """
+    if not images:
+        return None
+
+    processor = _get_image_processor()
+    processed = []
+
+    for img_input in images:
+        try:
+            # Convert ImageInput to ImageContent
+            source = ImageSource(img_input.source) if img_input.source != "data_url" else ImageSource.BASE64
+            data = img_input.data
+
+            # Handle data URL format
+            if img_input.source == "data_url" and data.startswith("data:"):
+                parts = data.split(",", 1)
+                if len(parts) == 2:
+                    data = parts[1]  # Extract base64 part
+
+            image_content = ImageContent(
+                source=source,
+                data=data,
+                media_type=img_input.media_type,
+            )
+
+            processed_img = await processor.process(image_content)
+            processed.append(processed_img)
+
+        except Exception as e:
+            _logger.warning(f"[IMAGE] Failed to process image: {e}")
+            # Continue with other images
+
+    return processed if processed else None
+
+
 # --- Request/Response Schemas ---
+
+class ImageInput(BaseModel):
+    """
+    Image input for multimodal requests.
+
+    Supports multiple input formats:
+    - URL: Remote image URL (https://...)
+    - base64: Base64-encoded image data
+    - data_url: Data URL format (data:image/png;base64,...)
+    """
+    source: str = Field(
+        default="url",
+        description="Image source type: url, base64, or data_url",
+        examples=["url", "base64", "data_url"]
+    )
+    data: str = Field(
+        ...,
+        description="Image data: URL, base64 string, or data URL"
+    )
+    media_type: Optional[str] = Field(
+        default=None,
+        description="MIME type (image/png, image/jpeg, etc.). Auto-detected if not provided.",
+        examples=["image/png", "image/jpeg", "image/webp"]
+    )
+    alt_text: Optional[str] = Field(
+        default=None,
+        description="Alt text description for the image"
+    )
+
 
 class UIContextRequest(BaseModel):
     """UI context for Soft Context Inheritance."""
@@ -202,6 +297,11 @@ class ChatRequest(BaseModel):
     ui_context: Optional[UIContextRequest] = Field(
         default=None,
         description="UI context for symbol resolution (active tab, recent symbols)"
+    )
+    # Multimodal: Image inputs
+    images: Optional[List[ImageInput]] = Field(
+        default=None,
+        description="Optional list of images for multimodal analysis (charts, screenshots, financial reports)"
     )
 
     class Config:
@@ -353,7 +453,11 @@ async def stream_chat(
 
     emitter = StreamEventEmitter(session_id=session_id)
 
+    # Process images outside of generator to avoid async issues
+    processed_images: Optional[List[ProcessedImage]] = None
+
     async def _generate() -> AsyncGenerator[str, None]:
+        nonlocal processed_images
         """Generate SSE events."""
         start_time = datetime.now()
         mode_decision: Optional[ModeDecision] = None
@@ -367,6 +471,12 @@ async def stream_chat(
         }
 
         try:
+            # Process images if provided
+            if data.images:
+                processed_images = await _process_images(data.images)
+                if processed_images:
+                    _logger.info(f"[CHAT] Processed {len(processed_images)} images for multimodal request")
+
             # Session start
             yield emitter.emit_session_start({"mode_requested": data.mode})
 
@@ -439,6 +549,7 @@ async def stream_chat(
                     enable_think_tool=data.enable_think_tool,
                     enable_compaction=data.enable_compaction,
                     classification=classification_dict,
+                    images=processed_images,
                 ):
                     yield event
             else:
@@ -459,6 +570,7 @@ async def stream_chat(
                     enable_llm_events=data.enable_llm_events,
                     enable_compaction=data.enable_compaction,
                     enable_web_search=data.enable_web_search,
+                    images=processed_images,
                 ):
                     pending_events.append(event)
 
@@ -516,12 +628,13 @@ async def _stream_normal_mode(
     enable_thinking: bool,
     emitter: StreamEventEmitter,
     classification,
-    stats: Dict[str, Any], 
+    stats: Dict[str, Any],
     enable_tools: bool = True,
     enable_think_tool: bool = False,
     enable_llm_events: bool = True,
     enable_compaction: bool = True,
     enable_web_search: bool = False,
+    images: Optional[List[ProcessedImage]] = None,
     ) -> AsyncGenerator[str, None]:
     """Stream Normal Mode responses as SSE events."""
 
@@ -594,6 +707,7 @@ async def _stream_normal_mode(
         stream=True,
         enable_web_search=enable_web_search,
         classification=classification,
+        images=images,
     ):
         # Convert handler output to SSE events
         if isinstance(chunk, dict):
@@ -718,6 +832,7 @@ async def _stream_deep_research(
     enable_think_tool: bool = False,
     enable_compaction: bool = True,
     classification: Dict[str, Any] = None,
+    images: Optional[List[ProcessedImage]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Stream Deep Research Mode responses as SSE events.
@@ -725,6 +840,7 @@ async def _stream_deep_research(
     Args:
         classification: Pre-computed classification from UnifiedClassifier.
                        Passed to PlanningAgent to avoid duplicate classification.
+        images: Optional list of processed images for multimodal analysis.
     """
     from datetime import datetime as dt
 
@@ -765,6 +881,7 @@ async def _stream_deep_research(
         enable_compaction=enable_compaction,
         enable_think_tool=enable_think_tool,
         classification=classification,
+        images=images,
     ):
         # Map StreamEvent types to StreamEventEmitter
 

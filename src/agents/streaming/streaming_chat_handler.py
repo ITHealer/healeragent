@@ -232,6 +232,7 @@ class StreamingChatHandler(LoggerMixin):
         enable_think_tool: bool = False,
         cancellation_token: CancellationToken = None,
         classification: Dict[str, Any] = None,
+        images: Optional[List[Any]] = None,
         **kwargs
     ) -> AsyncGenerator[StreamEvent, None]:
         """
@@ -241,6 +242,7 @@ class StreamingChatHandler(LoggerMixin):
             classification: Optional pre-computed classification from UnifiedClassifier.
                            If provided, PlanningAgent will reuse it instead of running
                            its own classification (saves 1 LLM call).
+            images: Optional list of ProcessedImage for multimodal analysis.
 
         Phases: Context -> Planning -> Execution -> Assembly -> Generation -> Done
         """

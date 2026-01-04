@@ -362,6 +362,7 @@ class NormalModeAgent(LoggerMixin):
         conversation_summary: Optional[str] = None,
         enable_thinking: bool = True,
         enable_llm_events: bool = True,
+        images: Optional[List[Any]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run the agent loop with streaming and thinking/reasoning output.
@@ -387,6 +388,7 @@ class NormalModeAgent(LoggerMixin):
             conversation_summary: Summary of older conversation
             enable_thinking: Enable thinking events
             enable_llm_events: Enable LLM decision events
+            images: Optional list of ProcessedImage for multimodal analysis
 
         Yields:
             Event dictionaries with type and data
@@ -469,6 +471,7 @@ class NormalModeAgent(LoggerMixin):
                 core_memory=core_memory,
                 conversation_summary=conversation_summary,
                 user_id=user_id,
+                images=images,
             )
 
             # Run agent loop
@@ -1001,6 +1004,7 @@ class NormalModeAgent(LoggerMixin):
         core_memory: Optional[str] = None,
         conversation_summary: Optional[str] = None,
         user_id: Optional[int] = None,
+        images: Optional[List[Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Build initial messages for agent loop."""
         # System prompt
@@ -1088,10 +1092,52 @@ RESPONSE FORMAT:
                 if content:
                     messages.append({"role": role, "content": content})
 
-        # Add current query
-        messages.append({"role": "user", "content": query})
+        # Add current query (with images if present)
+        if images:
+            user_message = self._format_user_message_with_images(
+                query=query,
+                images=images,
+                provider_type=self.provider_type,
+            )
+            messages.append(user_message)
+        else:
+            messages.append({"role": "user", "content": query})
 
         return messages
+
+    def _format_user_message_with_images(
+        self,
+        query: str,
+        images: Optional[List[Any]] = None,
+        provider_type: str = "openai",
+    ) -> Dict[str, Any]:
+        """
+        Format user message with optional images for multimodal support.
+
+        Args:
+            query: User text query
+            images: Optional list of ProcessedImage objects
+            provider_type: Target provider for formatting
+
+        Returns:
+            Formatted message dict (with content as string or array)
+        """
+        if not images:
+            return {"role": "user", "content": query}
+
+        try:
+            # Import here to avoid circular dependencies
+            from src.utils.image import build_multimodal_message
+
+            return build_multimodal_message(
+                role="user",
+                text=query,
+                images=images,
+                provider=provider_type,
+            )
+        except Exception as e:
+            self.logger.warning(f"[MULTIMODAL] Failed to format images: {e}")
+            return {"role": "user", "content": query}
 
     def _build_no_tools_messages(
         self,
