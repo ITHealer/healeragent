@@ -694,21 +694,26 @@ async def _stream_normal_mode(
             summary=f"Type: {classification.query_type.value}, Symbols: {classification.symbols}, Categories: {classification.tool_categories}",
         )
 
-    async for chunk in handler.handle_chat(
-        query=query,
-        session_id=session_id,
-        user_id=user_id,
-        model_name=model_name,
-        provider_type=provider_type,
-        chart_displayed=chart_displayed,
-        organization_id=org_id,
-        enable_thinking=enable_thinking,
-        enable_llm_events=enable_llm_events,
-        stream=True,
-        enable_web_search=enable_web_search,
-        classification=classification,
-        images=images,
-    ):
+    # Build kwargs for handler (images is optional for backward compatibility)
+    handler_kwargs = {
+        "query": query,
+        "session_id": session_id,
+        "user_id": user_id,
+        "model_name": model_name,
+        "provider_type": provider_type,
+        "chart_displayed": chart_displayed,
+        "organization_id": org_id,
+        "enable_thinking": enable_thinking,
+        "enable_llm_events": enable_llm_events,
+        "stream": True,
+        "enable_web_search": enable_web_search,
+        "classification": classification,
+    }
+    # Only add images if present (backward compatible with old handlers)
+    if images:
+        handler_kwargs["images"] = images
+
+    async for chunk in handler.handle_chat(**handler_kwargs):
         # Convert handler output to SSE events
         if isinstance(chunk, dict):
             event_type = chunk.get("type", "content")
@@ -869,20 +874,24 @@ async def _stream_deep_research(
 
     # Stream events from StreamingChatHandler
     # Pass pre-computed classification to avoid duplicate LLM call in PlanningAgent
-    async for event in handler.handle_chat_stream(
-        query=query,
-        session_id=session_id,
-        user_id=int(user_id) if user_id else 0,
-        model_name=model_name,
-        provider_type=provider_type,
-        organization_id=int(org_id) if org_id else None,
-        enable_thinking=enable_thinking,
-        chart_displayed=chart_displayed,
-        enable_compaction=enable_compaction,
-        enable_think_tool=enable_think_tool,
-        classification=classification,
-        images=images,
-    ):
+    # Build kwargs (images is optional for backward compatibility)
+    stream_kwargs = {
+        "query": query,
+        "session_id": session_id,
+        "user_id": int(user_id) if user_id else 0,
+        "model_name": model_name,
+        "provider_type": provider_type,
+        "organization_id": int(org_id) if org_id else None,
+        "enable_thinking": enable_thinking,
+        "chart_displayed": chart_displayed,
+        "enable_compaction": enable_compaction,
+        "enable_think_tool": enable_think_tool,
+        "classification": classification,
+    }
+    if images:
+        stream_kwargs["images"] = images
+
+    async for event in handler.handle_chat_stream(**stream_kwargs):
         # Map StreamEvent types to StreamEventEmitter
 
         if isinstance(event, StartEvent):
