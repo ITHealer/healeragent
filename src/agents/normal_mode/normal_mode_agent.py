@@ -363,8 +363,6 @@ class NormalModeAgent(LoggerMixin):
         enable_thinking: bool = True,
         enable_llm_events: bool = True,
         images: Optional[List[Any]] = None,
-        model_name: Optional[str] = None,
-        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run the agent loop with streaming and thinking/reasoning output.
@@ -396,15 +394,6 @@ class NormalModeAgent(LoggerMixin):
             Event dictionaries with type and data
         """
         flow_id = f"NM-{uuid.uuid4().hex[:8]}"
-
-        # Use provided model/provider or fallback to instance defaults
-        effective_model = model_name or self.model_name
-        effective_provider = provider_type or self.provider_type
-        effective_api_key = ModelProviderFactory._get_api_key(effective_provider)
-
-        self.logger.info(
-            f"[{flow_id}] run_stream | model={effective_model}, provider={effective_provider}"
-        )
 
         # Store user_id for tool execution
         self._current_user_id = user_id
@@ -438,9 +427,6 @@ class NormalModeAgent(LoggerMixin):
                     flow_id=flow_id,
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
-                    model_name=effective_model,
-                    provider_type=effective_provider,
-                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -469,9 +455,6 @@ class NormalModeAgent(LoggerMixin):
                     flow_id=flow_id,
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
-                    model_name=effective_model,
-                    provider_type=effective_provider,
-                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -489,7 +472,6 @@ class NormalModeAgent(LoggerMixin):
                 conversation_summary=conversation_summary,
                 user_id=user_id,
                 images=images,
-                provider_type=effective_provider,
             )
 
             # Run agent loop
@@ -510,9 +492,6 @@ class NormalModeAgent(LoggerMixin):
                     messages=messages,
                     tools=tools,
                     flow_id=flow_id,
-                    model_name=effective_model,
-                    provider_type=effective_provider,
-                    api_key=effective_api_key,
                 )
 
                 tool_calls = self._parse_tool_calls(response)
@@ -543,9 +522,6 @@ class NormalModeAgent(LoggerMixin):
                     async for chunk in self._stream_final_response(
                         messages=messages,
                         flow_id=flow_id,
-                        model_name=effective_model,
-                        provider_type=effective_provider,
-                        api_key=effective_api_key,
                     ):
                         response_generated = True
                         yield {"type": "content", "content": chunk}
@@ -647,9 +623,6 @@ class NormalModeAgent(LoggerMixin):
             async for chunk in self._stream_final_response(
                 messages=messages,
                 flow_id=flow_id,
-                model_name=effective_model,
-                provider_type=effective_provider,
-                api_key=effective_api_key,
             ):
                 yield {"type": "content", "content": chunk}
 
@@ -721,26 +694,18 @@ class NormalModeAgent(LoggerMixin):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         flow_id: str,
-        model_name: Optional[str] = None,
-        provider_type: Optional[str] = None,
-        api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Call LLM with tool definitions.
 
         Uses OpenAI function calling format.
         """
-        # Use provided model/provider or fallback to instance defaults
-        effective_model = model_name or self.model_name
-        effective_provider = provider_type or self.provider_type
-        effective_api_key = api_key or self.api_key
-
         try:
             params = {
-                "model_name": effective_model,
+                "model_name": self.model_name,
                 "messages": messages,
-                "provider_type": effective_provider,
-                "api_key": effective_api_key,
+                "provider_type": self.provider_type,
+                "api_key": self.api_key,
                 "tools": tools,
                 "tool_choice": "auto",
                 "max_tokens": 4000,
@@ -816,16 +781,8 @@ class NormalModeAgent(LoggerMixin):
         flow_id: str,
         core_memory: Optional[str] = None,
         conversation_summary: Optional[str] = None,
-        model_name: Optional[str] = None,
-        provider_type: Optional[str] = None,
-        api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response without tools."""
-        # Use provided model/provider or fallback to instance defaults
-        effective_model = model_name or self.model_name
-        effective_provider = provider_type or self.provider_type
-        effective_api_key = api_key or self.api_key
-
         messages = self._build_no_tools_messages(
             query=query,
             classification=classification,
@@ -836,10 +793,10 @@ class NormalModeAgent(LoggerMixin):
         )
 
         async for chunk in self.llm_provider.stream_response(
-            model_name=effective_model,
+            model_name=self.model_name,
             messages=messages,
-            provider_type=effective_provider,
-            api_key=effective_api_key,
+            provider_type=self.provider_type,
+            api_key=self.api_key,
             max_tokens=2000,
             temperature=0.7,
         ):
@@ -880,9 +837,6 @@ class NormalModeAgent(LoggerMixin):
         self,
         messages: List[Dict[str, Any]],
         flow_id: str,
-        model_name: Optional[str] = None,
-        provider_type: Optional[str] = None,
-        api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream final response after tools have been executed.
@@ -890,11 +844,6 @@ class NormalModeAgent(LoggerMixin):
         This enables TRUE streaming from the LLM instead of
         returning the complete response at once.
         """
-        # Use provided model/provider or fallback to instance defaults
-        effective_model = model_name or self.model_name
-        effective_provider = provider_type or self.provider_type
-        effective_api_key = api_key or self.api_key
-
         # Add instruction to synthesize if needed
         last_msg = messages[-1] if messages else {}
         if last_msg.get("role") == "tool":
@@ -908,10 +857,10 @@ class NormalModeAgent(LoggerMixin):
 
         try:
             async for chunk in self.llm_provider.stream_response(
-                model_name=effective_model,
+                model_name=self.model_name,
                 messages=messages,
-                provider_type=effective_provider,
-                api_key=effective_api_key,
+                provider_type=self.provider_type,
+                api_key=self.api_key,
                 max_tokens=4000,
                 temperature=0.3,
             ):
@@ -1056,7 +1005,6 @@ class NormalModeAgent(LoggerMixin):
         conversation_summary: Optional[str] = None,
         user_id: Optional[int] = None,
         images: Optional[List[Any]] = None,
-        provider_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build initial messages for agent loop."""
         # System prompt
@@ -1146,12 +1094,10 @@ RESPONSE FORMAT:
 
         # Add current query (with images if present)
         if images:
-            # Use passed provider_type or fallback to instance default
-            effective_provider = provider_type or self.provider_type
             user_message = self._format_user_message_with_images(
                 query=query,
                 images=images,
-                provider_type=effective_provider,
+                provider_type=self.provider_type,
             )
             messages.append(user_message)
         else:
