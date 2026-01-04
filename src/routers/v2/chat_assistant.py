@@ -142,6 +142,12 @@ async def _process_images(
     """
     Process image inputs from request into ProcessedImages.
 
+    Handles flexible input formats:
+    - Standard: source="url", data="https://..."
+    - Flexible: source="https://..." (auto-detect URL in source field)
+    - Base64: source="base64", data="iVBORw0..."
+    - Data URL: source="data_url", data="data:image/png;base64,..."
+
     Args:
         images: List of ImageInput from request
 
@@ -156,19 +162,54 @@ async def _process_images(
 
     for img_input in images:
         try:
-            # Convert ImageInput to ImageContent
-            source = ImageSource(img_input.source) if img_input.source != "data_url" else ImageSource.BASE64
-            data = img_input.data
+            source_value = img_input.source
+            data_value = img_input.data or ""  # Handle None
 
-            # Handle data URL format
-            if img_input.source == "data_url" and data.startswith("data:"):
-                parts = data.split(",", 1)
+            # Auto-detect: if source looks like a URL, treat it as the data
+            if source_value.startswith(("http://", "https://")):
+                # User put URL in source field instead of data
+                data_value = source_value
+                source_type = ImageSource.URL
+                _logger.debug(f"[IMAGE] Auto-detected URL in source field")
+
+            # Auto-detect: if source looks like a data URL
+            elif source_value.startswith("data:"):
+                data_value = source_value
+                source_type = ImageSource.BASE64
+                # Extract base64 from data URL
+                parts = data_value.split(",", 1)
                 if len(parts) == 2:
-                    data = parts[1]  # Extract base64 part
+                    data_value = parts[1]
+                _logger.debug(f"[IMAGE] Auto-detected data URL in source field")
+
+            # Standard source types
+            elif source_value == "url":
+                source_type = ImageSource.URL
+            elif source_value == "base64":
+                source_type = ImageSource.BASE64
+            elif source_value == "data_url":
+                source_type = ImageSource.BASE64
+                # Extract base64 from data URL format
+                if data_value.startswith("data:"):
+                    parts = data_value.split(",", 1)
+                    if len(parts) == 2:
+                        data_value = parts[1]
+            else:
+                # Try to auto-detect from data field
+                if data_value.startswith(("http://", "https://")):
+                    source_type = ImageSource.URL
+                elif data_value.startswith("data:"):
+                    source_type = ImageSource.BASE64
+                    parts = data_value.split(",", 1)
+                    if len(parts) == 2:
+                        data_value = parts[1]
+                else:
+                    # Assume base64
+                    source_type = ImageSource.BASE64
 
             image_content = ImageContent(
-                source=source,
-                data=data,
+                source=source_type,
+                data=data_value,
                 media_type=img_input.media_type,
             )
 
@@ -188,19 +229,20 @@ class ImageInput(BaseModel):
     """
     Image input for multimodal requests.
 
-    Supports multiple input formats:
-    - URL: Remote image URL (https://...)
-    - base64: Base64-encoded image data
-    - data_url: Data URL format (data:image/png;base64,...)
+    Flexible input formats (auto-detected):
+    - URL in source: source="https://example.com/image.png" (data ignored)
+    - Standard URL: source="url", data="https://example.com/image.png"
+    - Base64: source="base64", data="iVBORw0KGgo..."
+    - Data URL: source="data:image/png;base64,..." (data ignored)
     """
     source: str = Field(
         default="url",
-        description="Image source type: url, base64, or data_url",
-        examples=["url", "base64", "data_url"]
+        description="Image source type (url/base64/data_url) OR the actual URL/data URL directly",
+        examples=["url", "https://example.com/image.png", "data:image/png;base64,..."]
     )
-    data: str = Field(
-        ...,
-        description="Image data: URL, base64 string, or data URL"
+    data: Optional[str] = Field(
+        default=None,
+        description="Image data: URL or base64 string. Can be omitted if source contains the URL/data directly."
     )
     media_type: Optional[str] = Field(
         default=None,
@@ -233,11 +275,10 @@ class UIContextRequest(BaseModel):
 class ChatRequest(BaseModel):
     """Chat request schema."""
 
-    query: str = Field(
-        ...,
+    query: Optional[str] = Field(
+        default=None,
         alias="question_input",
-        description="User's question or message",
-        min_length=1,
+        description="User's question or message. Can be empty if images are provided.",
         max_length=10000
     )
     session_id: Optional[str] = Field(
@@ -444,6 +485,16 @@ async def stream_chat(
     if not user_id:
         raise HTTPException(status_code=400, detail="User ID required")
 
+    # Validate: at least query or images must be provided
+    if not data.query and not data.images:
+        raise HTTPException(
+            status_code=400,
+            detail="Either question_input or images must be provided"
+        )
+
+    # Default query for image-only requests
+    query = data.query or "Analyze this image"
+
     session_id = data.session_id
     if not session_id:
         session_id = _chat_service.create_chat_session(
@@ -486,7 +537,7 @@ async def stream_chat(
             classifier = _get_classifier()
 
             ctx = ClassifierContext(
-                query=data.query,
+                query=query,  # Use validated query
                 conversation_history=[],
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
             )
@@ -506,7 +557,7 @@ async def stream_chat(
             # Resolve charts from classification (for frontend display)
             charts = resolve_charts_from_classification(
                 classification=classification,
-                query=data.query,
+                query=query,
                 max_charts=3,
             )
             if charts:
@@ -516,7 +567,7 @@ async def stream_chat(
             # Determine mode
             mode_router = _get_mode_router()
             mode_decision = mode_router.determine_mode(
-                query=data.query,
+                query=query,
                 explicit_mode=data.mode,
                 classification=classification,
             )
@@ -534,7 +585,7 @@ async def stream_chat(
                 # Pass classification to avoid duplicate LLM call in PlanningAgent
                 classification_dict = classification.to_dict() if classification else None
                 async for event in _stream_deep_research(
-                    query=data.query,
+                    query=query,
                     session_id=session_id,
                     user_id=user_id,
                     org_id=org_id,
@@ -554,7 +605,7 @@ async def stream_chat(
                     yield event
             else:
                 async for event in _stream_normal_mode(
-                    query=data.query,
+                    query=query,
                     session_id=session_id,
                     user_id=user_id,
                     org_id=org_id,
@@ -1065,7 +1116,7 @@ async def complete_chat(
         # Classify query
         classifier = _get_classifier()
         ctx = ClassifierContext(
-            query=data.query,
+            query=query,
             conversation_history=[],
             ui_context=data.ui_context.model_dump() if data.ui_context else None,
         )
@@ -1074,7 +1125,7 @@ async def complete_chat(
         # Determine processing mode
         mode_router = _get_mode_router()
         mode_decision = mode_router.determine_mode(
-            query=data.query,
+            query=query,
             explicit_mode=data.mode,
             classification=classification,
         )
@@ -1085,7 +1136,7 @@ async def complete_chat(
         if mode_decision.mode == QueryMode.NORMAL:
             handler = _get_normal_handler()
             async for chunk in handler.handle_chat(
-                query=data.query,
+                query=query,
                 session_id=session_id,
                 user_id=user_id,
                 model_name=data.model_name,
@@ -1102,7 +1153,7 @@ async def complete_chat(
         else:
             handler = _get_deep_handler()
             async for chunk in handler.handle_chat_with_reasoning(
-                query=data.query,
+                query=query,
                 chart_displayed=data.chart_displayed,
                 session_id=session_id,
                 user_id=user_id,
