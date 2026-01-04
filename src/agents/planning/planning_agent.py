@@ -105,9 +105,19 @@ class PlanningAgent(LoggerMixin):
         core_memory: Dict[str, Any] = None,
         summary: str = None,
         working_memory_context: str = None,
+        pre_classification: Dict[str, Any] = None,
     ) -> TaskPlan:
         """
         Main planning method - 3 Stage Flow.
+
+        Args:
+            query: User query
+            recent_chat: Conversation history
+            core_memory: User memory/preferences
+            summary: Conversation summary
+            working_memory_context: Current session context
+            pre_classification: Optional pre-computed classification from UnifiedClassifier
+                               If provided, skips Stage 1 (classification) to avoid duplicate LLM calls.
 
         Returns TaskPlan with tasks to execute.
         """
@@ -123,19 +133,24 @@ class PlanningAgent(LoggerMixin):
             # Phase 0: Validate and format history
             formatted_history = self._validate_and_format_history(recent_chat)
             self.logger.debug(f"[PLAN:P0] History: {len(formatted_history)} messages")
-            
-            # Stage 1: Classify query and select categories
-            self.logger.info(f"[PLAN:S1] Classifying query...")
 
-            classification = await self._stage1_classify(
-                query=query,
-                history=formatted_history,
-                working_memory_context=working_memory_context,
-                core_memory=core_memory
-            )
+            # Stage 1: Use pre-classification if provided, otherwise classify
+            if pre_classification:
+                # REUSE classification from UnifiedClassifier (avoid duplicate LLM call)
+                self.logger.info(f"[PLAN:S1] Using pre-computed classification (skipping LLM)")
+                classification = pre_classification
+            else:
+                # Fallback: Run classification (for backward compatibility)
+                self.logger.info(f"[PLAN:S1] Classifying query...")
+                classification = await self._stage1_classify(
+                    query=query,
+                    history=formatted_history,
+                    working_memory_context=working_memory_context,
+                    core_memory=core_memory
+                )
 
             query_type = classification.get("query_type", "stock_specific")
-            categories = classification.get("categories", [])
+            categories = classification.get("categories", classification.get("tool_categories", []))
             symbols = classification.get("symbols", [])
             response_language = classification.get("response_language", "auto")
             reasoning = classification.get("reasoning", "")

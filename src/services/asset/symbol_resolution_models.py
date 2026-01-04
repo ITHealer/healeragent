@@ -416,3 +416,86 @@ DEFAULT_EXCHANGES = {
     "DE": Exchange.XETRA,
     "VN": Exchange.HOSE,
 }
+
+# ============================================================================
+# Bitcoin and Crypto ETF Mappings
+# ============================================================================
+
+# Bitcoin ETF symbols - map "cổ phiếu Bitcoin" / "Bitcoin stock" to these
+BITCOIN_ETF_SYMBOLS = [
+    "IBIT",   # iShares Bitcoin Trust (BlackRock) - largest
+    "GBTC",   # Grayscale Bitcoin Trust
+    "FBTC",   # Fidelity Wise Origin Bitcoin Fund
+    "ARKB",   # ARK 21Shares Bitcoin ETF
+    "BTCO",   # Invesco Galaxy Bitcoin ETF
+    "BITO",   # ProShares Bitcoin Strategy ETF (futures-based)
+    "HODL",   # VanEck Bitcoin Trust
+    "BITB",   # Bitwise Bitcoin ETF
+]
+
+# Ethereum ETF symbols - map "cổ phiếu Ethereum" / "Ethereum stock" to these
+ETHEREUM_ETF_SYMBOLS = [
+    "ETHE",   # Grayscale Ethereum Trust
+    "ETHA",   # iShares Ethereum Trust (BlackRock)
+]
+
+# Primary symbol for each crypto type (when comparing "crypto stock" vs "real crypto")
+CRYPTO_ETF_PRIMARY = {
+    "BTC": "IBIT",    # Most popular Bitcoin ETF
+    "BITCOIN": "IBIT",
+    "ETH": "ETHA",    # Most popular Ethereum ETF
+    "ETHEREUM": "ETHA",
+}
+
+# Keywords that indicate "Bitcoin/crypto as stock/ETF" (not actual crypto)
+CRYPTO_STOCK_KEYWORDS = [
+    # Vietnamese
+    "cổ phiếu bitcoin", "cổ phiếu btc", "cổ phiếu ethereum", "cổ phiếu eth",
+    "quỹ bitcoin", "etf bitcoin", "etf ethereum",
+    # English
+    "bitcoin stock", "bitcoin etf", "bitcoin trust", "bitcoin fund",
+    "ethereum stock", "ethereum etf", "ethereum trust", "ethereum fund",
+    "btc etf", "eth etf", "gbtc", "ibit", "fbtc",
+]
+
+# Keywords that indicate "actual crypto" (not stock/ETF)
+REAL_CRYPTO_KEYWORDS = [
+    # Vietnamese
+    "bitcoin thật", "btc thật", "bitcoin thực", "tiền điện tử",
+    "ethereum thật", "eth thật", "coin", "token",
+    # English
+    "real bitcoin", "actual bitcoin", "bitcoin crypto", "btc crypto",
+    "real ethereum", "actual ethereum", "cryptocurrency",
+]
+
+# ============================================================================
+# Ambiguous Symbol Mappings
+# ============================================================================
+
+# Symbols that can be both stock and crypto
+AMBIGUOUS_SYMBOLS = {
+    "BTC": {
+        "crypto": {"symbol": "BTC", "name": "Bitcoin", "trading_pair": "BTCUSD"},
+        "stock": {"symbol": "BTC", "name": "Grayscale Bitcoin Mini Trust", "exchange": "NYSE"},
+    },
+    "SOL": {
+        "crypto": {"symbol": "SOL", "name": "Solana", "trading_pair": "SOLUSD"},
+        "stock": {"symbol": "SOL", "name": "Renesola Ltd", "exchange": "NYSE"},
+    },
+    "COMP": {
+        "crypto": {"symbol": "COMP", "name": "Compound", "trading_pair": "COMPUSD"},
+        "stock": {"symbol": "COMP", "name": "Compass Inc", "exchange": "NYSE"},
+    },
+    "COIN": {
+        "crypto": None,  # Not a crypto symbol
+        "stock": {"symbol": "COIN", "name": "Coinbase Global Inc", "exchange": "NASDAQ"},
+    },
+    "MARA": {
+        "crypto": None,
+        "stock": {"symbol": "MARA", "name": "Marathon Digital Holdings", "exchange": "NASDAQ"},
+    },
+    "RIOT": {
+        "crypto": None,
+        "stock": {"symbol": "RIOT", "name": "Riot Platforms Inc", "exchange": "NASDAQ"},
+    },
+}

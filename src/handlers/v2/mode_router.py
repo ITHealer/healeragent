@@ -3,7 +3,7 @@ from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 
 from src.utils.logger.custom_logging import LoggerMixin
-from src.agents.classification.models import UnifiedClassificationResult, QueryType
+from src.agents.classification.models import UnifiedClassificationResult, QueryType, MarketType
 
 
 class QueryMode(str, Enum):
@@ -44,7 +44,7 @@ DEEP_RESEARCH_KEYWORDS = {
 }
 
 # Query types requiring Deep Research
-DEEP_RESEARCH_QUERY_TYPES = {QueryType.SCREENER}
+DEEP_RESEARCH_QUERY_TYPES = {QueryType.SCREENER, QueryType.COMPARISON}
 
 # Symbol count threshold for Deep Research
 MULTI_SYMBOL_THRESHOLD = 3
@@ -92,48 +92,62 @@ class ModeRouter(LoggerMixin):
         if symbols is None and classification:
             symbols = classification.symbols or []
 
-        # Priority 2: Multi-symbol triggers Deep Research
+        # Priority 2: Classification-based detection (FIRST - most intelligent)
+        if classification:
+            # Deep Research query types
+            if classification.query_type in DEEP_RESEARCH_QUERY_TYPES:
+                return self._make_decision(
+                    mode=QueryMode.DEEP_RESEARCH,
+                    reason=f"Query type: {classification.query_type.value}",
+                    confidence=0.9,
+                    method="classification",
+                    metadata={"query_type": classification.query_type.value},
+                )
+
+            # Complex queries with many categories
+            if len(classification.tool_categories or []) >= 4:
+                return self._make_decision(
+                    mode=QueryMode.DEEP_RESEARCH,
+                    reason=f"Complex query ({len(classification.tool_categories)} categories)",
+                    confidence=0.8,
+                    method="classification",
+                    metadata={"categories": classification.tool_categories},
+                )
+
+            # Multi-asset comparisons (has both crypto and stock/price categories)
+            categories = set(classification.tool_categories or [])
+            if "crypto" in categories and ("price" in categories or len(classification.symbols) > 1):
+                # Check if it's a comparison between different asset types
+                if classification.market_type == MarketType.BOTH:
+                    return self._make_decision(
+                        mode=QueryMode.DEEP_RESEARCH,
+                        reason="Multi-asset type comparison",
+                        confidence=0.85,
+                        method="classification",
+                        metadata={"market_type": "both", "categories": list(categories)},
+                    )
+
+        # Priority 3: Multi-symbol triggers Deep Research
         if symbols and len(symbols) >= self.multi_symbol_threshold:
             return self._make_decision(
                 mode=QueryMode.DEEP_RESEARCH,
                 reason=f"Multi-symbol ({len(symbols)} >= {self.multi_symbol_threshold})",
-                confidence=0.9,
+                confidence=0.85,
                 method="symbol_count",
                 metadata={"symbol_count": len(symbols), "symbols": symbols},
             )
 
-        # Priority 3: Keyword matching
+        # Priority 4: Keyword matching (fallback for edge cases)
         if self.enable_keyword_detection:
             keyword = self._find_deep_research_keyword(query)
             if keyword:
                 return self._make_decision(
                     mode=QueryMode.DEEP_RESEARCH,
                     reason=f"Keyword matched: '{keyword}'",
-                    confidence=0.85,
+                    confidence=0.75,
                     method="keyword_match",
                     metadata={"matched_keyword": keyword},
                 )
-
-        # Priority 4: Classification-based detection
-        # if classification:
-        #     if classification.query_type in DEEP_RESEARCH_QUERY_TYPES:
-        #         if self._is_screener_with_analysis(query):
-        #             return self._make_decision(
-        #                 mode=QueryMode.DEEP_RESEARCH,
-        #                 reason="Screener with analysis intent",
-        #                 confidence=0.75,
-        #                 method="classification",
-        #                 metadata={"query_type": classification.query_type.value},
-        #             )
-
-        #     if len(classification.tool_categories or []) >= 4:
-        #         return self._make_decision(
-        #             mode=QueryMode.DEEP_RESEARCH,
-        #             reason=f"Complex query ({len(classification.tool_categories)} categories)",
-        #             confidence=0.7,
-        #             method="classification",
-        #             metadata={"categories": classification.tool_categories},
-        #         )
 
         # Default: Normal mode
         return self._make_decision(

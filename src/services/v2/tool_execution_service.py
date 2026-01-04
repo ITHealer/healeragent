@@ -1,5 +1,5 @@
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timedelta
 
 from src.utils.logger.custom_logging import LoggerMixin
@@ -8,10 +8,44 @@ from src.helpers.data_formatter import FinancialDataFormatter
 
 MEMORY_TOOLS = [
     'searchConversationHistory',
-    'getRecentConversations', 
+    'getRecentConversations',
     'searchRecallMemory',
     'searchArchivalMemory'
 ]
+
+# Stock tools that should NOT receive crypto symbols
+STOCK_ONLY_TOOLS = {
+    'getStockPrice',
+    'getStockPerformance',
+    'getIncomeStatement',
+    'getBalanceSheet',
+    'getCashFlow',
+    'getFinancialRatios',
+    'getKeyMetrics',
+    'getEarningsCalendar',
+    'getStockNews',
+    'getPriceTargets',
+    'getAnalystRecommendations',
+    'getInsiderTrades',
+    'getInstitutionalOwnership',
+}
+
+# Crypto tools that should receive crypto symbols
+CRYPTO_ONLY_TOOLS = {
+    'getCryptoPrice',
+    'getCryptoTechnicals',
+}
+
+# Common crypto symbols that might be confused with stock tickers
+CRYPTO_SYMBOLS = {'BTC', 'ETH', 'SOL', 'DOGE', 'XRP', 'ADA', 'DOT', 'LINK', 'UNI', 'AVAX', 'MATIC', 'ATOM', 'NEAR'}
+
+# Mapping from crypto symbol to primary ETF (for "Bitcoin stock" use cases)
+CRYPTO_TO_ETF_MAP = {
+    'BTC': 'IBIT',   # BlackRock Bitcoin ETF
+    'BITCOIN': 'IBIT',
+    'ETH': 'ETHA',   # BlackRock Ethereum ETF
+    'ETHEREUM': 'ETHA',
+}
 
 class ToolExecutionService(LoggerMixin):
     """
@@ -156,6 +190,17 @@ class ToolExecutionService(LoggerMixin):
                     'status': 'error',
                     'error': f"Tool '{tool_name}' requires symbol but none provided"
                 }
+
+            # ================================================================
+            # Symbol Validation: Check for crypto/stock mismatch
+            # ================================================================
+            symbol, warning = self._validate_and_correct_symbol(tool_name, symbol)
+            if warning:
+                self.logger.warning(f"[ATOMIC] {warning}")
+                # Update tool_params with corrected symbol
+                if 'symbol' in tool_params:
+                    tool_params['symbol'] = symbol
+
             self.logger.info(f"[ATOMIC] Symbol: {symbol}")
         else:
             self.logger.info(f"[ATOMIC] Tool '{tool_name}' does NOT require symbol")
@@ -723,3 +768,58 @@ class ToolExecutionService(LoggerMixin):
         if not self.tool_registry:
             return False
         return self.tool_registry.get_tool(tool_name) is not None
+
+    def _validate_and_correct_symbol(
+        self,
+        tool_name: str,
+        symbol: str
+    ) -> Tuple[str, Optional[str]]:
+        """
+        Validate symbol for tool compatibility and optionally correct mismatches.
+
+        Handles cases like:
+        - Stock tool receiving crypto symbol (BTC → IBIT for Bitcoin ETF)
+        - Crypto tool receiving stock symbol
+
+        Args:
+            tool_name: Name of the tool being executed
+            symbol: Symbol being passed to the tool
+
+        Returns:
+            Tuple of (corrected_symbol, warning_message)
+            warning_message is None if no issue detected
+        """
+        symbol_upper = symbol.upper()
+        warning = None
+
+        # Case 1: Stock tool receiving known crypto symbol
+        if tool_name in STOCK_ONLY_TOOLS and symbol_upper in CRYPTO_SYMBOLS:
+            # Check if there's an ETF mapping for this crypto
+            if symbol_upper in CRYPTO_TO_ETF_MAP:
+                etf_symbol = CRYPTO_TO_ETF_MAP[symbol_upper]
+                warning = (
+                    f"Symbol '{symbol_upper}' is a cryptocurrency. "
+                    f"For stock tools, using ETF '{etf_symbol}' instead. "
+                    f"(Original: {symbol_upper} → Corrected: {etf_symbol})"
+                )
+                return etf_symbol, warning
+            else:
+                # No ETF mapping, just warn
+                warning = (
+                    f"Symbol '{symbol_upper}' appears to be a cryptocurrency "
+                    f"but is being passed to stock tool '{tool_name}'. "
+                    f"Results may be unexpected."
+                )
+                return symbol_upper, warning
+
+        # Case 2: Crypto tool receiving stock symbol (less common, just warn)
+        if tool_name in CRYPTO_ONLY_TOOLS:
+            # If symbol doesn't look like crypto, warn
+            known_cryptos = CRYPTO_SYMBOLS | {'BTCUSD', 'ETHUSD', 'SOLUSD', 'DOGEUSD'}
+            if symbol_upper not in known_cryptos and not symbol_upper.endswith('USD'):
+                warning = (
+                    f"Symbol '{symbol_upper}' may not be a cryptocurrency. "
+                    f"Using with crypto tool '{tool_name}'."
+                )
+
+        return symbol_upper, warning

@@ -421,6 +421,8 @@ async def stream_chat(
 
             # Route to appropriate handler
             if mode_decision.mode == QueryMode.DEEP_RESEARCH:
+                # Pass classification to avoid duplicate LLM call in PlanningAgent
+                classification_dict = classification.to_dict() if classification else None
                 async for event in _stream_deep_research(
                     query=data.query,
                     session_id=session_id,
@@ -436,6 +438,7 @@ async def stream_chat(
                     enable_agent_tree=data.enable_agent_tree,
                     enable_think_tool=data.enable_think_tool,
                     enable_compaction=data.enable_compaction,
+                    classification=classification_dict,
                 ):
                     yield event
             else:
@@ -714,8 +717,15 @@ async def _stream_deep_research(
     enable_agent_tree: bool = False,
     enable_think_tool: bool = False,
     enable_compaction: bool = True,
+    classification: Dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
-    """Stream Deep Research Mode responses as SSE events."""
+    """
+    Stream Deep Research Mode responses as SSE events.
+
+    Args:
+        classification: Pre-computed classification from UnifiedClassifier.
+                       Passed to PlanningAgent to avoid duplicate classification.
+    """
     from datetime import datetime as dt
 
     # Get StreamingChatHandler
@@ -742,6 +752,7 @@ async def _stream_deep_research(
     }
 
     # Stream events from StreamingChatHandler
+    # Pass pre-computed classification to avoid duplicate LLM call in PlanningAgent
     async for event in handler.handle_chat_stream(
         query=query,
         session_id=session_id,
@@ -753,6 +764,7 @@ async def _stream_deep_research(
         chart_displayed=chart_displayed,
         enable_compaction=enable_compaction,
         enable_think_tool=enable_think_tool,
+        classification=classification,
     ):
         # Map StreamEvent types to StreamEventEmitter
 

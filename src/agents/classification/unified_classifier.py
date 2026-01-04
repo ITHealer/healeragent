@@ -538,12 +538,19 @@ Analyze the query carefully:
 STEP 1: Determine Query Type
 - stock_specific: About specific stock(s) with symbols
 - crypto_specific: About specific cryptocurrency
+- comparison: Comparing different assets (e.g., Bitcoin stock/ETF vs actual Bitcoin crypto, stock A vs stock B)
 - screener: Finding stocks by criteria ("find stocks with P/E < 20")
 - market_level: Market overview, indices, sector performance
 - conversational: ONLY greetings, thanks, goodbye
 - memory_recall: Questions about past conversations
 - general_knowledge: Static financial concepts that never change (what is P/E ratio?)
 - real_time_info: Current events, latest news, current leaders/positions, recent changes - anything that requires up-to-date information from the web
+
+IMPORTANT - Comparison Detection:
+- Keywords: "so sánh", "compare", "versus", "vs", "đối chiếu", "khác nhau", "giống nhau"
+- "cổ phiếu Bitcoin" / "Bitcoin stock" = Bitcoin ETFs (IBIT, GBTC, BITO) - NOT crypto
+- "Bitcoin thật" / "real Bitcoin" / "actual Bitcoin" = BTC cryptocurrency
+- When comparing stock/ETF with crypto, use query_type=comparison, market_type=both
 
 IMPORTANT - UI Context (Soft Context Inheritance):
 If <ui_context> is provided, the Active Tab strongly indicates user intent:
@@ -589,7 +596,7 @@ Then, provide the classification inside <classification> tags as valid JSON:
 
 <classification>
 {{
-  "query_type": "stock_specific|crypto_specific|screener|market_level|conversational|memory_recall|general_knowledge|real_time_info",
+  "query_type": "stock_specific|crypto_specific|comparison|screener|market_level|conversational|memory_recall|general_knowledge|real_time_info",
   "symbols": ["SYMBOL1", "SYMBOL2"],
   "tool_categories": ["category1", "category2"],
   "market_type": "stock|crypto|both|null",
@@ -690,6 +697,33 @@ User asks about what happened TODAY with Tesla. This requires current real-time 
 </reasoning>
 <classification>
 {{"query_type": "real_time_info", "symbols": ["TSLA"], "tool_categories": ["price", "news", "web"], "market_type": "stock", "requires_tools": true, "confidence": 0.94, "intent_summary": "Latest news and events for Tesla today", "response_language": "en"}}
+</classification>
+
+Example 11 - Comparison (Stock vs Crypto):
+Query: "So sánh cổ phiếu Bitcoin với Bitcoin thật"
+<reasoning>
+User wants to compare "cổ phiếu Bitcoin" (Bitcoin ETFs like IBIT, GBTC) with "Bitcoin thật" (actual BTC cryptocurrency). This is a comparison query requiring both stock and crypto data. Need to fetch price data for Bitcoin ETFs and Bitcoin crypto to compare performance.
+</reasoning>
+<classification>
+{{"query_type": "comparison", "symbols": ["IBIT", "GBTC", "BTC"], "tool_categories": ["price", "crypto"], "market_type": "both", "requires_tools": true, "confidence": 0.95, "intent_summary": "Compare Bitcoin ETFs with actual Bitcoin cryptocurrency", "response_language": "vi"}}
+</classification>
+
+Example 12 - Bitcoin with Stock Context:
+Query: "Giá BTC" (UI Context: Active Tab = stock)
+<reasoning>
+User asks about BTC price. UI context shows Active Tab is "stock", so BTC should be interpreted as a stock symbol (Grayscale Bitcoin Trust or similar). Use stock tools.
+</reasoning>
+<classification>
+{{"query_type": "stock_specific", "symbols": ["BTC"], "tool_categories": ["price"], "market_type": "stock", "requires_tools": true, "confidence": 0.90, "intent_summary": "Stock price for BTC ticker", "response_language": "vi"}}
+</classification>
+
+Example 13 - Bitcoin with Crypto Context:
+Query: "Giá BTC" (UI Context: Active Tab = crypto)
+<reasoning>
+User asks about BTC price. UI context shows Active Tab is "crypto", so BTC should be interpreted as Bitcoin cryptocurrency. Use crypto tools.
+</reasoning>
+<classification>
+{{"query_type": "crypto_specific", "symbols": ["BTC"], "tool_categories": ["crypto", "price"], "market_type": "crypto", "requires_tools": true, "confidence": 0.95, "intent_summary": "Bitcoin cryptocurrency price", "response_language": "vi"}}
 </classification>
 
 Example 11 - Current Position/State (Real-Time Info):

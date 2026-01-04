@@ -15,6 +15,7 @@ class QueryType(str, Enum):
     """Types of user queries"""
     STOCK_SPECIFIC = "stock_specific"      # Query about specific stock(s)
     CRYPTO_SPECIFIC = "crypto_specific"    # Query about specific crypto
+    COMPARISON = "comparison"              # Comparing multiple assets (stock vs crypto, etc.)
     SCREENER = "screener"                  # Finding stocks by criteria
     MARKET_LEVEL = "market_level"          # Market overview, indices
     CONVERSATIONAL = "conversational"      # Greetings, thanks, bye
@@ -117,6 +118,13 @@ class UnifiedClassificationResult:
             self.requires_tools = True
             if "web" not in self.tool_categories:
                 self.tool_categories.append("web")
+
+        # Comparison queries always need tools from multiple categories
+        if self.query_type == QueryType.COMPARISON:
+            self.requires_tools = True
+            # Ensure price category is present for comparisons
+            if "price" not in self.tool_categories:
+                self.tool_categories.append("price")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/serialization"""

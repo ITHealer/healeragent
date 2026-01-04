@@ -231,10 +231,16 @@ class StreamingChatHandler(LoggerMixin):
         enable_compaction: bool = True,
         enable_think_tool: bool = False,
         cancellation_token: CancellationToken = None,
+        classification: Dict[str, Any] = None,
         **kwargs
     ) -> AsyncGenerator[StreamEvent, None]:
         """
         Main streaming entry point. Yields StreamEvent objects for SSE.
+
+        Args:
+            classification: Optional pre-computed classification from UnifiedClassifier.
+                           If provided, PlanningAgent will reuse it instead of running
+                           its own classification (saves 1 LLM call).
 
         Phases: Context -> Planning -> Execution -> Assembly -> Generation -> Done
         """
@@ -411,7 +417,8 @@ class StreamingChatHandler(LoggerMixin):
                 wm_context=wm_context,
                 model_name=model_name,
                 provider_type=provider_type,
-                parent_node_id=planning_node_id
+                parent_node_id=planning_node_id,
+                pre_classification=classification,
             ):
                 # Check cancellation during planning
                 if await self._check_cancellation():
@@ -1073,9 +1080,16 @@ class StreamingChatHandler(LoggerMixin):
         wm_context: str = "",
         model_name: str = "gpt-4.1-nano",
         provider_type: str = "openai",
-        parent_node_id: str = None
+        parent_node_id: str = None,
+        pre_classification: Dict[str, Any] = None
     ) -> AsyncGenerator[Any, None]:
-        """Stream planning process with progress events."""
+        """
+        Stream planning process with progress events.
+
+        Args:
+            pre_classification: Optional pre-computed classification from UnifiedClassifier.
+                               If provided, skips duplicate classification in PlanningAgent.
+        """
         # Format recent chat
         formatted_recent = [
             {
@@ -1121,13 +1135,15 @@ class StreamingChatHandler(LoggerMixin):
             parent_id=parent_node_id
         )
         
-        # Execute actual planning (ONLY 1 LLM call here)
+        # Execute actual planning
+        # If pre_classification is provided, PlanningAgent will skip Stage 1 (saves 1 LLM call)
         task_plan = await self.planning_agent.think_and_plan(
             query=query,
             recent_chat=formatted_recent,
             core_memory=context_data['core_memory'],
             summary=context_data['summary'],
-            working_memory_context=wm_context
+            working_memory_context=wm_context,
+            pre_classification=pre_classification
         )
         
         language = 'auto'
