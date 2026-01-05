@@ -87,6 +87,11 @@ class NormalModeAgent(LoggerMixin):
     2. Max turns reached (safety limit)
     3. Error occurs
 
+    Features:
+    - Adaptive max_turns based on query complexity
+    - Per-tool timeout (5s default)
+    - Partial success handling
+
     Usage:
         agent = NormalModeAgent()
         result = await agent.run(
@@ -96,8 +101,16 @@ class NormalModeAgent(LoggerMixin):
         )
     """
 
-    # Maximum turns to prevent infinite loops
+    # Maximum turns to prevent infinite loops (default, can be overridden)
     MAX_TURNS = 10
+
+    # Adaptive max_turns based on query type
+    ADAPTIVE_MAX_TURNS = {
+        "simple": 2,       # price queries, single symbol
+        "analysis": 4,     # technical/fundamental analysis
+        "complex": 6,      # comparison, multi-symbol, screener
+        "default": 4,      # fallback
+    }
 
     # Default model configuration (from settings, with fallback)
     @property
@@ -141,6 +154,52 @@ class NormalModeAgent(LoggerMixin):
             f"[NORMAL_MODE] Initialized: model={self.model_name}, "
             f"max_turns={self.max_turns}, tools={len(self.registry.get_all_tools())}"
         )
+
+    def _get_adaptive_max_turns(
+        self,
+        classification: Optional[UnifiedClassificationResult] = None,
+    ) -> int:
+        """
+        Calculate adaptive max_turns based on query complexity.
+
+        Rules:
+        - Simple (price only, single symbol): 2 turns
+        - Analysis (technical, fundamental): 4 turns
+        - Complex (comparison, multi-symbol, screener): 6 turns
+
+        Args:
+            classification: Query classification result
+
+        Returns:
+            Optimal max_turns for this query type
+        """
+        if not classification:
+            return self.ADAPTIVE_MAX_TURNS["default"]
+
+        query_type = classification.query_type.value if hasattr(classification.query_type, 'value') else str(classification.query_type)
+        categories = classification.tool_categories or []
+        symbols = classification.symbols or []
+
+        # Complex queries: comparison, screener, many symbols
+        if query_type in ["comparison", "screener"]:
+            return self.ADAPTIVE_MAX_TURNS["complex"]
+
+        if len(symbols) > 2:
+            return self.ADAPTIVE_MAX_TURNS["complex"]
+
+        # Simple queries: price only, single symbol
+        if len(categories) == 1 and categories[0] == "price":
+            return self.ADAPTIVE_MAX_TURNS["simple"]
+
+        if query_type == "conversational" or not classification.requires_tools:
+            return self.ADAPTIVE_MAX_TURNS["simple"]
+
+        # Analysis queries: technical, fundamentals, etc.
+        analysis_categories = {"technical", "fundamentals", "risk", "news"}
+        if any(cat in analysis_categories for cat in categories):
+            return self.ADAPTIVE_MAX_TURNS["analysis"]
+
+        return self.ADAPTIVE_MAX_TURNS["default"]
 
     # ========================================================================
     # MAIN ENTRY POINT
@@ -476,10 +535,18 @@ class NormalModeAgent(LoggerMixin):
                 images=images,
             )
 
-            # Run agent loop
+            # Run agent loop with ADAPTIVE max_turns
             total_tool_calls = 0
+            adaptive_max = self._get_adaptive_max_turns(classification)
 
-            for turn_num in range(1, self.max_turns + 1):
+            if enable_thinking:
+                yield {
+                    "type": "thinking",
+                    "content": f"Query complexity: max_turns={adaptive_max}",
+                    "phase": "adaptive_config",
+                }
+
+            for turn_num in range(1, adaptive_max + 1):
                 yield {"type": "turn_start", "turn": turn_num}
 
                 if enable_thinking:
@@ -612,12 +679,12 @@ class NormalModeAgent(LoggerMixin):
                     })
 
             # Max turns reached - stream final response
-            yield {"type": "max_turns_reached", "turns": self.max_turns}
+            yield {"type": "max_turns_reached", "turns": adaptive_max}
 
             if enable_thinking:
                 yield {
                     "type": "thinking",
-                    "content": f"Max turns ({self.max_turns}) reached - synthesizing final response",
+                    "content": f"Max turns ({adaptive_max}) reached - synthesizing final response",
                     "phase": "max_turns_synthesis",
                 }
 
@@ -630,7 +697,7 @@ class NormalModeAgent(LoggerMixin):
 
             yield {
                 "type": "done",
-                "total_turns": self.max_turns,
+                "total_turns": adaptive_max,
                 "total_tool_calls": total_tool_calls,
             }
 
@@ -892,35 +959,51 @@ class NormalModeAgent(LoggerMixin):
     # TOOL EXECUTION
     # ========================================================================
 
+    # Default timeout per tool (seconds)
+    DEFAULT_TOOL_TIMEOUT = 5.0
+
     async def _execute_tools_parallel(
         self,
         tool_calls: List[ToolCall],
         flow_id: str,
         user_id: Optional[int] = None,
         session_id: Optional[str] = None,
+        tool_timeout: float = DEFAULT_TOOL_TIMEOUT,
     ) -> List[Dict[str, Any]]:
         """
-        Execute multiple tools in parallel.
+        Execute multiple tools in parallel with timeout and partial success handling.
+
+        Features:
+        - Per-tool timeout (default 5s) - one slow tool doesn't block others
+        - Partial success - returns successful results even if some tools fail
+        - Detailed error reporting for failed tools
 
         Args:
             tool_calls: List of tool calls to execute
             flow_id: Flow identifier for logging
             user_id: User identifier
             session_id: Session identifier
+            tool_timeout: Timeout per tool in seconds (default 5s)
 
         Returns:
-            List of tool results in same order as input
+            List of tool results in same order as input (includes partial successes)
         """
-        async def execute_single(tc: ToolCall) -> Dict[str, Any]:
+        async def execute_single_with_timeout(tc: ToolCall) -> Dict[str, Any]:
+            """Execute a single tool with timeout wrapper."""
+            start_time = datetime.now()
             try:
                 self.logger.debug(
                     f"[{flow_id}] Executing {tc.name}: {tc.arguments}"
                 )
 
-                result = await self.registry.execute_tool(
-                    tool_name=tc.name,
-                    params=tc.arguments,
-                )
+                # Wrap tool execution with timeout
+                async with asyncio.timeout(tool_timeout):
+                    result = await self.registry.execute_tool(
+                        tool_name=tc.name,
+                        params=tc.arguments,
+                    )
+
+                execution_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
                 # Convert ToolOutput to dict
                 if isinstance(result, ToolOutput):
@@ -930,44 +1013,88 @@ class NormalModeAgent(LoggerMixin):
                         "data": result.data,
                         "error": result.error,
                         "formatted_context": result.formatted_context,
+                        "execution_time_ms": execution_time_ms,
                     }
 
-                return result if isinstance(result, dict) else {"data": result}
+                output = result if isinstance(result, dict) else {"data": result}
+                output["tool_name"] = tc.name
+                output["execution_time_ms"] = execution_time_ms
+                if "status" not in output:
+                    output["status"] = "success"
+                return output
+
+            except asyncio.TimeoutError:
+                execution_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+                self.logger.warning(
+                    f"[{flow_id}] Tool {tc.name} TIMEOUT after {tool_timeout}s"
+                )
+                return {
+                    "tool_name": tc.name,
+                    "status": "timeout",
+                    "error": f"Tool timed out after {tool_timeout}s",
+                    "execution_time_ms": execution_time_ms,
+                    "partial_success": False,
+                }
 
             except Exception as e:
+                execution_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
                 self.logger.error(f"[{flow_id}] Tool {tc.name} failed: {e}")
                 return {
                     "tool_name": tc.name,
                     "status": "error",
                     "error": str(e),
+                    "execution_time_ms": execution_time_ms,
+                    "partial_success": False,
                 }
 
-        # Execute all tools in parallel
+        # Execute all tools in parallel (each with individual timeout)
         results = await asyncio.gather(
-            *[execute_single(tc) for tc in tool_calls],
-            return_exceptions=True
+            *[execute_single_with_timeout(tc) for tc in tool_calls],
+            return_exceptions=True  # Don't let one exception cancel others
         )
 
-        # Handle exceptions
+        # Handle any unhandled exceptions from gather
         processed_results = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
+                # This shouldn't happen often since we catch exceptions inside
                 processed_results.append({
                     "tool_name": tool_calls[i].name,
                     "status": "error",
                     "error": str(result),
+                    "partial_success": False,
                 })
             else:
                 processed_results.append(result)
 
-        # Log summary
+        # Calculate success metrics for partial success handling
         success_count = sum(
             1 for r in processed_results
             if r.get("status") in ["success", "200"]
         )
-        self.logger.info(
-            f"[{flow_id}] Tools executed: {success_count}/{len(tool_calls)} success"
+        timeout_count = sum(
+            1 for r in processed_results
+            if r.get("status") == "timeout"
         )
+        error_count = sum(
+            1 for r in processed_results
+            if r.get("status") == "error"
+        )
+
+        # Log summary with partial success info
+        total = len(tool_calls)
+        if success_count == total:
+            self.logger.info(f"[{flow_id}] Tools: ✅ {success_count}/{total} all success")
+        elif success_count > 0:
+            self.logger.info(
+                f"[{flow_id}] Tools: ⚠️ PARTIAL SUCCESS {success_count}/{total} "
+                f"(timeout={timeout_count}, error={error_count})"
+            )
+        else:
+            self.logger.warning(
+                f"[{flow_id}] Tools: ❌ ALL FAILED {total} tools "
+                f"(timeout={timeout_count}, error={error_count})"
+            )
 
         return processed_results
 

@@ -271,8 +271,25 @@ class NormalModeChatHandler(LoggerMixin):
             )
 
             # ================================================================
+            # STEP 1.5: PRE-RESOLVE SYMBOLS (NEW - before classification)
+            # Enriches context so LLM classifier has better symbol info
+            # Flow: Query → Symbol Pre-check → Enrich Context → LLM Classify
+            # ================================================================
+            pre_resolved = await self._pre_resolve_symbols(
+                flow_id=flow_id,
+                query=query,
+                ui_context=context_data.get("ui_context"),
+            )
+
+            # Add pre-resolved info to context for classification
+            if pre_resolved.get("context_hint"):
+                context_data["pre_resolved_hint"] = pre_resolved["context_hint"]
+                context_data["pre_resolved_symbols"] = pre_resolved["pre_resolved"]
+
+            # ================================================================
             # STEP 2: UNIFIED CLASSIFICATION (skip if already provided)
             # Supports multimodal: images are analyzed for better intent detection
+            # Now with pre-resolved symbol context for better accuracy!
             # ================================================================
             if classification is None:
                 classification = await self._classify_query(
@@ -678,6 +695,130 @@ class NormalModeChatHandler(LoggerMixin):
     # INTERNAL METHODS
     # ========================================================================
 
+    async def _pre_resolve_symbols(
+        self,
+        flow_id: str,
+        query: str,
+        ui_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        PRE-RESOLVE symbols BEFORE classification.
+
+        This enriches the context so the LLM classifier has better information
+        about which symbols exist and their types.
+
+        New Flow:
+            Query → Symbol Pre-check → Enrich Context → LLM Classify
+        Old Flow:
+            Query → LLM Classify → Symbol Resolve → Override
+
+        Args:
+            flow_id: Flow identifier for logging
+            query: User query
+            ui_context: Optional UI context (active_tab, etc.)
+
+        Returns:
+            Dict with pre_resolved_symbols info for classification enrichment
+        """
+        import re
+
+        result = {
+            "pre_resolved": [],       # List of resolved symbol info
+            "potential_symbols": [],  # Raw extracted symbols
+            "has_stock_suffix": False,  # .HK, .SS, etc.
+            "context_hint": "",       # Text hint for classifier
+        }
+
+        try:
+            # 1. Extract potential symbols from query using patterns
+            # Stock patterns: AAPL, NVDA, VNM, 0700.HK, 600519.SS
+            stock_pattern = r'\b([A-Z]{1,5})\b|\b(\d{4,6}\.[A-Z]{2})\b'
+            # Crypto patterns: BTC, ETH, BTCUSDT
+            crypto_pattern = r'\b([A-Z]{2,10}(?:USDT|USD|BUSD)?)\b'
+
+            matches = re.findall(stock_pattern, query.upper())
+            potential = set()
+            for m in matches:
+                symbol = m[0] or m[1]
+                if symbol and len(symbol) >= 2:
+                    potential.add(symbol)
+
+            # Check for exchange suffixes (strong signal for stock)
+            stock_suffixes = ['.HK', '.SS', '.SZ', '.VN', '.SI', '.KS', '.T', '.L']
+            for suffix in stock_suffixes:
+                if suffix in query.upper():
+                    result["has_stock_suffix"] = True
+                    break
+
+            result["potential_symbols"] = list(potential)
+
+            if not potential:
+                return result
+
+            # 2. Lookup in symbol cache
+            symbol_cache = get_symbol_cache()
+
+            for symbol in list(potential)[:5]:  # Limit to 5 to avoid overhead
+                # Clean symbol (remove USDT suffix for lookup)
+                clean_symbol = symbol.replace("USDT", "").replace("USD", "")
+                if len(clean_symbol) < 2:
+                    continue
+
+                # Check if known crypto
+                is_crypto = symbol_cache.is_crypto(clean_symbol)
+                is_stock = symbol_cache.is_stock(clean_symbol)
+                is_ambiguous = symbol_cache.is_ambiguous(clean_symbol)
+
+                info = {
+                    "symbol": clean_symbol,
+                    "original": symbol,
+                    "is_crypto": is_crypto,
+                    "is_stock": is_stock,
+                    "is_ambiguous": is_ambiguous,
+                }
+
+                # Get detailed info if available
+                try:
+                    symbol_info = symbol_cache.get_symbol_info(clean_symbol)
+                    if symbol_info:
+                        info["name"] = symbol_info.name
+                        info["asset_class"] = symbol_info.asset_class.value
+                        if symbol_info.exchange:
+                            info["exchange"] = symbol_info.exchange
+                except Exception:
+                    pass
+
+                result["pre_resolved"].append(info)
+
+            # 3. Build context hint for classifier
+            if result["pre_resolved"]:
+                hints = []
+                for info in result["pre_resolved"]:
+                    if info.get("is_ambiguous"):
+                        hints.append(f"{info['symbol']}: AMBIGUOUS (crypto AND stock)")
+                    elif info.get("is_crypto") and not info.get("is_stock"):
+                        hints.append(f"{info['symbol']}: cryptocurrency")
+                    elif info.get("is_stock") and not info.get("is_crypto"):
+                        exchange = info.get("exchange", "")
+                        hints.append(f"{info['symbol']}: stock{' (' + exchange + ')' if exchange else ''}")
+
+                if hints:
+                    result["context_hint"] = "Pre-resolved symbols: " + "; ".join(hints)
+
+            # 4. Apply UI context for disambiguation hints
+            if ui_context:
+                active_tab = ui_context.get("active_tab")
+                if active_tab in ["stock", "crypto"]:
+                    result["context_hint"] += f" | UI context suggests: {active_tab}"
+
+            if result["context_hint"]:
+                self.logger.info(f"[{flow_id}] Pre-resolve: {result['context_hint']}")
+
+        except Exception as e:
+            self.logger.warning(f"[{flow_id}] Pre-resolve symbols failed: {e}")
+
+        return result
+
     async def _load_context(
         self,
         flow_id: str,
@@ -853,6 +994,9 @@ class NormalModeChatHandler(LoggerMixin):
             ui_context=context_data.get("ui_context"),
             # Multimodal: pass images for vision-based classification
             images=images,
+            # Pre-resolved symbols (NEW - enriches context BEFORE LLM)
+            pre_resolved_hint=context_data.get("pre_resolved_hint"),
+            pre_resolved_symbols=context_data.get("pre_resolved_symbols"),
         )
 
         # Classify (detailed logging handled by UnifiedClassifier)

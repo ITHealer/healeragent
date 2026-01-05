@@ -43,6 +43,7 @@ VALID_CATEGORIES = [
     "discovery",    # Stock screening
     "memory",       # Cross-session memory search
     "web",          # Web search for additional information
+    "reasoning",    # Think tool for complex analysis
 ]
 
 
@@ -227,6 +228,11 @@ class ClassifierContext:
     # List of ProcessedImage for vision-based classification
     images: Optional[List[Any]] = None
 
+    # Pre-resolved Symbols (NEW - from symbol cache lookup)
+    # Enriches context BEFORE LLM classification
+    pre_resolved_hint: Optional[str] = None
+    pre_resolved_symbols: Optional[List[Dict[str, Any]]] = None
+
     def format_history(self, max_turns: int = 5) -> str:
         """Format conversation history for prompt"""
         if not self.conversation_history:
@@ -299,4 +305,34 @@ class ClassifierContext:
         parts.append("- Documents or reports")
         parts.append("- Other visual content related to their query")
         parts.append("</image_context>")
+        return "\n".join(parts)
+
+    def format_pre_resolved_context(self) -> str:
+        """
+        Format pre-resolved symbol context for prompt.
+
+        This provides the LLM with verified symbol information BEFORE classification,
+        enabling more accurate query type determination.
+        """
+        if not self.pre_resolved_hint:
+            return ""
+
+        parts = ["<pre_resolved_symbols>"]
+        parts.append("The following symbols have been pre-verified from the symbol database:")
+        parts.append(self.pre_resolved_hint)
+
+        # Add detailed info if available
+        if self.pre_resolved_symbols:
+            for info in self.pre_resolved_symbols:
+                symbol = info.get("symbol", "")
+                if info.get("is_ambiguous"):
+                    parts.append(f"- {symbol}: ⚠️ AMBIGUOUS - exists as both crypto AND stock")
+                elif info.get("is_crypto") and not info.get("is_stock"):
+                    parts.append(f"- {symbol}: ✓ Verified cryptocurrency")
+                elif info.get("is_stock") and not info.get("is_crypto"):
+                    exchange = info.get("exchange", "")
+                    parts.append(f"- {symbol}: ✓ Verified stock{' (' + exchange + ')' if exchange else ''}")
+
+        parts.append("Use this verified information to make more accurate classification decisions.")
+        parts.append("</pre_resolved_symbols>")
         return "\n".join(parts)

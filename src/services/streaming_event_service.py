@@ -440,10 +440,23 @@ class StreamEventEmitter(LoggerMixin):
             f"count={len(formatted)} success={success_count}"
         )
 
-    def emit_thinking(self, message: str = "Processing...") -> str:
-        """Emit thinking/processing event"""
-        data = {"message": message}
-        return self._emit(StreamEventType.THINKING, data)
+    def emit_thinking(
+        self,
+        message: str = "Processing...",
+        content: Optional[str] = None,
+        phase: Optional[str] = None,
+    ) -> str:
+        """
+        Emit thinking/processing event.
+
+        Enhanced to support structured thinking phases for AI transparency:
+        - content: Detailed thinking content (e.g., classification reasoning)
+        - phase: Phase of thinking (e.g., 'classification_reasoning', 'tool_selection')
+        """
+        data = {"message": content or message}
+        if phase:
+            data["phase"] = phase
+        return self._emit(StreamEventType.THINKING, data, f"phase={phase or 'general'}")
 
     def emit_content(self, content: str, is_final: bool = False) -> str:
         """Emit content chunk event"""

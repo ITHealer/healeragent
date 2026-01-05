@@ -545,6 +545,13 @@ async def stream_chat(
             )
             classification = await classifier.classify(ctx)
 
+            # Stream classification thinking/reasoning (NEW - #16 Stream thinking process)
+            if classification.reasoning and data.enable_thinking:
+                yield emitter.emit_thinking(
+                    content=f"🎯 Classification reasoning:\n{classification.reasoning[:500]}",
+                    phase="classification_reasoning",
+                )
+
             yield emitter.emit_classified(
                 query_type=classification.query_type.value,
                 requires_tools=classification.requires_tools,

@@ -555,6 +555,9 @@ class UnifiedClassifier(LoggerMixin):
         # Format image context (Multimodal)
         image_context = context.format_image_context()
 
+        # Format pre-resolved symbol context (NEW - enriches context before LLM)
+        pre_resolved_context = context.format_pre_resolved_context()
+
         # Get current date
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -601,6 +604,8 @@ You are a financial query classification system. Analyze the user's query and pr
 {ui_context}
 
 {image_context}
+
+{pre_resolved_context}
 
 <analysis_instructions>
 Analyze the query carefully:
