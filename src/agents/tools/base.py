@@ -369,13 +369,26 @@ class BaseTool(ABC):
             if param.enum and value not in param.enum:
                 errors.append(f"{param.name} must be one of {param.enum}, got {value}")
             
+            # Symbol normalization - LLMs often add suffixes like -USD, -USDT
+            if param.name == "symbol" and isinstance(value, str):
+                original_value = value
+                # Normalize: uppercase and strip common suffixes
+                value = value.upper().strip()
+                # Remove common suffixes that LLMs add (for stock symbols)
+                for suffix in ['-USD', '-USDT', '-BUSD', '/USD', '/USDT']:
+                    if value.endswith(suffix):
+                        value = value[:-len(suffix)]
+                        self.logger.debug(f"[VALIDATE] Normalized symbol: {original_value} → {value}")
+                        break
+
             # Pattern validation (for strings)
             if param.type == "string" and param.pattern:
                 import re
                 pattern = param.pattern
                 if param.name == "symbol":
+                    # Standard stock symbol pattern: AAPL, BTC, GOOGL.L (London)
                     pattern = r"^[A-Z0-9]{1,10}(\.[A-Z]{1,2})?$"
-            
+
                 if not re.match(pattern, str(value)):
                     errors.append(f"{param.name} must match pattern {pattern}, got {value}")
             
