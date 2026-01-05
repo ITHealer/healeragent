@@ -60,7 +60,7 @@ def normalize_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any
                             arguments = json.loads(arguments)
                         else:
                             arguments = {}
-                    except:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         arguments = {}
                 
                 if "symbols" not in arguments:

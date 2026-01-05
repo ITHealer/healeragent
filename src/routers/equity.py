@@ -253,8 +253,9 @@ async def websocket_gateway(
                     await websocket.send_json({"event": "ping"})
                     continue
                 # Nếu ping fail → client đã disconnect
-                except: 
-                    is_connected = False 
+                except (ConnectionError, RuntimeError, Exception) as e:
+                    self.logger.debug(f"WebSocket ping failed: {e}")
+                    is_connected = False
                     break
 
             request = WebSocketRequest(**payload_json)

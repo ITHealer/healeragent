@@ -159,10 +159,10 @@ class EquityMapper:
         cash_mrq_float = None
         if data.get("total_debt") is not None:
             try: total_debt_float = float(data.get("total_debt"))
-            except: pass
+            except (ValueError, TypeError): pass
         if cash_mrq is not None:
             try: cash_mrq_float = float(cash_mrq)
-            except: pass
+            except (ValueError, TypeError): pass
 
         if total_debt_float is not None and cash_mrq_float is not None:
             data["net_debt"] = total_debt_float - cash_mrq_float
@@ -175,11 +175,11 @@ class EquityMapper:
         data["year_high"] = metrics_sec_outlook.get("yearHigh", q_supp.get("yearHigh"))
         data["year_low"] = metrics_sec_outlook.get("yearLow", q_supp.get("yearLow"))
         if data["year_high"] is None and profile_sec.get("range"):
-            try: 
+            try:
                 low_str, high_str = profile_sec.get("range").split('-')
                 data["year_low"] = float(low_str)
                 data["year_high"] = float(high_str)
-            except: pass
+            except (ValueError, TypeError, AttributeError): pass
 
         data["dividend_yield"] = ratios_ttm.get("dividendYielTTM", metrics_sec_outlook.get("dividendYielTTM"))
         data["dividends_per_share"] = ratios_ttm.get("dividendPerShareTTM")
@@ -191,10 +191,10 @@ class EquityMapper:
 
         if dps_ttm_val_str is not None:
             try: dps_ttm_float = float(dps_ttm_val_str)
-            except: pass
+            except (ValueError, TypeError): pass
         if shares_out_val_str is not None:
             try: shares_out_float = float(shares_out_val_str)
-            except: pass
+            except (ValueError, TypeError): pass
             
         if dps_ttm_float is not None and shares_out_float is not None and shares_out_float > 0:
             data["dividends_paid"] = dps_ttm_float * shares_out_float
@@ -223,7 +223,7 @@ class EquityMapper:
         fcf_per_share_ttm_float: Optional[float] = None
         if fcf_per_share_ttm_str is not None:
             try: fcf_per_share_ttm_float = float(fcf_per_share_ttm_str)
-            except: pass
+            except (ValueError, TypeError): pass
 
         if fcf_per_share_ttm_float is not None and shares_out_float is not None and shares_out_float > 0:
             data["free_cash_flow"] = fcf_per_share_ttm_float * shares_out_float

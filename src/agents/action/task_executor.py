@@ -63,16 +63,17 @@ class TaskExecutor(LoggerMixin):
     ):
         """Initialize task executor."""
         super().__init__()
-        
+
         self.tool_execution_service = tool_execution_service
         self.validation_agent = validation_agent or ValidationAgent()
         self.max_retries = max_retries
         self.max_symbols_per_task = max_symbols_per_task
-        
-        # Track outputs for dependency injection
+
+        # Track outputs for dependency injection (protected by lock)
         self.task_outputs: Dict[int, Dict[str, Any]] = {}
-        
-        self.logger.info("[TASK_EXECUTOR] Initialized v2.2 (skip-on-empty-deps)")
+        self._outputs_lock = asyncio.Lock()  # Prevent race conditions
+
+        self.logger.info("[TASK_EXECUTOR] Initialized v2.3 (thread-safe)")
 
     
     # ========================================================================
@@ -102,8 +103,9 @@ class TaskExecutor(LoggerMixin):
             self.logger.info(f"[{flow_id}]   Symbols: {plan.symbols}")
             self.logger.info(f"[{flow_id}] {'=' * 60}")
             
-            # Reset execution state
-            self.task_outputs = {}
+            # Reset execution state (thread-safe)
+            async with self._outputs_lock:
+                self.task_outputs = {}
             
             # Initialize statistics
             stats = {
@@ -251,11 +253,12 @@ class TaskExecutor(LoggerMixin):
             
             results.append(result)
             
-            # Track outputs for dependency injection
+            # Track outputs for dependency injection (thread-safe)
             if result.success and result.data:
-                self.task_outputs[task.id] = result.data
+                async with self._outputs_lock:
+                    self.task_outputs[task.id] = result.data
                 completed_task_ids.add(task.id)
-                
+
                 symbols = self._extract_symbols_from_output(result.data)
                 self.logger.info(
                     f"[{flow_id}] ✅ Task {task.id} COMPLETED - {len(symbols)} symbols"
@@ -338,8 +341,9 @@ class TaskExecutor(LoggerMixin):
             else:
                 results.append(result)
                 if result.success:
-                    self.task_outputs[result.task_id] = result.data
-        
+                    async with self._outputs_lock:
+                        self.task_outputs[result.task_id] = result.data
+
         return results
     
     # ========================================================================

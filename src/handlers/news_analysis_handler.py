@@ -340,11 +340,11 @@ Please structure your analysis clearly and provide specific, actionable insights
         try:
             # Handle format: "2024-02-28 05:55:00"
             return datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S")
-        except:
+        except (ValueError, TypeError):
             try:
                 # Fallback to date only
                 return datetime.strptime(date_str[:10], "%Y-%m-%d")
-            except:
+            except (ValueError, TypeError, IndexError):
                 return datetime.now()
     
     def _extract_market_impact(self, analysis_text: str) -> str:

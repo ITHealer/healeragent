@@ -1416,7 +1416,7 @@ class StreamingChatHandler(LoggerMixin):
             import json
             try:
                 return json.dumps(result['data'], ensure_ascii=False)[:self.config.max_tool_preview_length]
-            except:
+            except (TypeError, ValueError, json.JSONDecodeError):
                 return str(result['data'])[:self.config.max_tool_preview_length]
         
         return str(result)[:self.config.max_tool_preview_length]

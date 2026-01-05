@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from apscheduler.triggers.interval import IntervalTrigger
 
+from src.middleware.rate_limiter import RateLimitMiddleware, RateLimitConfig
+
 from src.utils.config import settings
 from src.utils.constants import CODEMIND_LLM
 from src.app import IncludeAPIRouter, logger_instance
@@ -92,6 +94,21 @@ def get_application(lifespan: Any = None):
     )
 
     _app.add_middleware(SessionMiddleware, secret_key=secret_key)
+
+    # Add rate limiting middleware (production-ready)
+    # Configurable via environment variables
+    rate_limit_enabled = env_bool("RATE_LIMIT_ENABLED", default=IS_PROD)
+    if rate_limit_enabled:
+        rate_config = RateLimitConfig(
+            default_limit=int(os.getenv("RATE_LIMIT_DEFAULT", "100")),
+            chat_limit=int(os.getenv("RATE_LIMIT_CHAT", "30")),
+            stream_limit=int(os.getenv("RATE_LIMIT_STREAM", "20")),
+            burst_limit=int(os.getenv("RATE_LIMIT_BURST", "10")),
+            enabled=True,
+            use_redis=True,
+        )
+        _app.add_middleware(RateLimitMiddleware, config=rate_config)
+        logger.info(f"[RATE_LIMIT] Enabled: default={rate_config.default_limit}/min, chat={rate_config.chat_limit}/min")
 
     return _app
 

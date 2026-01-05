@@ -771,7 +771,7 @@ Note: Tools fetch LIVE data from financial APIs
         try:
             fixed = self._fix_truncated_json(content, stage)
             return json.loads(fixed)
-        except:
+        except (json.JSONDecodeError, TypeError, ValueError):
             pass
 
         # Stage3: Extract metadata and tasks
@@ -811,7 +811,7 @@ Note: Tools fetch LIVE data from financial APIs
                                         "priority": "medium",
                                         "dependencies": []
                                     })
-                            except:
+                            except (AttributeError, IndexError, KeyError):
                                 continue
 
                     return {
@@ -823,7 +823,7 @@ Note: Tools fetch LIVE data from financial APIs
                         "reasoning": "Recovered from truncated response",
                         "tasks": tasks
                     }
-            except:
+            except (AttributeError, IndexError, KeyError, re.error):
                 pass
 
         # Stage1: Extract classification
@@ -851,7 +851,7 @@ Note: Tools fetch LIVE data from financial APIs
                         "reasoning": "Recovered from truncated response",
                         "response_language": "vi"
                     }
-            except:
+            except (AttributeError, IndexError, KeyError, re.error):
                 pass
 
         return None
