@@ -428,9 +428,6 @@ class NormalModeAgent(LoggerMixin):
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
                     images=images,
-                    model_name=effective_model,
-                    provider_type=effective_provider,
-                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -460,9 +457,6 @@ class NormalModeAgent(LoggerMixin):
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
                     images=images,
-                    model_name=effective_model,
-                    provider_type=effective_provider,
-                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
