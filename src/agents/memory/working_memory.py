@@ -891,35 +891,52 @@ class WorkingMemory(LoggerMixin):
 class WorkingMemoryManager(LoggerMixin):
     """
     Manages working memory instances across sessions
-    
-    Thread-safe singleton pattern for global access
+
+    Features:
+    - Thread-safe singleton pattern for global access
+    - Redis persistence for cross-restart recovery
+    - Automatic snapshot saving for recovery
     """
-    
+
     _instance = None
     _lock = threading.Lock()
-    
+
     # Session cleanup
     SESSION_TTL_SECONDS = 3600 * 4  # 4 hours
     MAX_SESSIONS = 1000
-    
+
+    # Auto-save interval (save snapshot every N turns)
+    AUTO_SAVE_INTERVAL = 3
+
     def __new__(cls):
         with cls._lock:
             if cls._instance is None:
                 cls._instance = super().__new__(cls)
                 cls._instance._initialized = False
             return cls._instance
-    
+
     def __init__(self):
         if self._initialized:
             return
-        
+
         super().__init__()
         self._sessions: Dict[str, WorkingMemory] = {}
         self._session_lock = threading.RLock()
         self._initialized = True
-        
-        self.logger.info("[WORKING_MEMORY_MANAGER] Initialized")
-    
+        self._persistence_service = None  # Lazy init
+
+        self.logger.info("[WORKING_MEMORY_MANAGER] Initialized with Redis persistence support")
+
+    def _get_persistence_service(self):
+        """Get persistence service (lazy init to avoid circular imports)."""
+        if self._persistence_service is None:
+            try:
+                from src.agents.memory.persistent_working_memory import get_persistent_wm_service
+                self._persistence_service = get_persistent_wm_service()
+            except Exception as e:
+                self.logger.warning(f"[WORKING_MEMORY_MANAGER] Persistence unavailable: {e}")
+        return self._persistence_service
+
     def get_or_create(
         self,
         session_id: str,
@@ -932,24 +949,189 @@ class WorkingMemoryManager(LoggerMixin):
                 # Cleanup if too many sessions
                 if len(self._sessions) >= self.MAX_SESSIONS:
                     self._cleanup_old_sessions()
-                
+
                 self._sessions[session_id] = WorkingMemory(
                     session_id=session_id,
                     user_id=user_id,
                     max_tokens=max_tokens,
                 )
-                
+
                 self.logger.debug(
                     f"[WORKING_MEMORY_MANAGER] Created new session {session_id[:8]}..."
                 )
-            
+
             return self._sessions[session_id]
-    
+
+    async def get_or_create_with_recovery(
+        self,
+        session_id: str,
+        user_id: str,
+        max_tokens: int = WorkingMemory.DEFAULT_MAX_TOKENS,
+    ) -> WorkingMemory:
+        """
+        Get existing, recover from Redis, or create new working memory.
+
+        This is the recommended method for production use as it enables
+        cross-restart recovery.
+
+        Args:
+            session_id: Session identifier
+            user_id: User identifier
+            max_tokens: Maximum token capacity
+
+        Returns:
+            WorkingMemory instance (recovered or new)
+        """
+        with self._session_lock:
+            # Check if already in memory
+            if session_id in self._sessions:
+                return self._sessions[session_id]
+
+            # Try to recover from Redis
+            wm = await self._recover_from_redis(session_id, user_id, max_tokens)
+
+            if wm:
+                self._sessions[session_id] = wm
+                self.logger.info(
+                    f"[WORKING_MEMORY_MANAGER] Recovered session {session_id[:8]}... from Redis"
+                )
+                return wm
+
+            # Create new if not recovered
+            if len(self._sessions) >= self.MAX_SESSIONS:
+                self._cleanup_old_sessions()
+
+            self._sessions[session_id] = WorkingMemory(
+                session_id=session_id,
+                user_id=user_id,
+                max_tokens=max_tokens,
+            )
+
+            self.logger.debug(
+                f"[WORKING_MEMORY_MANAGER] Created new session {session_id[:8]}..."
+            )
+
+            return self._sessions[session_id]
+
+    async def _recover_from_redis(
+        self,
+        session_id: str,
+        user_id: str,
+        max_tokens: int,
+    ) -> Optional[WorkingMemory]:
+        """Attempt to recover working memory from Redis snapshot."""
+        service = self._get_persistence_service()
+        if not service:
+            return None
+
+        try:
+            snapshot = await service.load_snapshot(session_id)
+            if not snapshot:
+                return None
+
+            # Create working memory from snapshot
+            wm = WorkingMemory(
+                session_id=session_id,
+                user_id=user_id,
+                max_tokens=max_tokens,
+            )
+
+            # Restore state from snapshot
+            wm._current_turn = snapshot.current_turn
+
+            # Restore symbols if any
+            if snapshot.symbols:
+                wm.add_symbols(snapshot.symbols, source="recovered")
+
+            # Restore query context if available
+            if snapshot.last_intent:
+                wm.add_query_context(
+                    intent=snapshot.last_intent,
+                    language=snapshot.last_language,
+                    query_type=snapshot.last_query_type,
+                )
+
+            self.logger.info(
+                f"[WORKING_MEMORY_MANAGER] Recovered from Redis: "
+                f"turn={snapshot.current_turn}, symbols={snapshot.symbols}"
+            )
+
+            return wm
+
+        except Exception as e:
+            self.logger.error(f"[WORKING_MEMORY_MANAGER] Recovery failed: {e}")
+            return None
+
+    async def save_to_redis(self, session_id: str) -> bool:
+        """
+        Save working memory snapshot to Redis for recovery.
+
+        Call this periodically or after important state changes.
+
+        Args:
+            session_id: Session to save
+
+        Returns:
+            True if saved successfully
+        """
+        service = self._get_persistence_service()
+        if not service:
+            return False
+
+        with self._session_lock:
+            wm = self._sessions.get(session_id)
+            if not wm:
+                return False
+
+            try:
+                from src.agents.memory.persistent_working_memory import WorkingMemorySnapshot
+
+                # Get recent tool names
+                tool_outputs = wm.get_tool_outputs(limit=5)
+                recent_tools = [t.get("tool_name") for t in tool_outputs if t.get("tool_name")]
+
+                # Get query context
+                query_ctx = wm.get_query_context() or {}
+
+                snapshot = WorkingMemorySnapshot(
+                    session_id=wm.session_id,
+                    user_id=wm.user_id,
+                    current_turn=wm._current_turn,
+                    symbols=wm.get_current_symbols(),
+                    last_intent=query_ctx.get("intent"),
+                    last_language=query_ctx.get("language", "auto"),
+                    last_query_type=query_ctx.get("query_type"),
+                    recent_tools=recent_tools,
+                )
+
+                return await service.save_snapshot(snapshot)
+
+            except Exception as e:
+                self.logger.error(f"[WORKING_MEMORY_MANAGER] Save failed: {e}")
+                return False
+
+    async def auto_save_if_needed(self, session_id: str) -> bool:
+        """
+        Auto-save snapshot if enough turns have passed.
+
+        Call this after each turn to enable periodic snapshots.
+        """
+        with self._session_lock:
+            wm = self._sessions.get(session_id)
+            if not wm:
+                return False
+
+            # Save every AUTO_SAVE_INTERVAL turns
+            if wm._current_turn > 0 and wm._current_turn % self.AUTO_SAVE_INTERVAL == 0:
+                return await self.save_to_redis(session_id)
+
+        return False
+
     def get(self, session_id: str) -> Optional[WorkingMemory]:
         """Get existing working memory (or None)"""
         with self._session_lock:
             return self._sessions.get(session_id)
-    
+
     def remove(self, session_id: str) -> bool:
         """Remove a session's working memory"""
         with self._session_lock:
@@ -957,25 +1139,44 @@ class WorkingMemoryManager(LoggerMixin):
                 del self._sessions[session_id]
                 return True
             return False
-    
+
+    async def remove_with_cleanup(self, session_id: str) -> bool:
+        """Remove session from memory and Redis."""
+        service = self._get_persistence_service()
+
+        with self._session_lock:
+            removed = False
+            if session_id in self._sessions:
+                del self._sessions[session_id]
+                removed = True
+
+        # Also cleanup Redis
+        if service:
+            try:
+                await service.delete_snapshot(session_id)
+            except Exception:
+                pass
+
+        return removed
+
     def _cleanup_old_sessions(self):
         """Remove sessions older than TTL"""
         with self._session_lock:
             cutoff = datetime.now() - timedelta(seconds=self.SESSION_TTL_SECONDS)
-            
+
             old_sessions = [
                 sid for sid, wm in self._sessions.items()
                 if wm.last_modified < cutoff
             ]
-            
+
             for sid in old_sessions:
                 del self._sessions[sid]
-            
+
             if old_sessions:
                 self.logger.info(
                     f"[WORKING_MEMORY_MANAGER] Cleaned up {len(old_sessions)} old sessions"
                 )
-    
+
     def get_all_stats(self) -> Dict[str, Any]:
         """Get stats for all sessions"""
         with self._session_lock:
@@ -986,6 +1187,22 @@ class WorkingMemoryManager(LoggerMixin):
                     for sid, wm in self._sessions.items()
                 }
             }
+
+    async def get_persistence_stats(self) -> Dict[str, Any]:
+        """Get stats including Redis persistence."""
+        stats = self.get_all_stats()
+
+        service = self._get_persistence_service()
+        if service:
+            try:
+                persistence_stats = await service.get_stats()
+                stats["persistence"] = persistence_stats
+            except Exception:
+                stats["persistence"] = {"available": False}
+        else:
+            stats["persistence"] = {"available": False}
+
+        return stats
 
 
 # ============================================================================
@@ -1002,6 +1219,30 @@ def get_working_memory(
     user_id: str,
     max_tokens: int = WorkingMemory.DEFAULT_MAX_TOKENS,
 ) -> WorkingMemory:
-    """Convenience function to get/create working memory"""
+    """Convenience function to get/create working memory (sync version)"""
     manager = get_working_memory_manager()
     return manager.get_or_create(session_id, user_id, max_tokens)
+
+
+async def get_working_memory_with_recovery(
+    session_id: str,
+    user_id: str,
+    max_tokens: int = WorkingMemory.DEFAULT_MAX_TOKENS,
+) -> WorkingMemory:
+    """
+    Get working memory with Redis recovery support (async version).
+
+    This is the recommended function for production use as it enables
+    cross-restart recovery from Redis.
+
+    Usage:
+        wm = await get_working_memory_with_recovery(session_id, user_id)
+        wm.increment_turn()
+        wm.add_symbols(["AAPL"])
+
+        # After turn, auto-save if needed
+        manager = get_working_memory_manager()
+        await manager.auto_save_if_needed(session_id)
+    """
+    manager = get_working_memory_manager()
+    return await manager.get_or_create_with_recovery(session_id, user_id, max_tokens)
