@@ -57,7 +57,7 @@ from src.services.asset.symbol_resolver import (
 
 # Cache key prefix for Redis
 CACHE_KEY_PREFIX = "classification:"
-CACHE_TTL_SECONDS = 120  # 2 minutes
+CACHE_TTL_SECONDS = 300  # 5 minutes - longer TTL saves LLM costs for repeated queries
 
 
 class ClassificationCache(LoggerMixin):

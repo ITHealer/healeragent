@@ -146,6 +146,20 @@ async def app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[SYMBOL CACHE] Failed to initialize: {e}")
         logger.warning("Symbol disambiguation will use defaults")
+
+    # -------------------------------------------------------------------------
+    # 1.6 Pre-warm UnifiedClassifier (avoid cold start on first request)
+    # -------------------------------------------------------------------------
+    try:
+        from src.agents.classification import get_unified_classifier
+        classifier = get_unified_classifier()
+        logger.info(
+            f"[CLASSIFIER] Pre-warmed: "
+            f"model={classifier.model_name}, "
+            f"vision={classifier.vision_model_name or 'None'}"
+        )
+    except Exception as e:
+        logger.warning(f"[CLASSIFIER] Pre-warm failed: {e}")
         
     # -------------------------------------------------------------------------
     # 2. Start Consumer Manager Process
