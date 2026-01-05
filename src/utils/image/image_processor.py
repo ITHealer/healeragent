@@ -1,29 +1,26 @@
 """
 Image Processing Utilities for Multimodal Support.
 
-Provides:
-- Image validation (format, size)
-- Image conversion (file/URL to base64)
-- Provider-agnostic image content structures
+Production-ready image processing like ChatGPT/Claude:
+- Supports URL, base64, file upload
+- Uses requests with retry mechanism
+- Proper error handling and logging
 """
 
 import base64
 import asyncio
-import mimetypes
-import urllib.request
-import urllib.error
+import ssl
 from pathlib import Path
 from enum import Enum
-from typing import Optional, Union, Tuple
+from typing import Optional, Union, Tuple, List
 from dataclasses import dataclass
-from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor
 
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
 from src.utils.logger.custom_logging import LoggerMixin
-
-
-# Thread pool for blocking URL fetches
-_url_executor = ThreadPoolExecutor(max_workers=4)
 
 
 # ============================================================================
@@ -51,8 +48,13 @@ EXTENSION_TO_MIME = {
 # Maximum image size (20MB)
 MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024
 
-# Maximum dimension for some providers
-MAX_IMAGE_DIMENSION = 8192
+# HTTP client settings
+HTTP_TIMEOUT = 30
+HTTP_MAX_RETRIES = 3
+HTTP_BACKOFF_FACTOR = 1.0
+
+# Thread pool for blocking requests
+_request_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="image_fetch")
 
 
 # ============================================================================
@@ -136,8 +138,6 @@ def validate_image_format(
     Returns:
         Tuple of (is_valid, message, detected_media_type)
     """
-    detected_type = None
-
     # Check from media_type
     if media_type:
         if media_type in SUPPORTED_FORMATS:
@@ -199,6 +199,96 @@ def validate_image_size(
 
 
 # ============================================================================
+# HTTP Session with Retry
+# ============================================================================
+
+def _create_retry_session() -> requests.Session:
+    """Create a requests session with retry mechanism."""
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=HTTP_MAX_RETRIES,
+        backoff_factor=HTTP_BACKOFF_FACTOR,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "HEAD"],
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    return session
+
+
+def _sync_fetch_url(url: str, timeout: int = HTTP_TIMEOUT) -> Tuple[bytes, str]:
+    """
+    Synchronous URL fetch with retry.
+
+    Args:
+        url: URL to fetch
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (data, content_type)
+
+    Raises:
+        ValueError: If fetch fails
+    """
+    session = _create_retry_session()
+
+    try:
+        response = session.get(
+            url,
+            timeout=timeout,
+            headers={
+                "User-Agent": "HealerAgent/1.0 (Image Processor)",
+                "Accept": "image/*,*/*",
+            },
+            verify=True,  # Verify SSL by default
+            allow_redirects=True,
+        )
+        response.raise_for_status()
+
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+        return response.content, content_type
+
+    except requests.exceptions.Timeout:
+        raise ValueError(f"Timeout fetching image from URL (>{timeout}s)")
+    except requests.exceptions.ConnectionError as e:
+        raise ValueError(f"Connection error fetching image: {e}")
+    except requests.exceptions.HTTPError as e:
+        raise ValueError(f"HTTP error fetching image: {e.response.status_code}")
+    except requests.exceptions.RequestException as e:
+        raise ValueError(f"Failed to fetch image: {e}")
+    finally:
+        session.close()
+
+
+async def fetch_url_async(
+    url: str,
+    timeout: int = HTTP_TIMEOUT,
+) -> Tuple[bytes, str]:
+    """
+    Async wrapper for URL fetch.
+
+    Args:
+        url: URL to fetch
+        timeout: Request timeout in seconds
+
+    Returns:
+        Tuple of (data, content_type)
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        _request_executor,
+        _sync_fetch_url,
+        url,
+        timeout,
+    )
+
+
+# ============================================================================
 # Conversion Functions
 # ============================================================================
 
@@ -241,21 +331,9 @@ def image_to_base64(file_path: str) -> Tuple[str, str, int]:
     return base64_data, media_type, size_bytes
 
 
-def _sync_fetch_url(url: str, timeout: float = 30.0) -> Tuple[bytes, str]:
-    """Synchronous URL fetch for use in thread pool."""
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "HealerAgent/1.0"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
-        data = response.read()
-        return data, content_type
-
-
 async def url_to_base64(
     url: str,
-    timeout: float = 30.0,
+    timeout: int = HTTP_TIMEOUT,
 ) -> Tuple[str, str, int]:
     """
     Fetch image from URL and convert to base64.
@@ -268,18 +346,10 @@ async def url_to_base64(
         Tuple of (base64_data, media_type, size_bytes)
 
     Raises:
-        urllib.error.URLError: If request fails
-        ValueError: If format is invalid or image too large
+        ValueError: If request fails, format is invalid, or image too large
     """
-    loop = asyncio.get_event_loop()
-
-    # Run blocking URL fetch in thread pool
-    data, content_type = await loop.run_in_executor(
-        _url_executor,
-        _sync_fetch_url,
-        url,
-        timeout,
-    )
+    # Fetch with retry
+    data, content_type = await fetch_url_async(url, timeout)
 
     size_bytes = len(data)
 
@@ -455,10 +525,15 @@ async def process_image_input(
 class ImageProcessor(LoggerMixin):
     """
     High-level image processor with logging and batch processing.
+
+    Production-ready features:
+    - Retry mechanism for URL fetching
+    - Proper error handling with detailed logs
+    - Support for URL, base64, and file inputs
     """
 
     def __init__(self, max_size_bytes: int = MAX_IMAGE_SIZE_BYTES):
-        super().__init__()  # Initialize LoggerMixin to get self.logger
+        super().__init__()
         self.max_size_bytes = max_size_bytes
 
     async def process(
@@ -469,11 +544,17 @@ class ImageProcessor(LoggerMixin):
         Process a single image.
 
         Args:
-            image: Image input
+            image: Image input (URL, base64, file path, or dict)
 
         Returns:
-            ProcessedImage
+            ProcessedImage ready for LLM
+
+        Raises:
+            ValueError: If image cannot be processed
         """
+        # Extract URL/source for logging
+        source_info = self._get_source_info(image)
+
         try:
             result = await process_image_input(image)
             self.logger.debug(
@@ -481,14 +562,17 @@ class ImageProcessor(LoggerMixin):
                 f"type={result.media_type} | size={result.size_bytes / 1024:.1f}KB"
             )
             return result
-        except Exception as e:
-            self.logger.error(f"[IMAGE] Processing failed: {e}")
+        except ValueError as e:
+            self.logger.error(f"[IMAGE] Processing failed for {source_info}: {e}")
             raise
+        except Exception as e:
+            self.logger.error(f"[IMAGE] Unexpected error for {source_info}: {e}")
+            raise ValueError(f"Failed to process image: {e}")
 
     async def process_batch(
         self,
-        images: list,
-    ) -> list[ProcessedImage]:
+        images: List[Union[ImageContent, str, dict]],
+    ) -> List[ProcessedImage]:
         """
         Process multiple images.
 
@@ -496,7 +580,7 @@ class ImageProcessor(LoggerMixin):
             images: List of image inputs
 
         Returns:
-            List of ProcessedImage
+            List of ProcessedImage (failed images are skipped)
         """
         results = []
         for i, img in enumerate(images):
@@ -509,6 +593,27 @@ class ImageProcessor(LoggerMixin):
 
         self.logger.info(f"[IMAGE] Batch processed: {len(results)}/{len(images)} images")
         return results
+
+    def _get_source_info(self, image: Union[ImageContent, str, dict]) -> str:
+        """Extract source info for logging."""
+        if isinstance(image, str):
+            if image.startswith(("http://", "https://")):
+                # Truncate URL for logging
+                return f"URL={image[:100]}..." if len(image) > 100 else f"URL={image}"
+            elif image.startswith("data:"):
+                return "data_url"
+            return f"file={image}"
+        elif isinstance(image, dict):
+            source = image.get("source", "unknown")
+            data = image.get("data", "")
+            if source == "url" and data:
+                return f"URL={data[:100]}..." if len(data) > 100 else f"URL={data}"
+            return f"source={source}"
+        elif isinstance(image, ImageContent):
+            if image.source == ImageSource.URL:
+                return f"URL={image.data[:100]}..." if len(image.data) > 100 else f"URL={image.data}"
+            return f"source={image.source.value}"
+        return "unknown"
 
     def validate(
         self,
