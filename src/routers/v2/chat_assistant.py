@@ -536,10 +536,12 @@ async def stream_chat(
 
             classifier = _get_classifier()
 
+            # Build classification context WITH images for multimodal analysis
             ctx = ClassifierContext(
                 query=query,  # Use validated query
                 conversation_history=[],
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
+                images=processed_images,  # Include images for vision-based classification
             )
             classification = await classifier.classify(ctx)
 
@@ -552,6 +554,7 @@ async def stream_chat(
                 language=classification.response_language,
                 reasoning=classification.reasoning,  # AI thought process
                 intent_summary=classification.intent_summary,
+                classification_method=classification.classification_method,  # llm, llm_vision, fallback
             )
 
             # Resolve charts from classification (for frontend display)

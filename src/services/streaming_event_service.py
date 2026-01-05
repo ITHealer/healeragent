@@ -322,6 +322,7 @@ class StreamEventEmitter(LoggerMixin):
         language: str,
         reasoning: Optional[str] = None,
         intent_summary: Optional[str] = None,
+        classification_method: Optional[str] = None,
     ) -> str:
         """Emit classification result event"""
         data = {
@@ -337,10 +338,13 @@ class StreamEventEmitter(LoggerMixin):
             data["reasoning"] = reasoning
         if intent_summary:
             data["intent_summary"] = intent_summary
+        # Include classification method (llm, llm_vision, fallback)
+        if classification_method:
+            data["classification_method"] = classification_method
 
         return self._emit(
             StreamEventType.CLASSIFIED, data,
-            f"type={query_type} tools={requires_tools} symbols={symbols}"
+            f"type={query_type} tools={requires_tools} symbols={symbols} method={classification_method or 'llm'}"
         )
 
     # ========================================================================
