@@ -165,6 +165,21 @@ async def _process_images(
             source_value = img_input.source
             data_value = img_input.data or ""  # Handle None
 
+            # ========================================================
+            # VALIDATION: Skip invalid/placeholder image data
+            # ========================================================
+            # Check for invalid placeholder values
+            invalid_values = {"string", "null", "undefined", "none", ""}
+            if source_value.lower() in invalid_values and not data_value:
+                _logger.debug(f"[IMAGE] Skipping invalid image source: '{source_value}'")
+                continue
+
+            # Skip if both source and data are empty/invalid
+            if not source_value or source_value.lower() in invalid_values:
+                if not data_value or data_value.lower() in invalid_values:
+                    _logger.debug(f"[IMAGE] Skipping empty image data")
+                    continue
+
             # Auto-detect: if source looks like a URL, treat it as the data
             if source_value.startswith(("http://", "https://")):
                 # User put URL in source field instead of data
@@ -184,8 +199,16 @@ async def _process_images(
 
             # Standard source types
             elif source_value == "url":
+                # Validate that data contains a valid URL
+                if not data_value or not data_value.startswith(("http://", "https://")):
+                    _logger.debug(f"[IMAGE] Skipping: source='url' but data is invalid: '{data_value[:50] if data_value else 'empty'}'")
+                    continue
                 source_type = ImageSource.URL
             elif source_value == "base64":
+                # Validate that data looks like base64 (min length)
+                if not data_value or len(data_value) < 50:
+                    _logger.debug(f"[IMAGE] Skipping: source='base64' but data too short or empty")
+                    continue
                 source_type = ImageSource.BASE64
             elif source_value == "data_url":
                 source_type = ImageSource.BASE64
@@ -203,9 +226,13 @@ async def _process_images(
                     parts = data_value.split(",", 1)
                     if len(parts) == 2:
                         data_value = parts[1]
-                else:
-                    # Assume base64
+                elif len(data_value) > 100:
+                    # Assume base64 only if data is long enough
                     source_type = ImageSource.BASE64
+                else:
+                    # Invalid or placeholder data, skip
+                    _logger.debug(f"[IMAGE] Skipping unrecognized format: source='{source_value}', data='{data_value[:30] if data_value else 'empty'}'")
+                    continue
 
             image_content = ImageContent(
                 source=source_type,

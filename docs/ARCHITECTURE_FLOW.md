@@ -502,9 +502,11 @@ User Query: "Giá BTC"  +  active_tab: "crypto"
 
 #### Per-tool Timeout (#11)
 ```python
-# In normal_mode_agent.py
-async with asyncio.timeout(5.0):  # 5 second timeout per tool
-    result = await self.registry.execute_tool(...)
+# In normal_mode_agent.py (Python 3.7+ compatible)
+result = await asyncio.wait_for(
+    self.registry.execute_tool(...),
+    timeout=5.0  # 5 second timeout per tool
+)
 ```
 - Each tool executes with 5s timeout
 - One slow tool doesn't block others

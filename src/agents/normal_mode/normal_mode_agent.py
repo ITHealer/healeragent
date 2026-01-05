@@ -996,12 +996,14 @@ class NormalModeAgent(LoggerMixin):
                     f"[{flow_id}] Executing {tc.name}: {tc.arguments}"
                 )
 
-                # Wrap tool execution with timeout
-                async with asyncio.timeout(tool_timeout):
-                    result = await self.registry.execute_tool(
+                # Wrap tool execution with timeout (using wait_for for Python < 3.11 compatibility)
+                result = await asyncio.wait_for(
+                    self.registry.execute_tool(
                         tool_name=tc.name,
                         params=tc.arguments,
-                    )
+                    ),
+                    timeout=tool_timeout
+                )
 
                 execution_time_ms = int((datetime.now() - start_time).total_seconds() * 1000)
 
