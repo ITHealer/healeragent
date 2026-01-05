@@ -127,6 +127,19 @@ class UnifiedClassificationResult:
             if "price" not in self.tool_categories:
                 self.tool_categories.append("price")
 
+        # FIX: If tool_categories are present, requires_tools MUST be True
+        # This fixes LLM inconsistency where categories exist but requires_tools=False
+        if self.tool_categories and not self.requires_tools:
+            self.requires_tools = True
+
+        # FIX: If query is about specific assets with symbols, it needs tools
+        if self.query_type in [QueryType.STOCK_SPECIFIC, QueryType.CRYPTO_SPECIFIC]:
+            if self.symbols:  # Has symbols → needs tools to fetch data
+                self.requires_tools = True
+                # Ensure at least price category for asset queries
+                if not self.tool_categories:
+                    self.tool_categories = ["price"]
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/serialization"""
         result = {

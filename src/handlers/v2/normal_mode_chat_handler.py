@@ -764,10 +764,14 @@ class NormalModeChatHandler(LoggerMixin):
                 if len(clean_symbol) < 2:
                     continue
 
-                # Check if known crypto
-                is_crypto = symbol_cache.is_crypto(clean_symbol)
-                is_stock = symbol_cache.is_stock(clean_symbol)
-                is_ambiguous = symbol_cache.is_ambiguous(clean_symbol)
+                # Use correct API: exists() with AssetClass and lookup()
+                from src.services.asset.symbol_cache import AssetClass
+
+                is_crypto = symbol_cache.exists(clean_symbol, AssetClass.CRYPTO)
+                is_stock = symbol_cache.exists(clean_symbol, AssetClass.STOCK)
+
+                # Check ambiguity via lookup()
+                symbol_info, is_ambiguous = symbol_cache.lookup(clean_symbol)
 
                 info = {
                     "symbol": clean_symbol,
@@ -778,15 +782,11 @@ class NormalModeChatHandler(LoggerMixin):
                 }
 
                 # Get detailed info if available
-                try:
-                    symbol_info = symbol_cache.get_symbol_info(clean_symbol)
-                    if symbol_info:
-                        info["name"] = symbol_info.name
-                        info["asset_class"] = symbol_info.asset_class.value
-                        if symbol_info.exchange:
-                            info["exchange"] = symbol_info.exchange
-                except Exception:
-                    pass
+                if symbol_info:
+                    info["name"] = symbol_info.name
+                    info["asset_class"] = symbol_info.asset_class.value
+                    if symbol_info.exchange:
+                        info["exchange"] = symbol_info.exchange
 
                 result["pre_resolved"].append(info)
 
