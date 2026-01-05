@@ -427,6 +427,10 @@ class NormalModeAgent(LoggerMixin):
                     flow_id=flow_id,
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
+                    images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -455,6 +459,10 @@ class NormalModeAgent(LoggerMixin):
                     flow_id=flow_id,
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
+                    images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -781,8 +789,17 @@ class NormalModeAgent(LoggerMixin):
         flow_id: str,
         core_memory: Optional[str] = None,
         conversation_summary: Optional[str] = None,
+        images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response without tools."""
+        # Use provided model/provider or fallback to instance defaults
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+        effective_api_key = api_key or self.api_key
+
         messages = self._build_no_tools_messages(
             query=query,
             classification=classification,
@@ -790,13 +807,20 @@ class NormalModeAgent(LoggerMixin):
             system_language=system_language,
             core_memory=core_memory,
             conversation_summary=conversation_summary,
+            images=images,
+            provider_type=effective_provider,
+        )
+
+        self.logger.debug(
+            f"[{flow_id}] Streaming no-tools response | model={effective_model} | "
+            f"has_images={images is not None and len(images) > 0}"
         )
 
         async for chunk in self.llm_provider.stream_response(
-            model_name=self.model_name,
+            model_name=effective_model,
             messages=messages,
-            provider_type=self.provider_type,
-            api_key=self.api_key,
+            provider_type=effective_provider,
+            api_key=effective_api_key,
             max_tokens=2000,
             temperature=0.7,
         ):
@@ -1147,6 +1171,8 @@ RESPONSE FORMAT:
         system_language: str,
         core_memory: Optional[str] = None,
         conversation_summary: Optional[str] = None,
+        images: Optional[List[Any]] = None,
+        provider_type: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build messages for no-tools response."""
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
@@ -1162,17 +1188,24 @@ RESPONSE FORMAT:
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
+        # Add image hint if images are present
+        image_hint = ""
+        if images:
+            image_hint = f"\n\nNote: User has attached {len(images)} image(s). Analyze and describe the image content."
+
         system_prompt = f"""You are a friendly financial assistant.
 
 Current Date: {current_date}
 Response Language: {system_language.upper()}
 Query Type: {query_type}
 {user_context}
+{image_hint}
 
 Respond naturally and helpfully. Be conversational for greetings,
 and educational for general knowledge questions.
 When answering questions about user's profile or past conversations,
-use the USER_PROFILE and CONVERSATION_SUMMARY provided above."""
+use the USER_PROFILE and CONVERSATION_SUMMARY provided above.
+If an image is attached, describe and analyze its content."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -1183,7 +1216,17 @@ use the USER_PROFILE and CONVERSATION_SUMMARY provided above."""
                 if content:
                     messages.append({"role": role, "content": content})
 
-        messages.append({"role": "user", "content": query})
+        # Add user message with images if present
+        if images:
+            effective_provider = provider_type or self.provider_type
+            user_message = self._format_user_message_with_images(
+                query=query,
+                images=images,
+                provider_type=effective_provider,
+            )
+            messages.append(user_message)
+        else:
+            messages.append({"role": "user", "content": query})
 
         return messages
 
