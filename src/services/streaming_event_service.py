@@ -87,15 +87,22 @@ class StreamEventType(str, Enum):
     VERIFICATION = "verification"
     REPORT = "report"
 
-    # Thinking/Reasoning Events (AI Agent)
+    # Thinking/Reasoning Events (AI Agent) - LEGACY, use REASONING instead
     THINKING_START = "thinking_start"
     THINKING_DELTA = "thinking_delta"
     THINKING_END = "thinking_end"
 
-    # LLM Decision Events (AI Agent Tree)
+    # LLM Decision Events (AI Agent Tree) - LEGACY, use REASONING instead
     LLM_THOUGHT = "llm_thought"
     LLM_DECISION = "llm_decision"
     LLM_ACTION = "llm_action"
+
+    # =========================================================================
+    # UNIFIED EVENT TYPE (Recommended for FE)
+    # =========================================================================
+    # Use this single event type for ALL thinking/reasoning display
+    # Consolidates: thinking_*, llm_thought, llm_decision, llm_action
+    REASONING = "reasoning"
 
 
 # ============================================================================
@@ -655,6 +662,79 @@ class StreamEventEmitter(LoggerMixin):
         return self._emit(
             StreamEventType.LLM_ACTION, data,
             f"type={action_type} name={action_name}"
+        )
+
+    # ========================================================================
+    # UNIFIED REASONING EVENT (Recommended for FE)
+    # ========================================================================
+
+    def emit_reasoning(
+        self,
+        phase: str,
+        content: str,
+        action: str = "thought",
+        progress: Optional[float] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Emit unified reasoning event for thought process display.
+
+        This is the RECOMMENDED event type for FE to display "thinking" process.
+        Consolidates: thinking_*, llm_thought, llm_decision, llm_action
+
+        Args:
+            phase: Current reasoning phase
+                - "classification": Analyzing query intent
+                - "planning": Creating execution plan
+                - "tool_selection": Deciding which tools to use
+                - "tool_execution": Executing tools
+                - "tool_analysis": Analyzing tool results
+                - "synthesis": Synthesizing final response
+                - "verification": Verifying results
+            content: The reasoning content to display to user
+            action: Action type within phase
+                - "start": Beginning of phase
+                - "progress": Progress update within phase
+                - "thought": A reasoning thought
+                - "decision": A decision was made
+                - "complete": Phase completed
+            progress: Optional progress (0.0 - 1.0)
+            metadata: Optional additional context
+
+        Returns:
+            SSE formatted string
+
+        Example:
+            emit_reasoning(
+                phase="tool_selection",
+                content="Analyzing query to determine required tools...",
+                action="start"
+            )
+            emit_reasoning(
+                phase="tool_selection",
+                content="Decided to use getStockPrice for AAPL",
+                action="decision",
+                metadata={"tool": "getStockPrice", "symbol": "AAPL"}
+            )
+        """
+        data = {
+            "phase": phase,
+            "action": action,
+            "content": content,
+        }
+
+        if progress is not None:
+            data["progress"] = round(progress, 2)
+
+        if metadata:
+            data["metadata"] = metadata
+
+        # Create preview for logging
+        preview = content[:60] + "..." if len(content) > 60 else content
+
+        return self._emit(
+            StreamEventType.REASONING, data,
+            f"phase={phase} action={action} \"{preview}\""
         )
 
 
