@@ -271,12 +271,14 @@ class NormalModeChatHandler(LoggerMixin):
 
             # ================================================================
             # STEP 2: UNIFIED CLASSIFICATION (skip if already provided)
+            # Supports multimodal: images are analyzed for better intent detection
             # ================================================================
             if classification is None:
                 classification = await self._classify_query(
                     flow_id=flow_id,
                     query=query,
                     context_data=context_data,
+                    images=images,  # Pass images for multimodal classification
                 )
             else:
                 self.logger.info(f"[{flow_id}] Using pre-computed classification (skipped LLM call)")
@@ -503,10 +505,13 @@ class NormalModeChatHandler(LoggerMixin):
         user_id: str,
         enable_thinking: bool = True,
         enable_llm_events: bool = True,
+        images: Optional[List[Any]] = None,
         **kwargs,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Handle chat with structured streaming events including thinking/reasoning.
+
+        Supports multimodal input (images) for vision-based classification.
 
         Yields events with type and data for frontend consumption:
         - context_loaded: Memory context loaded
@@ -525,6 +530,7 @@ class NormalModeChatHandler(LoggerMixin):
             query: User query
             session_id: Session identifier
             user_id: User identifier
+            images: Optional list of ProcessedImage for multimodal
             enable_thinking: Enable thinking events
             enable_llm_events: Enable LLM decision events
             **kwargs: Additional arguments
@@ -548,13 +554,14 @@ class NormalModeChatHandler(LoggerMixin):
 
             yield {"type": "context_loaded", "data": {"symbols": context_data.get("current_symbols", [])}}
 
-            # Classification
-            yield {"type": "classifying", "data": {}}
+            # Classification (with multimodal support)
+            yield {"type": "classifying", "data": {"has_images": images is not None and len(images) > 0}}
 
             classification = await self._classify_query(
                 flow_id=flow_id,
                 query=query,
                 context_data=context_data,
+                images=images,  # Pass images for multimodal classification
             )
 
             yield {
@@ -729,12 +736,27 @@ class NormalModeChatHandler(LoggerMixin):
         flow_id: str,
         query: str,
         context_data: Dict[str, Any],
+        images: Optional[List[Any]] = None,
     ) -> UnifiedClassificationResult:
-        """Run unified classification."""
+        """
+        Run unified classification with multimodal support.
+
+        When images are provided, uses vision-capable model to analyze
+        both text and images for better intent classification.
+
+        Args:
+            flow_id: Flow identifier for logging
+            query: User's text query
+            context_data: Context including history, memory, ui_context
+            images: Optional list of ProcessedImage for multimodal classification
+
+        Returns:
+            UnifiedClassificationResult with classification result
+        """
         start = time.time()
         # Classification logging is handled by UnifiedClassifier with visual structure
 
-        # Build classifier context
+        # Build classifier context with multimodal support
         context = ClassifierContext(
             query=query,
             conversation_history=context_data.get("chat_history", []),
@@ -742,6 +764,8 @@ class NormalModeChatHandler(LoggerMixin):
             working_memory_summary=context_data.get("working_context", ""),
             # Soft Context Inheritance: pass UI context for symbol resolution
             ui_context=context_data.get("ui_context"),
+            # Multimodal: pass images for vision-based classification
+            images=images,
         )
 
         # Classify (detailed logging handled by UnifiedClassifier)

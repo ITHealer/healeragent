@@ -203,6 +203,7 @@ class ClassifierContext:
     Assembled from various memory sources before classification.
 
     Now includes UI context for Soft Context Inheritance.
+    Now supports multimodal input (images) for better intent classification.
     """
 
     # User query
@@ -221,6 +222,10 @@ class ClassifierContext:
     # UI Context (Soft Context Inheritance)
     # Passed from frontend to enable context-aware symbol resolution
     ui_context: Optional[Dict[str, Any]] = None
+
+    # Multimodal Input (Images)
+    # List of ProcessedImage for vision-based classification
+    images: Optional[List[Any]] = None
 
     def format_history(self, max_turns: int = 5) -> str:
         """Format conversation history for prompt"""
@@ -272,3 +277,26 @@ class ClassifierContext:
         if self.ui_context:
             return self.ui_context.get("active_tab", "none")
         return "none"
+
+    def has_images(self) -> bool:
+        """Check if context has images for multimodal classification."""
+        return bool(self.images and len(self.images) > 0)
+
+    def get_image_count(self) -> int:
+        """Get number of images in context."""
+        return len(self.images) if self.images else 0
+
+    def format_image_context(self) -> str:
+        """Format image context description for text-only prompts."""
+        if not self.has_images():
+            return ""
+
+        parts = ["<image_context>"]
+        parts.append(f"User has attached {self.get_image_count()} image(s).")
+        parts.append("The image(s) may contain:")
+        parts.append("- Financial charts or graphs")
+        parts.append("- Stock/crypto screenshots")
+        parts.append("- Documents or reports")
+        parts.append("- Other visual content related to their query")
+        parts.append("</image_context>")
+        return "\n".join(parts)

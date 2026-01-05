@@ -10,6 +10,11 @@ Before (2 LLM calls):
 
 After (1 LLM call):
 - Unified Classification → query_type, categories, symbols, requires_tools, intent_summary
+
+Multimodal Support:
+- When images are attached, uses vision-capable model for classification
+- Analyzes image content to better understand user intent
+- Similar to how ChatGPT/Claude handles multimodal input
 """
 
 import json
@@ -223,27 +228,47 @@ class UnifiedClassifier(LoggerMixin):
     - Few-shot examples for accuracy
     - Graceful fallback handling
     - Soft Context Inheritance for symbol resolution
+    - Multimodal support (images) for better intent classification
 
     Usage:
         classifier = UnifiedClassifier(model_name="gpt-4.1-nano")
         result = await classifier.classify(context, resolve_symbols=True)
     """
 
+    # Vision-capable models for multimodal classification
+    VISION_MODELS = {
+        ProviderType.OPENAI: "gpt-4o-mini",  # OpenAI vision model
+        ProviderType.OPENROUTER: "qwen/qwen2.5-vl-72b-instruct:free",  # OpenRouter free vision
+        ProviderType.OLLAMA: "llava",  # Ollama vision model
+    }
+
     def __init__(
         self,
         model_name: str = None,
         provider_type: str = None,
+        vision_model_name: str = None,
+        vision_provider_type: str = None,
         max_retries: int = 2,
     ):
         super().__init__()
 
+        # Text-only classification model
         self.model_name = model_name or settings.CLASSIFIER_MODEL or "gpt-4.1-nano"
         self.provider_type = provider_type or settings.CLASSIFIER_PROVIDER or ProviderType.OPENAI
         self.max_retries = max_retries
 
+        # Vision model for multimodal classification (falls back to defaults)
+        self.vision_model_name = vision_model_name or getattr(
+            settings, 'VISION_CLASSIFIER_MODEL', None
+        ) or self.VISION_MODELS.get(self.provider_type)
+        self.vision_provider_type = vision_provider_type or getattr(
+            settings, 'VISION_CLASSIFIER_PROVIDER', None
+        ) or self.provider_type
+
         # Initialize LLM provider
         self.llm_provider = LLMGeneratorProvider()
         self.api_key = ModelProviderFactory._get_api_key(self.provider_type)
+        self.vision_api_key = ModelProviderFactory._get_api_key(self.vision_provider_type)
 
         # Symbol resolver for Soft Context Inheritance
         self._symbol_resolver: Optional[SymbolResolver] = None
@@ -251,6 +276,10 @@ class UnifiedClassifier(LoggerMixin):
         self.logger.info(
             f"[CLASSIFIER] Initialized: model={self.model_name}, provider={self.provider_type}"
         )
+        if self.vision_model_name:
+            self.logger.info(
+                f"[CLASSIFIER] Vision model: {self.vision_model_name}, provider={self.vision_provider_type}"
+            )
 
     def _get_symbol_resolver(self) -> SymbolResolver:
         """Lazy initialization of symbol resolver"""
@@ -267,10 +296,12 @@ class UnifiedClassifier(LoggerMixin):
         """
         Classify a query and determine if tools are needed.
 
-        Now includes Soft Context Inheritance for symbol resolution.
+        Supports multimodal classification:
+        - Text-only: Uses fast text model
+        - With images: Uses vision model for better intent understanding
 
         Args:
-            context: ClassifierContext with query, history, memory, and ui_context
+            context: ClassifierContext with query, history, memory, ui_context, and images
             use_cache: Whether to use caching (default True)
             resolve_symbols: Whether to resolve symbols with context (default True)
 
@@ -279,11 +310,17 @@ class UnifiedClassifier(LoggerMixin):
         """
         start_time = datetime.now()
 
+        # Check if multimodal (has images)
+        is_multimodal = context.has_images()
+
         # Extract symbols from working memory for cache key
         symbols_context = self._extract_symbols_from_context(context)
 
+        # Skip cache for multimodal queries (images make each query unique)
+        should_use_cache = use_cache and not is_multimodal
+
         # Check cache first (async Redis) - include ui_context in cache key
-        if use_cache:
+        if should_use_cache:
             cached = await _classification_cache.get(
                 context.query, symbols_context, context.ui_context
             )
@@ -311,12 +348,16 @@ class UnifiedClassifier(LoggerMixin):
             # Build prompt
             prompt = self._build_prompt(context)
 
-            # Call LLM
-            result = await self._call_llm(prompt)
+            # Call LLM (use vision model if images present)
+            if is_multimodal:
+                self.logger.info(f"[CLASSIFIER] 🖼️ Multimodal mode: {context.get_image_count()} image(s)")
+                result = await self._call_llm_with_vision(prompt, context.images)
+            else:
+                result = await self._call_llm(prompt)
 
             # Parse result
             classification = UnifiedClassificationResult.from_dict(result)
-            classification.classification_method = "llm"
+            classification.classification_method = "llm_vision" if is_multimodal else "llm"
 
             # Post-processing
             classification = self._post_process(classification, context)
@@ -333,18 +374,20 @@ class UnifiedClassifier(LoggerMixin):
             elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             # Enhanced logging with visual structure
             self.logger.info("─" * 50)
-            self.logger.info(f"🎯 CLASSIFICATION (LLM)")
+            self.logger.info(f"🎯 CLASSIFICATION ({'Vision LLM' if is_multimodal else 'LLM'})")
             self.logger.info("─" * 50)
             self.logger.info(f"  ├─ Type: {classification.query_type.value}")
             self.logger.info(f"  ├─ Symbols: {classification.symbols}")
             self.logger.info(f"  ├─ Categories: {classification.tool_categories}")
             self.logger.info(f"  ├─ Requires Tools: {classification.requires_tools}")
+            if is_multimodal:
+                self.logger.info(f"  ├─ 🖼️ Images: {context.get_image_count()}")
             if classification.clarification_needed:
                 self.logger.info(f"  ├─ ⚠️ Clarification Needed: {classification.clarification_messages}")
             self.logger.info(f"  └─ ⏱️ Time: {elapsed_ms}ms")
 
-            # Cache the result (async Redis, fire and forget style) - include ui_context
-            if use_cache:
+            # Cache the result (async Redis, fire and forget style) - skip for multimodal
+            if should_use_cache:
                 asyncio.create_task(_classification_cache.set(
                     context.query, symbols_context, classification, context.ui_context
                 ))
@@ -509,8 +552,33 @@ class UnifiedClassifier(LoggerMixin):
         # Format UI context (Soft Context Inheritance)
         ui_context = context.format_ui_context()
 
+        # Format image context (Multimodal)
+        image_context = context.format_image_context()
+
         # Get current date
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+        # Build multimodal instructions if images present
+        multimodal_instructions = ""
+        if context.has_images():
+            multimodal_instructions = """
+IMPORTANT - IMAGE ANALYSIS (Multimodal Input):
+The user has attached image(s). Carefully analyze these images to understand their intent:
+- If image contains a STOCK CHART: Extract visible ticker symbol, identify chart patterns, timeframe
+- If image contains a CRYPTO CHART: Note the cryptocurrency, price movements, technical patterns
+- If image contains FINANCIAL DATA/SCREENSHOTS: Extract key metrics, symbols, data points
+- If image contains a DOCUMENT/REPORT: Identify company name, financial metrics, key information
+- If image is a SCREENSHOT of trading platform: Extract visible symbols, prices, positions
+
+Use information from images to:
+1. Identify symbols (even if not mentioned in text query)
+2. Determine query type more accurately
+3. Select appropriate tool categories
+4. Understand what analysis the user is seeking
+
+Example: User sends chart image with query "What do you think?"
+- If chart shows NVDA with RSI indicator → query_type=stock_specific, symbols=["NVDA"], categories=["technical"]
+"""
 
         return f"""<current_context>
 Date: {current_date}
@@ -532,8 +600,11 @@ You are a financial query classification system. Analyze the user's query and pr
 
 {ui_context}
 
+{image_context}
+
 <analysis_instructions>
 Analyze the query carefully:
+{multimodal_instructions}
 
 STEP 1: Determine Query Type
 - stock_specific: About specific stock(s) with symbols
@@ -814,6 +885,153 @@ Now analyze the query and provide your classification:
                     raise
 
         raise RuntimeError("Failed to classify after retries")
+
+    async def _call_llm_with_vision(
+        self,
+        prompt: str,
+        images: List[Any],
+    ) -> Dict[str, Any]:
+        """
+        Call vision-capable LLM with images for multimodal classification.
+
+        This enables the classifier to understand image content (charts, screenshots,
+        documents) to better determine user intent - similar to ChatGPT/Claude.
+
+        Args:
+            prompt: Classification prompt
+            images: List of ProcessedImage objects
+
+        Returns:
+            Parsed classification result
+        """
+        for attempt in range(self.max_retries + 1):
+            try:
+                # Build multimodal user message content
+                user_content = self._build_multimodal_content(prompt, images)
+
+                params = {
+                    "model_name": self.vision_model_name,
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a financial query classification system with vision capabilities. "
+                                "Analyze both the text query AND any attached images to understand user intent. "
+                                "Images may contain financial charts, stock screenshots, documents, or other "
+                                "visual content that helps determine what the user is asking about. "
+                                "Provide structured output with <reasoning> tags "
+                                "followed by <classification> tags containing valid JSON."
+                            ),
+                        },
+                        {"role": "user", "content": user_content},
+                    ],
+                    "provider_type": self.vision_provider_type,
+                    "api_key": self.vision_api_key,
+                    "enable_thinking": False,
+                    "max_tokens": 1200,
+                    "temperature": 0.1,
+                }
+
+                response = await self.llm_provider.generate_response(**params)
+                content = (
+                    response.get("content", "")
+                    if isinstance(response, dict)
+                    else str(response)
+                )
+                content = content.strip()
+
+                # Extract reasoning for logging
+                reasoning = self._extract_tag_content(content, "reasoning")
+                if reasoning:
+                    self.logger.debug(f"[CLASSIFIER-VISION] Reasoning: {reasoning[:200]}...")
+
+                # Extract classification JSON
+                json_str = self._extract_tag_content(content, "classification")
+                if not json_str:
+                    # Fallback: try to find JSON directly
+                    json_str = self._extract_json(content)
+
+                if not json_str:
+                    raise ValueError("No classification found in vision response")
+
+                # Parse JSON
+                result = json.loads(json_str)
+                result["reasoning"] = reasoning or ""
+                return result
+
+            except json.JSONDecodeError as e:
+                self.logger.warning(
+                    f"[CLASSIFIER-VISION] JSON parse error (attempt {attempt + 1}): {e}"
+                )
+                if attempt == self.max_retries:
+                    raise
+            except Exception as e:
+                self.logger.warning(
+                    f"[CLASSIFIER-VISION] Error (attempt {attempt + 1}): {e}"
+                )
+                if attempt == self.max_retries:
+                    # Fallback to text-only classification if vision fails
+                    self.logger.warning("[CLASSIFIER] Vision failed, falling back to text-only")
+                    return await self._call_llm(prompt)
+
+        raise RuntimeError("Failed to classify with vision after retries")
+
+    def _build_multimodal_content(
+        self,
+        prompt: str,
+        images: List[Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Build multimodal content array for vision LLM.
+
+        Follows OpenAI Vision API format which is widely supported.
+
+        Args:
+            prompt: Text prompt
+            images: List of ProcessedImage objects
+
+        Returns:
+            List of content parts (text + images)
+        """
+        content_parts = []
+
+        # Add text prompt first
+        content_parts.append({
+            "type": "text",
+            "text": prompt,
+        })
+
+        # Add images
+        for img in images:
+            # Handle ProcessedImage objects
+            if hasattr(img, 'base64_data') and hasattr(img, 'media_type'):
+                content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{img.media_type};base64,{img.base64_data}",
+                        "detail": "auto",  # Let model decide resolution
+                    },
+                })
+            # Handle dict format
+            elif isinstance(img, dict):
+                if "base64_data" in img and "media_type" in img:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{img['media_type']};base64,{img['base64_data']}",
+                            "detail": "auto",
+                        },
+                    })
+                elif "url" in img:
+                    content_parts.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": img["url"],
+                            "detail": "auto",
+                        },
+                    })
+
+        return content_parts
 
     def _extract_tag_content(self, content: str, tag: str) -> Optional[str]:
         """Extract content from XML-style tags"""
