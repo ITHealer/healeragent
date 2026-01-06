@@ -42,6 +42,18 @@ from src.agents.charts import (
     resolve_charts_from_classification,
     charts_to_dict_list,
 )
+# LLM Router + Unified Agent (ChatGPT-style 2-phase tool selection)
+from src.agents.router import (
+    LLMToolRouter,
+    RouterDecision,
+    Complexity,
+    ExecutionStrategy,
+    get_tool_router,
+)
+from src.agents.unified import (
+    UnifiedAgent,
+    get_unified_agent,
+)
 # Streaming
 from src.services.streaming_event_service import (
     StreamEventEmitter,
@@ -121,6 +133,28 @@ def _get_classifier() -> UnifiedClassifier:
     if _classifier is None:
         _classifier = get_unified_classifier()
     return _classifier
+
+
+# --- LLM Router + Unified Agent Singletons (ChatGPT-style) ---
+
+_tool_router: Optional[LLMToolRouter] = None
+_unified_agent: Optional[UnifiedAgent] = None
+
+
+def _get_tool_router() -> LLMToolRouter:
+    """Get or create LLM Tool Router singleton."""
+    global _tool_router
+    if _tool_router is None:
+        _tool_router = get_tool_router()
+    return _tool_router
+
+
+def _get_unified_agent() -> UnifiedAgent:
+    """Get or create Unified Agent singleton."""
+    global _unified_agent
+    if _unified_agent is None:
+        _unified_agent = get_unified_agent()
+    return _unified_agent
 
 
 # --- Image Processing ---
@@ -1241,3 +1275,395 @@ async def complete_chat(
     except Exception as e:
         _logger.error(f"[CHAT:ERROR] {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
+
+
+# =============================================================================
+# V3 API: LLM Router + Unified Agent (ChatGPT-style 2-phase tool selection)
+# =============================================================================
+
+@router.post(
+    "/chat/v3",
+    summary="Streaming Chat V3 (LLM Router)",
+    description="""
+    Chat with LLM-as-Router architecture for optimal tool selection.
+
+    New Flow:
+    1. Classify query (extract symbols, language, intent)
+    2. LLM Router sees ALL tools → selects relevant tools + complexity
+    3. Unified Agent executes with complexity-based strategy
+
+    Benefits:
+    - No category blindness (Router sees all 38+ tools)
+    - ~60% token reduction (2-level tool loading)
+    - Adaptive execution (simple/medium/complex strategies)
+    """,
+    response_class=StreamingResponse,
+)
+async def stream_chat_v3(
+    request: Request,
+    data: ChatRequest,
+    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
+):
+    """
+    Stream chat responses via SSE using LLM Router + Unified Agent.
+
+    This is the ChatGPT-style 2-phase tool selection:
+    - Phase 1: Router LLM sees all tool summaries → selects tools
+    - Phase 2: Agent LLM gets full schemas for selected tools only
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "organization_id", None)
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID required")
+
+    # Validate: at least query or images must be provided
+    if not data.query and not data.images:
+        raise HTTPException(
+            status_code=400,
+            detail="Either question_input or images must be provided"
+        )
+
+    # Default query for image-only requests
+    query = data.query or "Analyze this image"
+
+    session_id = data.session_id
+    if not session_id:
+        session_id = _chat_service.create_chat_session(
+            user_id=user_id,
+            organization_id=org_id
+        )
+
+    emitter = StreamEventEmitter(session_id=session_id)
+
+    async def _generate_v3() -> AsyncGenerator[str, None]:
+        """Generate SSE events using LLM Router + Unified Agent."""
+        start_time = datetime.now()
+
+        # Stats tracking
+        stats = {
+            "total_turns": 0,
+            "total_tool_calls": 0,
+            "charts": None,
+            "complexity": None,
+            "selected_tools": [],
+        }
+
+        try:
+            # =================================================================
+            # Phase 0: Process images (if any)
+            # =================================================================
+            processed_images: Optional[List[ProcessedImage]] = None
+            if data.images:
+                processed_images = await _process_images(data.images)
+                if processed_images:
+                    _logger.info(
+                        f"[CHAT_V3] Processed {len(processed_images)} images"
+                    )
+
+            # =================================================================
+            # Phase 1: Session Start
+            # =================================================================
+            yield emitter.emit_session_start({
+                "mode_requested": "llm_router",
+                "version": "v3",
+            })
+
+            # =================================================================
+            # Phase 2: Classification (reuse existing classifier)
+            # =================================================================
+            yield emitter.emit_classifying()
+
+            classifier = _get_classifier()
+            classification_context = ClassifierContext(
+                query=query,
+                conversation_history=[],
+                ui_context=data.ui_context.model_dump() if data.ui_context else None,
+                images=processed_images,
+            )
+            classification = await classifier.classify(classification_context)
+
+            # Emit classification result
+            yield emitter.emit_classified(
+                query_type=classification.query_type.value,
+                requires_tools=classification.requires_tools,
+                symbols=classification.symbols,
+                categories=classification.tool_categories,
+                confidence=classification.confidence,
+                language=classification.response_language,
+                reasoning=classification.reasoning,
+                intent_summary=classification.intent_summary,
+                classification_method=classification.classification_method,
+            )
+
+            # Emit classification reasoning
+            if classification.reasoning and data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="classification",
+                    content=classification.reasoning,
+                    action="complete",
+                    metadata={
+                        "query_type": classification.query_type.value,
+                        "symbols": classification.symbols,
+                    },
+                )
+
+            # Resolve charts for frontend
+            charts = resolve_charts_from_classification(
+                classification=classification,
+                query=query,
+                max_charts=3,
+            )
+            if charts:
+                stats["charts"] = charts_to_dict_list(charts)
+
+            # =================================================================
+            # Phase 3: LLM Tool Router (2-phase tool selection)
+            # =================================================================
+            if data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="tool_routing",
+                    content="Analyzing query to select optimal tools from catalog...",
+                    action="start",
+                )
+
+            tool_router = _get_tool_router()
+            router_decision = await tool_router.route(
+                query=query,
+                symbols=classification.symbols,
+                context=classification_context,
+            )
+
+            stats["complexity"] = router_decision.complexity.value
+            stats["selected_tools"] = router_decision.selected_tools
+
+            # Emit routing decision
+            yield emitter.emit_reasoning(
+                phase="tool_routing",
+                content=router_decision.reasoning,
+                action="decision",
+                metadata={
+                    "selected_tools": router_decision.selected_tools,
+                    "complexity": router_decision.complexity.value,
+                    "strategy": router_decision.execution_strategy.value,
+                    "confidence": router_decision.confidence,
+                    "max_turns": router_decision.suggested_max_turns,
+                },
+            )
+
+            _logger.info(
+                f"[CHAT_V3:ROUTE] tools={router_decision.selected_tools} | "
+                f"complexity={router_decision.complexity.value} | "
+                f"strategy={router_decision.execution_strategy.value}"
+            )
+
+            # =================================================================
+            # Phase 4: Unified Agent Execution
+            # =================================================================
+            unified_agent = _get_unified_agent()
+
+            # Stream events from Unified Agent
+            async for event in unified_agent.run_stream(
+                query=query,
+                router_decision=router_decision,
+                classification=classification,
+                conversation_history=[],
+                system_language=classification.response_language,
+                user_id=int(user_id) if user_id else None,
+                session_id=session_id,
+                enable_reasoning=data.enable_thinking,
+                images=processed_images,
+            ):
+                event_type = event.get("type", "unknown")
+
+                if event_type == "reasoning":
+                    # Forward reasoning events
+                    yield emitter.emit_reasoning(
+                        phase=event.get("phase", "execution"),
+                        content=event.get("content", ""),
+                        action=event.get("action", "thought"),
+                        metadata=event.get("metadata"),
+                    )
+
+                elif event_type == "turn_start":
+                    turn = event.get("turn", 1)
+                    stats["total_turns"] = turn
+                    yield emitter.emit_turn_start(
+                        turn_number=turn,
+                        max_turns=router_decision.suggested_max_turns,
+                    )
+
+                elif event_type == "tool_calls":
+                    tools = event.get("tools", [])
+                    stats["total_tool_calls"] += len(tools)
+                    yield emitter.emit_tool_calls(tools)
+
+                elif event_type == "tool_results":
+                    results = event.get("results", [])
+                    yield emitter.emit_tool_results(results)
+
+                elif event_type == "content":
+                    content = event.get("content", "")
+                    if content:
+                        yield emitter.emit_content(content)
+
+                elif event_type == "max_turns_reached":
+                    yield emitter.emit_progress(
+                        phase="max_turns",
+                        progress_percent=90,
+                        message=f"Max turns ({event.get('turns', 0)}) reached",
+                    )
+
+                elif event_type == "done":
+                    stats["total_turns"] = event.get("total_turns", stats["total_turns"])
+                    stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
+
+                elif event_type == "error":
+                    yield emitter.emit_error(
+                        error_message=event.get("error", "Unknown error"),
+                        error_code="UNIFIED_AGENT_ERROR",
+                    )
+
+            # =================================================================
+            # Phase 5: Done
+            # =================================================================
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+            # Final reasoning summary
+            if data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="synthesis",
+                    content=(
+                        f"Complete: {stats['total_turns']} turns, "
+                        f"{stats['total_tool_calls']} tool calls, "
+                        f"complexity={stats['complexity']}"
+                    ),
+                    action="complete",
+                    progress=1.0,
+                    metadata={
+                        "turns": stats["total_turns"],
+                        "tool_calls": stats["total_tool_calls"],
+                        "complexity": stats["complexity"],
+                        "selected_tools": stats["selected_tools"],
+                        "duration_ms": round(elapsed_ms, 0),
+                    },
+                )
+
+            yield emitter.emit_done(
+                total_turns=stats["total_turns"],
+                total_tool_calls=stats["total_tool_calls"],
+                total_time_ms=elapsed_ms,
+                charts=stats.get("charts"),
+            )
+            yield format_done_marker()
+
+        except Exception as e:
+            _logger.error(f"[CHAT_V3] Error: {e}", exc_info=True)
+            yield emitter.emit_error(str(e), "CHAT_V3_ERROR")
+            yield format_done_marker()
+
+    return StreamingResponse(
+        _generate_v3(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/chat/v3/complete",
+    summary="Complete Chat V3 (LLM Router)",
+    description="Non-streaming chat using LLM Router + Unified Agent.",
+)
+async def complete_chat_v3(
+    request: Request,
+    data: ChatRequest,
+    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
+):
+    """Process chat request using LLM Router and return complete response."""
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "organization_id", None)
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID required")
+
+    query = data.query or "Analyze this image"
+    session_id = data.session_id or _chat_service.create_chat_session(
+        user_id=user_id, organization_id=org_id
+    )
+
+    start_time = datetime.now()
+
+    try:
+        # Process images
+        processed_images = await _process_images(data.images) if data.images else None
+
+        # Classify
+        classifier = _get_classifier()
+        classification_context = ClassifierContext(
+            query=query,
+            conversation_history=[],
+            ui_context=data.ui_context.model_dump() if data.ui_context else None,
+            images=processed_images,
+        )
+        classification = await classifier.classify(classification_context)
+
+        # Route with LLM Router
+        tool_router = _get_tool_router()
+        router_decision = await tool_router.route(
+            query=query,
+            symbols=classification.symbols,
+            context=classification_context,
+        )
+
+        # Execute with Unified Agent
+        unified_agent = _get_unified_agent()
+        result = await unified_agent.run(
+            query=query,
+            router_decision=router_decision,
+            classification=classification,
+            conversation_history=[],
+            system_language=classification.response_language,
+            user_id=int(user_id) if user_id else None,
+            session_id=session_id,
+        )
+
+        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+        return JSONResponse(
+            content={
+                "status": "success" if result.success else "error",
+                "data": {
+                    "response": result.response,
+                    "session_id": session_id,
+                    "version": "v3",
+                    "router_decision": {
+                        "selected_tools": router_decision.selected_tools,
+                        "complexity": router_decision.complexity.value,
+                        "strategy": router_decision.execution_strategy.value,
+                        "reasoning": router_decision.reasoning,
+                        "confidence": router_decision.confidence,
+                    },
+                    "classification": {
+                        "query_type": classification.query_type.value,
+                        "symbols": classification.symbols,
+                        "tool_categories": classification.tool_categories,
+                    },
+                    "execution": {
+                        "total_turns": result.total_turns,
+                        "total_tool_calls": result.total_tool_calls,
+                        "execution_time_ms": result.total_execution_time_ms,
+                    },
+                    "processing_time_ms": elapsed_ms,
+                    "timestamp": datetime.now().isoformat(),
+                },
+                "error": result.error if not result.success else None,
+            }
+        )
+
+    except Exception as e:
+        _logger.error(f"[CHAT_V3:ERROR] {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Chat V3 failed: {str(e)}")

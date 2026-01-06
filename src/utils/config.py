@@ -124,6 +124,13 @@ class Settings(BaseSettings):
     MEMORY_MODEL: str = Field("gpt-4.1-nano", env='MEMORY_MODEL')
     MEMORY_PROVIDER: str = Field("openai", env='MEMORY_PROVIDER')
 
+    # LLM Router Model (for ChatGPT-style 2-phase tool selection)
+    ROUTER_MODEL: str = Field("gpt-4.1-nano", env='ROUTER_MODEL')
+    ROUTER_PROVIDER: str = Field("openai", env='ROUTER_PROVIDER')
+
+    # Feature Flags
+    USE_LLM_ROUTER: bool = Field(False, env='USE_LLM_ROUTER')  # Enable ChatGPT-style LLM Router
+
 # Avoid having to re-read the .env file and create the Settings object every time you access it
 @lru_cache()
 def get_settings():
