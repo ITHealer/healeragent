@@ -69,10 +69,7 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         "all": None,  # All indicators
     }
 
-    # Binance API (primary fallback)
-    BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
-
-    # FMP API (secondary fallback)
+    # FMP API (primary source)
     FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, api_key: Optional[str] = None):
@@ -253,18 +250,13 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                     },
                 )
 
-            # Fetch OHLCV data with fallback chain: Internal API → Binance → FMP
-            ohlcv_data = await self._fetch_ohlcv_internal(symbol, timeframe)
+            # Fetch OHLCV data with fallback chain: FMP (primary) → Internal Klines API (fallback)
+            ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe)
 
             if not ohlcv_data or len(ohlcv_data) < 50:
-                # Primary fallback: Binance API
-                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying Binance fallback")
-                ohlcv_data = await self._fetch_ohlcv_binance(symbol, timeframe)
-
-            if not ohlcv_data or len(ohlcv_data) < 50:
-                # Secondary fallback: FMP API
-                self.logger.warning(f"[{self.schema.name}] Binance failed, trying FMP fallback")
-                ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe)
+                # Fallback: Internal Klines API
+                self.logger.warning(f"[{self.schema.name}] FMP failed, trying Internal Klines API fallback")
+                ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe)
 
             if not ohlcv_data or len(ohlcv_data) < 50:
                 return ToolOutput(
@@ -349,16 +341,28 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 metadata={"symbol": symbol, "original_symbol": original_symbol},
             )
 
-    async def _fetch_ohlcv_internal(
+    async def _fetch_ohlcv_internal_klines(
         self, symbol: str, timeframe: str, limit: int = 200
     ) -> Optional[List[Dict]]:
-        """Fetch OHLCV data from internal API"""
+        """
+        Fallback: Fetch OHLCV data from Internal Klines API
+        Endpoint: /api/v1/market/crypto/{symbol}/klines
+        """
         try:
+            # Map timeframe to internal API interval format
+            tf_map = {
+                "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"
+            }
+            interval = tf_map.get(timeframe, "1h")
+
+            # Build klines endpoint URL
+            # Uses: {base_url}{api_prefix}/{symbol}/klines
+            klines_endpoint = f"/{symbol}/klines"
+
             response = await self._fetch_api(
-                endpoint="/ohlcv",
+                endpoint=klines_endpoint,
                 params={
-                    "symbol": symbol,
-                    "timeframe": timeframe,
+                    "interval": interval,
                     "limit": limit,
                 },
             )
@@ -369,89 +373,57 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
 
             # If response is a string, try to parse as JSON
             if isinstance(response, str):
-                import json
                 try:
                     response = json.loads(response)
                 except json.JSONDecodeError:
-                    self.logger.warning(f"[OHLCV-Internal] Invalid JSON response for {symbol}")
+                    self.logger.warning(f"[OHLCV-InternalKlines] Invalid JSON response for {symbol}")
                     return None
 
             # Extract data from dict response
             if isinstance(response, dict):
                 data = response.get("data", [])
-                # Handle nested data structure
                 if isinstance(data, dict):
                     data = data.get("data", [])
             elif isinstance(response, list):
                 data = response
             else:
-                self.logger.warning(f"[OHLCV-Internal] Unexpected response type: {type(response)}")
+                self.logger.warning(f"[OHLCV-InternalKlines] Unexpected response type: {type(response)}")
                 return None
 
             if data and isinstance(data, list) and len(data) > 0:
-                # Ensure sorted by time ascending
-                sorted_data = sorted(data, key=lambda x: x.get("time", x.get("timestamp", 0)) if isinstance(x, dict) else 0)
-                return sorted_data
-
-            return None
-
-        except Exception as e:
-            self.logger.warning(f"[OHLCV-Internal] Fetch error for {symbol}: {e}")
-            return None
-
-    async def _fetch_ohlcv_binance(
-        self, symbol: str, timeframe: str, limit: int = 200
-    ) -> Optional[List[Dict]]:
-        """Primary fallback: Fetch OHLCV data from Binance API"""
-        try:
-            # Map timeframe to Binance interval
-            tf_map = {
-                "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"
-            }
-            binance_interval = tf_map.get(timeframe, "1h")
-
-            # Binance uses BTCUSDT format
-            binance_symbol = f"{symbol}USDT"
-
-            params = {
-                "symbol": binance_symbol,
-                "interval": binance_interval,
-                "limit": limit,
-            }
-
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(self.BINANCE_API_URL, params=params)
-                response.raise_for_status()
-                data = response.json()
-
-            if data and isinstance(data, list) and len(data) > 0:
-                # Binance kline format: [open_time, open, high, low, close, volume, close_time, ...]
+                # Transform internal klines format to standard OHLCV format
+                # Internal format: openTime, closeTime, open, high, low, close, volume, priceChange, percentChange, quoteVolume
                 ohlcv_data = []
                 for kline in data:
-                    ohlcv_data.append({
-                        "time": kline[0],  # open_time in milliseconds
-                        "timestamp": kline[0],
-                        "open": float(kline[1]),
-                        "high": float(kline[2]),
-                        "low": float(kline[3]),
-                        "close": float(kline[4]),
-                        "volume": float(kline[5]),
-                    })
+                    if isinstance(kline, dict):
+                        ohlcv_data.append({
+                            "time": kline.get("openTime", ""),
+                            "timestamp": kline.get("openTime", ""),
+                            "open": float(kline.get("open", 0)),
+                            "high": float(kline.get("high", 0)),
+                            "low": float(kline.get("low", 0)),
+                            "close": float(kline.get("close", 0)),
+                            "volume": float(kline.get("volume", 0)),
+                        })
 
-                self.logger.info(f"[OHLCV-Binance] Fetched {len(ohlcv_data)} candles for {symbol}")
+                # Sort by openTime ascending
+                ohlcv_data.sort(key=lambda x: x.get("time", ""))
+
+                self.logger.info(f"[OHLCV-InternalKlines] Fetched {len(ohlcv_data)} candles for {symbol}")
                 return ohlcv_data
 
             return None
 
         except Exception as e:
-            self.logger.warning(f"[OHLCV-Binance] Fetch error for {symbol}: {e}")
+            self.logger.warning(f"[OHLCV-InternalKlines] Fetch error for {symbol}: {e}")
             return None
 
     async def _fetch_ohlcv_fmp(
         self, symbol: str, timeframe: str, limit: int = 200
     ) -> Optional[List[Dict]]:
-        """Fallback: Fetch OHLCV data from FMP API"""
+        """Primary: Fetch OHLCV data from FMP API"""
         if not self.fmp_api_key:
+            self.logger.warning(f"[OHLCV-FMP] No FMP API key configured")
             return None
 
         try:
@@ -666,11 +638,10 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 continue
 
             try:
-                ohlcv = await self._fetch_ohlcv_internal(symbol, tf)
+                # FMP primary, Internal klines fallback
+                ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
                 if not ohlcv or len(ohlcv) < 50:
-                    ohlcv = await self._fetch_ohlcv_binance(symbol, tf)
-                if not ohlcv or len(ohlcv) < 50:
-                    ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
+                    ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
 
                 if ohlcv and len(ohlcv) >= 50:
                     opens = [c.get("open", 0) for c in ohlcv]
