@@ -49,6 +49,10 @@ from src.agents.router.llm_tool_router import (
 )
 from src.agents.classification.models import UnifiedClassificationResult
 
+# Skill System for domain-specific prompts
+from src.agents.skills.skill_registry import SkillRegistry, get_skill_registry
+from src.agents.skills.skill_base import SkillContext
+
 
 # ============================================================================
 # DATA MODELS
@@ -147,13 +151,17 @@ class UnifiedAgent(LoggerMixin):
         self.catalog = catalog or get_tool_catalog()
         self.registry = registry or get_registry()
 
+        # Skill registry for domain-specific prompts
+        self.skill_registry = get_skill_registry()
+
         # LLM provider
         self.llm_provider = LLMGeneratorProvider()
         self.api_key = ModelProviderFactory._get_api_key(self.provider_type)
 
         self.logger.info(
             f"[UNIFIED_AGENT] Initialized: model={self.model_name}, "
-            f"tools={len(self.catalog.get_tool_names())}"
+            f"tools={len(self.catalog.get_tool_names())}, "
+            f"skills={len(self.skill_registry.get_available_skills())}"
         )
 
     # =========================================================================
@@ -1360,12 +1368,30 @@ class UnifiedAgent(LoggerMixin):
         user_id: Optional[int],
         images: Optional[List[Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Build messages for agent with tools."""
+        """Build messages for agent with tools using domain-specific skill prompts."""
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
+        # Get domain-specific skill based on classification
+        market_type = "stock"  # Default
+        if classification:
+            market_type = getattr(classification, "market_type", "stock") or "stock"
+
+        # Select skill and get domain prompt
+        skill = self.skill_registry.select_skill(market_type)
+        skill_prompt = skill.get_full_prompt()
+
+        self.logger.debug(
+            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}"
+        )
+
+        # Build context hints
         symbols_hint = ""
         if classification and classification.symbols:
-            symbols_hint = f"\nSymbols: {', '.join(classification.symbols)}"
+            symbols_hint = f"Symbols to analyze: {', '.join(classification.symbols)}"
+
+        categories_hint = ""
+        if classification and hasattr(classification, "tool_categories"):
+            categories_hint = f"Data categories: {', '.join(classification.tool_categories or [])}"
 
         user_context = ""
         if core_memory:
@@ -1373,24 +1399,25 @@ class UnifiedAgent(LoggerMixin):
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
-        system_prompt = f"""You are a professional financial analyst assistant.
+        # Combine skill prompt with runtime context
+        system_prompt = f"""{skill_prompt}
+
+---
+## RUNTIME CONTEXT
 
 Current Date: {current_date}
 Response Language: {system_language.upper()}
 {symbols_hint}
+{categories_hint}
 {user_context}
 
-INSTRUCTIONS:
-1. Analyze the query and determine what information is needed
-2. Use tools to gather real-time data
-3. Call multiple tools in parallel when possible
-4. Provide comprehensive analysis after gathering data
-5. Be concise but thorough
+## TOOL EXECUTION GUIDELINES
 
-TOOL USAGE:
-- Call tools when real-time data is needed
-- Don't call tools for static knowledge
-- If a tool fails, explain the limitation
+1. Call tools to gather real-time data before analysis
+2. Execute multiple tools in parallel when possible
+3. If a tool fails, note the limitation and proceed with available data
+4. Synthesize all tool results into a comprehensive response
+5. Follow the analysis framework from your domain expertise above
 """
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -1422,8 +1449,17 @@ TOOL USAGE:
         core_memory: Optional[str],
         conversation_summary: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Build messages for synthesis after tool execution."""
+        """Build messages for synthesis after tool execution using domain skill."""
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+        # Get domain-specific skill based on classification
+        market_type = "stock"  # Default
+        if classification:
+            market_type = getattr(classification, "market_type", "stock") or "stock"
+
+        # Select skill and get analysis framework
+        skill = self.skill_registry.select_skill(market_type)
+        analysis_framework = skill.get_analysis_framework()
 
         # Format tool results
         results_text = "\n\n".join([
@@ -1432,17 +1468,27 @@ TOOL USAGE:
             if r.get("status") in ["success", "200"]
         ])
 
-        system_prompt = f"""You are a professional financial analyst assistant.
+        system_prompt = f"""You are a {skill.config.description}.
 
 Current Date: {current_date}
 Response Language: {system_language.upper()}
 
-You have received data from various tools. Synthesize this information into
-a comprehensive, well-structured response that directly answers the user's question.
+{analysis_framework}
+
+---
+## TOOL RESULTS TO SYNTHESIZE
 
 <tool_results>
 {results_text}
 </tool_results>
+
+## YOUR TASK
+
+Synthesize the above tool results into a comprehensive response following your analysis framework.
+- Use the data from tools to support your analysis
+- Follow the structured format from your expertise
+- Be thorough but concise
+- Highlight key insights and actionable recommendations
 """
 
         messages = [{"role": "system", "content": system_prompt}]
