@@ -518,11 +518,12 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         if adx and adx.get("adx"):
             adx_val = adx["adx"]
             if adx_val >= 25:
-                trend_dir = adx.get("trend_direction", "neutral")
-                if trend_dir == "bullish":
+                # ADX calculator returns signal: "strong_uptrend", "strong_downtrend", etc.
+                adx_signal = adx.get("signal", "")
+                if "uptrend" in adx_signal:
                     bullish_signals += 1
                     signal_details.append(f"Strong uptrend (ADX={adx_val:.1f})")
-                elif trend_dir == "bearish":
+                elif "downtrend" in adx_signal:
                     bearish_signals += 1
                     signal_details.append(f"Strong downtrend (ADX={adx_val:.1f})")
 
@@ -538,9 +539,11 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
 
         # Price vs MAs
         if current_price:
-            sma_50 = indicators.get("sma_50")
-            if sma_50 and isinstance(sma_50, (int, float)):
-                if current_price > sma_50:
+            sma_50_data = indicators.get("sma_50", {})
+            # Handle both dict (from calculator) and raw value
+            sma_50_val = sma_50_data.get("value") if isinstance(sma_50_data, dict) else sma_50_data
+            if sma_50_val and isinstance(sma_50_val, (int, float)):
+                if current_price > sma_50_val:
                     bullish_signals += 1
                 else:
                     bearish_signals += 1
@@ -646,8 +649,11 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             if rsi:
                 lines.append(f"   • RSI(14): {rsi.get('value', 'N/A')} - {rsi.get('signal', 'N/A')}")
             if macd:
-                lines.append(f"   • MACD: {macd.get('macd', 'N/A'):.4f}" if macd.get('macd') else "   • MACD: N/A")
-                lines.append(f"   • Signal: {macd.get('signal', 'N/A'):.4f}" if macd.get('signal') else "   • Signal: N/A")
+                # MACD calculator returns: macd_line, signal_line, histogram
+                macd_val = macd.get('macd_line')
+                signal_val = macd.get('signal_line')
+                lines.append(f"   • MACD: {macd_val:.4f}" if macd_val else "   • MACD: N/A")
+                lines.append(f"   • Signal: {signal_val:.4f}" if signal_val else "   • Signal: N/A")
             lines.append("")
 
         # Trend
@@ -656,7 +662,10 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         if adx or supertrend:
             lines.append("📈 Trend:")
             if adx:
-                lines.append(f"   • ADX: {adx.get('adx', 'N/A'):.1f} - {adx.get('strength', 'N/A')}" if adx.get('adx') else "   • ADX: N/A")
+                # ADX calculator returns: adx, plus_di, minus_di, signal, trend_strength
+                adx_val = adx.get('adx')
+                trend_str = adx.get('trend_strength', adx.get('signal', 'N/A'))
+                lines.append(f"   • ADX: {adx_val:.1f} - {trend_str}" if adx_val else "   • ADX: N/A")
             if supertrend:
                 st_dir = supertrend.get("direction", "N/A").upper()
                 lines.append(f"   • Supertrend: {st_dir}")
@@ -668,7 +677,9 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         if atr or bb:
             lines.append("📊 Volatility:")
             if atr:
-                lines.append(f"   • ATR(14): {atr.get('atr', 'N/A'):.4f}" if atr.get('atr') else "   • ATR: N/A")
+                # ATR calculator returns: value, percent, period, volatility
+                atr_val = atr.get('value')
+                lines.append(f"   • ATR(14): {atr_val:.4f}" if atr_val else "   • ATR: N/A")
             if bb:
                 lines.append(f"   • BB %B: {bb.get('percent_b', 'N/A'):.2f}" if bb.get('percent_b') else "   • BB %B: N/A")
             lines.append("")

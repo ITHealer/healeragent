@@ -79,11 +79,20 @@ TOOL_DEFINITIONS = {
     ],
     
     # ========================================================================
-    # CRYPTO TOOLS (2) - Require API key
+    # CRYPTO TOOLS (9) - Mix of FMP API and Internal API tools
     # ========================================================================
     "crypto": [
+        # FMP API tools (require api_key for FMP fallback)
         ("src.agents.tools.crypto", "GetCryptoPriceTool", "api_key"),
         ("src.agents.tools.crypto", "GetCryptoTechnicalsTool", "api_key"),
+        ("src.agents.tools.crypto", "GetCryptoSMCAnalysisTool", "api_key"),
+        # Internal API tools (no api_key needed - uses http://10.10.0.2:20073)
+        ("src.agents.tools.crypto", "GetCryptoTopGainersTool", None),
+        ("src.agents.tools.crypto", "GetCryptoTopLosersTool", None),
+        ("src.agents.tools.crypto", "GetCryptoMostActiveTool", None),
+        ("src.agents.tools.crypto", "GetCryptoHotTickerTool", None),
+        ("src.agents.tools.crypto", "GetCryptoWatchlistTool", None),
+        ("src.agents.tools.crypto", "SearchCryptoTool", None),
     ],
     
     # ========================================================================
