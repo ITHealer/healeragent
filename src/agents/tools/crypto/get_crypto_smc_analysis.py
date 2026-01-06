@@ -252,22 +252,20 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 )
 
             # Prepare OHLCV for SMC calculators
-            ohlcv_list = [
-                {
-                    "open": c.get("open", 0),
-                    "high": c.get("high", 0),
-                    "low": c.get("low", 0),
-                    "close": c.get("close", 0),
-                    "volume": c.get("volume", 0),
-                }
-                for c in ohlcv_data
-            ]
+            # SMC calculators expect Dict[str, List] format, not List[Dict]
+            ohlcv_dict = {
+                "open": [c.get("open", 0) for c in ohlcv_data],
+                "high": [c.get("high", 0) for c in ohlcv_data],
+                "low": [c.get("low", 0) for c in ohlcv_data],
+                "close": [c.get("close", 0) for c in ohlcv_data],
+                "volume": [c.get("volume", 0) for c in ohlcv_data],
+            }
 
             # Calculate SMC components
-            smc_analysis = self._calculate_smc(ohlcv_list, selected_components)
+            smc_analysis = self._calculate_smc(ohlcv_dict, selected_components)
 
             # Get current price
-            current_price = ohlcv_list[-1]["close"] if ohlcv_list else None
+            current_price = ohlcv_dict["close"][-1] if ohlcv_dict["close"] else None
 
             # Multi-timeframe SMC analysis if requested
             multi_tf_data = None
@@ -469,10 +467,10 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
 
     def _calculate_smc(
         self,
-        ohlcv: List[Dict[str, float]],
+        ohlcv: Dict[str, List[float]],
         components: List[str],
     ) -> Dict[str, Any]:
-        """Calculate selected SMC components"""
+        """Calculate selected SMC components using Dict[str, List] format"""
         result = {}
 
         # Full SMC analysis using calculator
@@ -504,11 +502,14 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             result["premium_discount"] = zones
 
         # Add bias from full analysis
-        result["bias"] = full_analysis.get("bias", {
-            "direction": "neutral",
-            "confidence": 0,
+        # smc.analyze_smc returns 'overall_bias' (string) and 'bias_score' (int)
+        overall_bias = full_analysis.get("overall_bias", "neutral")
+        bias_score = full_analysis.get("bias_score", 0)
+        result["bias"] = {
+            "direction": overall_bias,
+            "confidence": min(abs(bias_score) * 20, 100),  # Convert score to %
             "reasoning": [],
-        })
+        }
 
         return result
 
@@ -532,24 +533,22 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                     ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
 
                 if ohlcv and len(ohlcv) >= 100:
-                    ohlcv_list = [
-                        {
-                            "open": c.get("open", 0),
-                            "high": c.get("high", 0),
-                            "low": c.get("low", 0),
-                            "close": c.get("close", 0),
-                            "volume": c.get("volume", 0),
-                        }
-                        for c in ohlcv
-                    ]
+                    # Convert List[Dict] to Dict[str, List] for SMC calculators
+                    ohlcv_dict = {
+                        "open": [c.get("open", 0) for c in ohlcv],
+                        "high": [c.get("high", 0) for c in ohlcv],
+                        "low": [c.get("low", 0) for c in ohlcv],
+                        "close": [c.get("close", 0) for c in ohlcv],
+                        "volume": [c.get("volume", 0) for c in ohlcv],
+                    }
 
                     # Quick analysis for multi-TF
-                    structure = smc.detect_market_structure(ohlcv_list)
-                    full_analysis = smc.analyze_smc(ohlcv_list)
+                    structure = smc.detect_market_structure(ohlcv_dict)
+                    full_analysis = smc.analyze_smc(ohlcv_dict)
 
                     multi_tf_result[tf] = {
                         "trend": structure.get("trend", "unclear"),
-                        "bias": full_analysis.get("bias", {}).get("direction", "neutral"),
+                        "bias": full_analysis.get("overall_bias", "neutral"),
                         "last_structure": structure.get("last_structure_break", {}),
                         "bullish_obs": len(structure.get("order_blocks", {}).get("bullish", []) or []),
                         "bearish_obs": len(structure.get("order_blocks", {}).get("bearish", []) or []),
