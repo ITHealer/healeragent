@@ -86,7 +86,8 @@ class ToolFullSchema:
 
             # Handle array types - OpenAI requires 'items' property
             if param_type == "array":
-                items_type = param.get("items_type", "string")  # Default to string
+                # Use 'or' to handle None values - default to 'string'
+                items_type = param.get("items_type") or "string"
                 if param.get("allowed_values"):
                     prop["items"] = {
                         "type": items_type,
@@ -242,11 +243,14 @@ class ToolCatalog(LoggerMixin):
                     "type": param.type,
                     "description": param.description,
                     "required": param.required,
-                    "enum": param.enum if hasattr(param, 'enum') else None,
                 }
+                # Only include enum if it has a value (not None)
+                if hasattr(param, 'enum') and param.enum:
+                    param_dict["enum"] = param.enum
                 # Include array-specific properties for OpenAI schema generation
                 if param.type == "array":
-                    param_dict["items_type"] = getattr(param, 'items_type', 'string')
+                    # Use 'or' to handle None values - default to 'string'
+                    param_dict["items_type"] = getattr(param, 'items_type', None) or 'string'
                     if hasattr(param, 'allowed_values') and param.allowed_values:
                         param_dict["allowed_values"] = param.allowed_values
                 # Include default value if present
