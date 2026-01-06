@@ -192,6 +192,7 @@ class LLMToolRouter(LoggerMixin):
         query: str,
         symbols: Optional[List[str]] = None,
         context: Optional[Any] = None,
+        classification: Optional[Any] = None,
         use_heuristics_fallback: bool = True,
     ) -> RouterDecision:
         """
@@ -201,6 +202,8 @@ class LLMToolRouter(LoggerMixin):
             query: User query
             symbols: Extracted symbols (from classifier)
             context: Optional ClassifierContext for additional info
+            classification: Classification result with query_type, market_type, reasoning
+                           IMPORTANT: Used to disambiguate symbols (e.g., BTC stock vs crypto)
             use_heuristics_fallback: Fall back to heuristics if LLM fails
 
         Returns:
@@ -209,8 +212,8 @@ class LLMToolRouter(LoggerMixin):
         start_time = datetime.now()
 
         try:
-            # Build prompt with all tool summaries
-            prompt = self._build_prompt(query, symbols, context)
+            # Build prompt with all tool summaries AND classification context
+            prompt = self._build_prompt(query, symbols, context, classification)
 
             # Call LLM
             result = await self._call_llm(prompt)
@@ -239,7 +242,7 @@ class LLMToolRouter(LoggerMixin):
 
             if use_heuristics_fallback:
                 self.logger.info("[ROUTER] Falling back to heuristics")
-                return self._heuristic_route(query, symbols)
+                return self._heuristic_route(query, symbols, classification)
 
             return RouterDecision.fallback(str(e))
 
@@ -248,8 +251,9 @@ class LLMToolRouter(LoggerMixin):
         query: str,
         symbols: Optional[List[str]] = None,
         context: Optional[Any] = None,
+        classification: Optional[Any] = None,
     ) -> str:
-        """Build routing prompt with tool catalog."""
+        """Build routing prompt with tool catalog and classification context."""
 
         # Get formatted tool catalog
         tool_catalog = self.catalog.format_for_router()
@@ -261,6 +265,34 @@ class LLMToolRouter(LoggerMixin):
             if context.working_memory_summary:
                 context_hint = f"Context: {context.working_memory_summary[:200]}"
 
+        # Classification context (CRITICAL for disambiguation)
+        classification_hint = ""
+        if classification:
+            # Handle both dict and object forms
+            if isinstance(classification, dict):
+                query_type = classification.get("query_type", "")
+                market_type = classification.get("market_type", "")
+                reasoning = classification.get("reasoning", "")
+            else:
+                query_type = getattr(classification, "query_type", "")
+                if hasattr(query_type, "value"):
+                    query_type = query_type.value
+                market_type = getattr(classification, "market_type", "")
+                reasoning = getattr(classification, "reasoning", "")
+
+            classification_hint = f"""
+Classification Result (from Classifier):
+- Query Type: {query_type}
+- Market Type: {market_type}
+- Reasoning: {reasoning}
+
+IMPORTANT: Use this classification to select the correct tool.
+- If market_type is "stock", use getStockPrice (NOT getCryptoPrice)
+- If market_type is "crypto", use getCryptoPrice (NOT getStockPrice)
+- If query_type is "stock_specific", the symbol is a STOCK ticker
+- Trust the classifier's reasoning for ambiguous symbols like BTC (Grayscale Bitcoin Trust)
+"""
+
         return f"""You are a tool routing system. Given a user query and a catalog of available tools,
 select the most appropriate tools to answer the query.
 
@@ -271,11 +303,15 @@ select the most appropriate tools to answer the query.
 <context>
 {symbols_hint}
 {context_hint}
+{classification_hint}
 </context>
 
 <instructions>
-1. Analyze the query and determine what information is needed
-2. Select the minimum set of tools required to answer
+1. FIRST: Check the Classification Result above for query_type and market_type
+2. Select tools based on the classification:
+   - stock_specific + stock market → use getStockPrice, getTechnicalIndicators, etc.
+   - crypto_specific + crypto market → use getCryptoPrice, getCryptoInfo, etc.
+   - ALWAYS trust the classifier's market_type determination
 3. Determine query complexity:
    - SIMPLE: 1-2 tools, straightforward answer (e.g., "What is AAPL price?")
    - MEDIUM: 3-5 tools, needs some analysis (e.g., "Analyze NVDA technicals")
@@ -285,7 +321,9 @@ select the most appropriate tools to answer the query.
    - iterative: May need multiple rounds based on results
    - parallel: Execute all tools in parallel, then synthesize
 
-IMPORTANT:
+CRITICAL RULES:
+- ALWAYS use the classification's market_type to select stock vs crypto tools
+- For symbols like BTC that could be stock OR crypto, TRUST the classification
 - Only select tools that are actually needed
 - Don't select tools for information already in context
 - For conversational queries (greetings), select NO tools
@@ -408,16 +446,25 @@ Now analyze the query and provide your routing decision:
         self,
         query: str,
         symbols: Optional[List[str]] = None,
+        classification: Optional[Any] = None,
     ) -> RouterDecision:
         """
         Fallback heuristic routing when LLM fails.
 
-        Uses simple rules based on query keywords and symbols.
+        Uses simple rules based on query keywords, symbols, and classification.
         """
         query_lower = query.lower()
         tools = []
         complexity = Complexity.SIMPLE
         strategy = ExecutionStrategy.DIRECT
+
+        # Extract market_type from classification (CRITICAL for disambiguation)
+        market_type = None
+        if classification:
+            if isinstance(classification, dict):
+                market_type = classification.get("market_type", "")
+            else:
+                market_type = getattr(classification, "market_type", "")
 
         # Check for conversational/greetings
         greetings = ["hello", "hi", "xin chào", "thank", "cảm ơn", "bye", "goodbye"]
@@ -438,9 +485,14 @@ Now analyze the query and provide your routing decision:
         if any(kw in query_lower for kw in realtime_keywords):
             tools.append("webSearch")
 
-        # If symbols present, add price tool
+        # If symbols present, add price tool based on market_type
         if symbols:
-            tools.append("getStockPrice")
+            # Use classification's market_type to select correct tool
+            if market_type == "crypto":
+                tools.append("getCryptoPrice")
+            else:
+                # Default to stock (including when market_type is "stock" or empty)
+                tools.append("getStockPrice")
 
             # Check for technical analysis
             tech_keywords = ["rsi", "macd", "technical", "kỹ thuật", "indicator"]
