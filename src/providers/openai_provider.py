@@ -190,6 +190,10 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
 
         try:
             self.logger.debug(f"[OPENAI] Stream | model={model} | params={list(params.keys())}")
+            import time
+            stream_start = time.time()
+            first_chunk = True
+            chunk_count = 0
 
             response_stream = await self._client.chat.completions.create(
                 model=model,
@@ -200,7 +204,19 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
 
             async for chunk in response_stream:
                 if chunk.choices and chunk.choices[0].delta.content:
+                    chunk_count += 1
+                    if first_chunk:
+                        first_chunk_latency = (time.time() - stream_start) * 1000
+                        self.logger.debug(
+                            f"[OPENAI] First chunk in {first_chunk_latency:.0f}ms"
+                        )
+                        first_chunk = False
                     yield chunk.choices[0].delta.content
+
+            total_time = (time.time() - stream_start) * 1000
+            self.logger.debug(
+                f"[OPENAI] Stream complete: {chunk_count} chunks in {total_time:.0f}ms"
+            )
 
         except openai.BadRequestError as e:
             error_msg = str(e)

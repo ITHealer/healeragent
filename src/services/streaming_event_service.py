@@ -225,7 +225,9 @@ class StreamEventEmitter(LoggerMixin):
     ) -> str:
         """Emit a generic event"""
         event = StreamEvent(type=event_type, data=data)
-        # self._log_event(event_type, log_details)
+        # Log content events at DEBUG to track streaming timing
+        if event_type == StreamEventType.CONTENT:
+            self._log_event(event_type, log_details)
         return event.to_sse()
 
     # ========================================================================
