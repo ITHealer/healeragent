@@ -77,12 +77,31 @@ class ToolFullSchema:
 
         for param in self.parameters:
             param_name = param.get("name", "")
-            properties[param_name] = {
-                "type": param.get("type", "string"),
+            param_type = param.get("type", "string")
+
+            prop = {
+                "type": param_type,
                 "description": param.get("description", ""),
             }
+
+            # Handle array types - OpenAI requires 'items' property
+            if param_type == "array":
+                items_type = param.get("items_type", "string")  # Default to string
+                if param.get("allowed_values"):
+                    prop["items"] = {
+                        "type": items_type,
+                        "enum": param["allowed_values"]
+                    }
+                else:
+                    prop["items"] = {"type": items_type}
+
             if param.get("enum"):
-                properties[param_name]["enum"] = param["enum"]
+                prop["enum"] = param["enum"]
+            if param.get("default") is not None:
+                prop["default"] = param["default"]
+
+            properties[param_name] = prop
+
             if param.get("required", False):
                 required.append(param_name)
 
@@ -218,13 +237,22 @@ class ToolCatalog(LoggerMixin):
         params = []
         if schema.parameters:
             for param in schema.parameters:
-                params.append({
+                param_dict = {
                     "name": param.name,
                     "type": param.type,
                     "description": param.description,
                     "required": param.required,
                     "enum": param.enum if hasattr(param, 'enum') else None,
-                })
+                }
+                # Include array-specific properties for OpenAI schema generation
+                if param.type == "array":
+                    param_dict["items_type"] = getattr(param, 'items_type', 'string')
+                    if hasattr(param, 'allowed_values') and param.allowed_values:
+                        param_dict["allowed_values"] = param.allowed_values
+                # Include default value if present
+                if hasattr(param, 'default') and param.default is not None:
+                    param_dict["default"] = param.default
+                params.append(param_dict)
 
         # Extract examples from usage_hints
         examples = []
