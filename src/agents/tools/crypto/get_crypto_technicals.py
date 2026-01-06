@@ -392,10 +392,13 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
 
             if data and isinstance(data, list) and len(data) > 0:
                 # Transform internal klines format to standard OHLCV format
-                # Internal format: openTime, closeTime, open, high, low, close, volume, priceChange, percentChange, quoteVolume
+                # Handle both formats:
+                # 1. List of dicts: [{openTime, open, high, low, close, volume, ...}, ...]
+                # 2. List of lists (Binance-like): [[openTime, open, high, low, close, volume, ...], ...]
                 ohlcv_data = []
                 for kline in data:
                     if isinstance(kline, dict):
+                        # Dict format: {openTime, closeTime, open, high, low, close, volume, ...}
                         ohlcv_data.append({
                             "time": kline.get("openTime", ""),
                             "timestamp": kline.get("openTime", ""),
@@ -404,6 +407,17 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                             "low": float(kline.get("low", 0)),
                             "close": float(kline.get("close", 0)),
                             "volume": float(kline.get("volume", 0)),
+                        })
+                    elif isinstance(kline, (list, tuple)) and len(kline) >= 6:
+                        # List format (Binance-like): [openTime, open, high, low, close, volume, ...]
+                        ohlcv_data.append({
+                            "time": kline[0],
+                            "timestamp": kline[0],
+                            "open": float(kline[1]),
+                            "high": float(kline[2]),
+                            "low": float(kline[3]),
+                            "close": float(kline[4]),
+                            "volume": float(kline[5]),
                         })
 
                 # Sort by openTime ascending
@@ -445,9 +459,25 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 data = response.json()
 
             if data and isinstance(data, list) and len(data) > 0:
-                # Sort by date ascending
-                sorted_data = sorted(data, key=lambda x: x.get("date", ""))
-                return sorted_data[-limit:]
+                # Normalize FMP data to standard OHLCV format
+                # FMP format: {date, open, high, low, close, volume}
+                ohlcv_data = []
+                for candle in data:
+                    if isinstance(candle, dict):
+                        ohlcv_data.append({
+                            "time": candle.get("date", ""),
+                            "timestamp": candle.get("date", ""),
+                            "open": float(candle.get("open", 0)),
+                            "high": float(candle.get("high", 0)),
+                            "low": float(candle.get("low", 0)),
+                            "close": float(candle.get("close", 0)),
+                            "volume": float(candle.get("volume", 0)),
+                        })
+
+                # Sort by date ascending and limit
+                ohlcv_data.sort(key=lambda x: x.get("time", ""))
+                self.logger.info(f"[OHLCV-FMP] Fetched {len(ohlcv_data)} candles for {symbol}")
+                return ohlcv_data[-limit:]
 
             return None
 
