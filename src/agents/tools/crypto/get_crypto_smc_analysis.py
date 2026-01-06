@@ -340,7 +340,11 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
 
             # Build klines endpoint URL
             # Uses: {base_url}{api_prefix}/{symbol}/klines
-            klines_endpoint = f"/{symbol}/klines"
+            # Internal API expects base symbol (e.g., BTC, not BTCUSD)
+            internal_symbol = symbol.replace("USD", "").replace("USDT", "")
+            klines_endpoint = f"/{internal_symbol}/klines"
+
+            self.logger.debug(f"[OHLCV-InternalKlines] Fetching {internal_symbol} ({interval})")
 
             response = await self._fetch_api(
                 endpoint=klines_endpoint,
@@ -428,10 +432,13 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 "15m": "15min", "1h": "1hour", "4h": "4hour", "1d": "1day"
             }
             fmp_tf = tf_map.get(timeframe, "1hour")
-            fmp_symbol = f"{symbol}USD"
+            # FMP requires USD suffix (e.g., BTCUSD)
+            fmp_symbol = f"{symbol}USD" if not symbol.endswith("USD") else symbol
 
             url = f"{self.FMP_BASE_URL}/historical-chart/{fmp_tf}/{fmp_symbol}"
             params = {"apikey": self.fmp_api_key}
+
+            self.logger.debug(f"[OHLCV-FMP] Fetching {fmp_symbol} ({fmp_tf}) from {url}")
 
             async with httpx.AsyncClient(timeout=15.0) as client:
                 response = await client.get(url, params=params)
