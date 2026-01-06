@@ -84,6 +84,8 @@ from src.agents.streaming import (
     LLMThoughtEvent,
     LLMDecisionEvent,
 )
+# LEARN Phase - Memory updates after execution
+from src.agents.hooks import LearnHook
 
 
 # Router instance
@@ -1347,6 +1349,9 @@ async def stream_chat_v3(
             "charts": None,
             "complexity": None,
             "selected_tools": [],
+            # For LEARN phase
+            "tool_results": [],
+            "final_content": "",
         }
 
         try:
@@ -1501,11 +1506,13 @@ async def stream_chat_v3(
 
                 elif event_type == "tool_results":
                     results = event.get("results", [])
+                    stats["tool_results"].extend(results)  # Capture for LEARN
                     yield emitter.emit_tool_results(results)
 
                 elif event_type == "content":
                     content = event.get("content", "")
                     if content:
+                        stats["final_content"] += content  # Capture for LEARN
                         yield emitter.emit_content(content)
 
                 elif event_type == "max_turns_reached":
@@ -1549,6 +1556,27 @@ async def stream_chat_v3(
                         "duration_ms": round(elapsed_ms, 0),
                     },
                 )
+
+            # =================================================================
+            # LEARN Phase: Update memory after successful execution
+            # =================================================================
+            try:
+                learn_hook = LearnHook()
+                learn_result = await learn_hook.on_execution_complete(
+                    query=query,
+                    classification=classification,
+                    tool_results=stats["tool_results"],
+                    response=stats["final_content"],
+                    user_id=int(user_id) if user_id else None,
+                )
+                updates = learn_result.get("updates", [])
+                if updates:
+                    _logger.debug(
+                        f"[LEARN] Memory updated: {len(updates)} updates"
+                    )
+            except Exception as learn_err:
+                # LEARN errors should not fail the request
+                _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
 
             yield emitter.emit_done(
                 total_turns=stats["total_turns"],
@@ -1632,6 +1660,20 @@ async def complete_chat_v3(
             user_id=int(user_id) if user_id else None,
             session_id=session_id,
         )
+
+        # LEARN Phase: Update memory after successful execution
+        if result.success:
+            try:
+                learn_hook = LearnHook()
+                await learn_hook.on_execution_complete(
+                    query=query,
+                    classification=classification,
+                    tool_results=getattr(result, "tool_results", []),
+                    response=result.response or "",
+                    user_id=int(user_id) if user_id else None,
+                )
+            except Exception as learn_err:
+                _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
 
         elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
 
