@@ -446,17 +446,24 @@ class UnifiedAgent(LoggerMixin):
 
         total_time = int((datetime.now() - start_time).total_seconds() * 1000)
 
+        # Build tool calls from actual results (expanded for multiple symbols)
+        actual_tool_calls = []
+        for i, result in enumerate(tool_results):
+            tool_name = result.get("tool_name", "unknown")
+            symbol = result.get("symbol")
+            args = {"symbol": symbol} if symbol else {}
+            actual_tool_calls.append(ToolCall(id=f"call_{i}", name=tool_name, arguments=args))
+
         return UnifiedAgentResult(
             success=True,
             response=content,
             turns=[AgentTurn(
                 turn_number=1,
-                tool_calls=[ToolCall(id=f"call_{i}", name=t, arguments={})
-                           for i, t in enumerate(router_decision.selected_tools)],
+                tool_calls=actual_tool_calls,
                 tool_results=tool_results,
             )],
             total_turns=1,
-            total_tool_calls=len(router_decision.selected_tools),
+            total_tool_calls=len(tool_results),  # Count actual tool calls (expanded)
             total_execution_time_ms=total_time,
             complexity=Complexity.SIMPLE,
             strategy=ExecutionStrategy.DIRECT,
@@ -478,40 +485,67 @@ class UnifiedAgent(LoggerMixin):
         images: Optional[List[Any]],
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream simple strategy."""
+        symbols = classification.symbols if classification else []
+        num_symbols = len(symbols)
+
+        # Calculate expected tool calls (expanded for multiple symbols)
+        expected_calls = 0
+        for tool_name in router_decision.selected_tools:
+            schema = self.catalog.get_full_schema(tool_name)
+            requires_symbol = False
+            if schema and schema.parameters:
+                for param in schema.parameters:
+                    if param.get("name") == "symbol" and param.get("required", False):
+                        requires_symbol = True
+                        break
+            if requires_symbol and num_symbols > 1:
+                expected_calls += num_symbols
+            else:
+                expected_calls += 1
 
         if enable_reasoning:
+            content = f"Executing {expected_calls} tool calls"
+            if num_symbols > 1:
+                content += f" ({len(router_decision.selected_tools)} tools × {num_symbols} symbols)"
             yield {
                 "type": "reasoning",
                 "phase": "tool_execution",
                 "action": "start",
-                "content": f"Executing {len(router_decision.selected_tools)} tools in parallel",
+                "content": content,
             }
 
-        # Emit tool calls
-        yield {
-            "type": "tool_calls",
-            "tools": [
-                {"name": t, "arguments": {}}
-                for t in router_decision.selected_tools
-            ],
-        }
-
-        # Execute tools
+        # Execute tools (this will expand for multiple symbols)
         tool_results = await self._execute_tools_parallel(
             tool_names=router_decision.selected_tools,
             query=query,
-            symbols=classification.symbols if classification else [],
+            symbols=symbols,
             flow_id=flow_id,
             user_id=user_id,
             session_id=session_id,
         )
+
+        # Emit tool calls (from actual results, showing expansion)
+        yield {
+            "type": "tool_calls",
+            "tools": [
+                {
+                    "name": r.get("tool_name", "unknown"),
+                    "arguments": {"symbol": r.get("symbol")} if r.get("symbol") else {},
+                }
+                for r in tool_results
+            ],
+        }
 
         # Emit results
         success_count = sum(1 for r in tool_results if r.get("status") in ["success", "200"])
         yield {
             "type": "tool_results",
             "results": [
-                {"tool": r.get("tool_name", ""), "success": r.get("status") in ["success", "200"]}
+                {
+                    "tool": r.get("tool_name", ""),
+                    "symbol": r.get("symbol"),
+                    "success": r.get("status") in ["success", "200"],
+                }
                 for r in tool_results
             ],
         }
@@ -556,7 +590,7 @@ class UnifiedAgent(LoggerMixin):
         yield {
             "type": "done",
             "total_turns": 1,
-            "total_tool_calls": len(router_decision.selected_tools),
+            "total_tool_calls": len(tool_results),  # Use actual count (expanded)
         }
 
     # =========================================================================
@@ -1055,12 +1089,33 @@ class UnifiedAgent(LoggerMixin):
         user_id: Optional[int],
         session_id: Optional[str],
     ) -> List[Dict[str, Any]]:
-        """Execute tools in parallel with inferred arguments."""
+        """
+        Execute tools in parallel with inferred arguments.
 
-        async def execute_single(tool_name: str) -> Dict[str, Any]:
+        For tools requiring a 'symbol' parameter:
+        - Expands to one call per symbol (e.g., getStockPrice for NVDA and AAPL)
+        - Executes all calls in parallel
+
+        Args:
+            tool_names: List of tool names to execute
+            symbols: List of symbols from classification (may have multiple)
+        """
+
+        async def execute_single(
+            tool_name: str,
+            symbol: Optional[str] = None,
+        ) -> Dict[str, Any]:
             try:
-                # Infer arguments based on tool schema
-                args = self._infer_tool_arguments(tool_name, query, symbols)
+                # Infer arguments, using specific symbol if provided
+                args = self._infer_tool_arguments(
+                    tool_name=tool_name,
+                    query=query,
+                    symbols=[symbol] if symbol else symbols,
+                )
+
+                self.logger.debug(
+                    f"[{flow_id}] Executing {tool_name} with args: {args}"
+                )
 
                 result = await asyncio.wait_for(
                     self.registry.execute_tool(tool_name=tool_name, params=args),
@@ -1074,6 +1129,7 @@ class UnifiedAgent(LoggerMixin):
                         "data": result.data,
                         "error": result.error,
                         "formatted_context": result.formatted_context,
+                        "symbol": symbol,  # Track which symbol this result is for
                     }
 
                 return result if isinstance(result, dict) else {"data": result}
@@ -1083,29 +1139,65 @@ class UnifiedAgent(LoggerMixin):
                     "tool_name": tool_name,
                     "status": "timeout",
                     "error": f"Tool timed out after {self.DEFAULT_TOOL_TIMEOUT}s",
+                    "symbol": symbol,
                 }
             except Exception as e:
                 return {
                     "tool_name": tool_name,
                     "status": "error",
                     "error": str(e),
+                    "symbol": symbol,
                 }
 
+        # Build list of (tool_name, symbol) pairs to execute
+        # For tools requiring symbol, expand to one call per symbol
+        execution_tasks = []
+
+        for tool_name in tool_names:
+            # Check if tool requires symbol parameter
+            schema = self.catalog.get_full_schema(tool_name)
+            requires_symbol = False
+
+            if schema and schema.parameters:
+                for param in schema.parameters:
+                    if param.get("name") == "symbol" and param.get("required", False):
+                        requires_symbol = True
+                        break
+
+            if requires_symbol and len(symbols) > 1:
+                # Expand: one call per symbol
+                for symbol in symbols:
+                    execution_tasks.append((tool_name, symbol))
+                    self.logger.info(
+                        f"[{flow_id}] Expanding {tool_name} for symbol: {symbol}"
+                    )
+            else:
+                # Single call (use first symbol if any)
+                execution_tasks.append((tool_name, symbols[0] if symbols else None))
+
+        # Execute all tasks in parallel
         results = await asyncio.gather(
-            *[execute_single(name) for name in tool_names],
+            *[execute_single(name, sym) for name, sym in execution_tasks],
             return_exceptions=True,
         )
 
+        # Process results
         processed = []
         for i, result in enumerate(results):
+            tool_name, symbol = execution_tasks[i]
             if isinstance(result, Exception):
                 processed.append({
-                    "tool_name": tool_names[i],
+                    "tool_name": tool_name,
                     "status": "error",
                     "error": str(result),
+                    "symbol": symbol,
                 })
             else:
                 processed.append(result)
+
+        self.logger.info(
+            f"[{flow_id}] Executed {len(processed)} tool calls for {len(tool_names)} tools, {len(symbols)} symbols"
+        )
 
         return processed
 
