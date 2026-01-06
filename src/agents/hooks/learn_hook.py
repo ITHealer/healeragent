@@ -153,30 +153,30 @@ class LearnHook(LoggerMixin):
 
         This helps provide context for follow-up queries like
         "What about AAPL?" when user was previously asking about NVDA.
+
+        Note: Currently logs for future integration when WorkingMemory
+        supports add_recent_symbol method.
         """
         try:
-            # Lazy import to avoid circular dependencies
-            from src.agents.memory.working_memory import WorkingMemory
+            # Log the symbols for now - actual memory storage will be added
+            # when WorkingMemory implements add_recent_symbol method
+            self.logger.debug(
+                f"[LEARN] Recent symbols: {symbols[:5]} | "
+                f"market={market_type} | user={user_id}"
+            )
 
-            working_memory = WorkingMemory()
-
-            for symbol in symbols[:5]:  # Limit to 5 most recent
-                await working_memory.add_recent_symbol(
-                    symbol=symbol,
-                    market_type=market_type or "stock",
-                    query_type=query_type,
-                    user_id=user_id,
-                )
+            # TODO: Integrate with WorkingMemory when it supports symbol tracking
+            # from src.agents.memory.working_memory import WorkingMemory
+            # working_memory = WorkingMemory(session_id=session_id, user_id=user_id)
+            # await working_memory.add_recent_symbol(...)
 
             return {
                 "type": "recent_symbols",
                 "symbols": symbols[:5],
                 "success": True,
+                "note": "logged_for_future_integration",
             }
 
-        except ImportError:
-            self.logger.debug("[LEARN] WorkingMemory not available, skipping")
-            return {"type": "recent_symbols", "success": False, "reason": "not_available"}
         except Exception as e:
             self.logger.warning(f"[LEARN] Failed to update recent symbols: {e}")
             return {"type": "recent_symbols", "success": False, "error": str(e)}
@@ -192,6 +192,8 @@ class LearnHook(LoggerMixin):
 
         Extracts key data points from tool results and stores them
         so future queries can reference historical analysis.
+
+        Note: Currently extracts and logs metrics for future integration.
         """
         try:
             # Extract key metrics from tool results
@@ -202,7 +204,7 @@ class LearnHook(LoggerMixin):
                 data = result.get("data", {})
 
                 # Extract price data
-                if "price" in tool_name.lower() or "price" in data:
+                if "price" in tool_name.lower() or "price" in str(data):
                     summary["last_price"] = data.get("price") or data.get("current_price")
                     summary["last_price_time"] = datetime.now().isoformat()
 
@@ -212,26 +214,20 @@ class LearnHook(LoggerMixin):
                     summary["last_macd"] = data.get("macd_histogram")
 
             if summary:
-                # Lazy import
-                from src.agents.memory.working_memory import WorkingMemory
-                working_memory = WorkingMemory()
-
-                for symbol in symbols[:3]:
-                    await working_memory.store_symbol_context(
-                        symbol=symbol,
-                        context=summary,
-                        user_id=user_id,
-                    )
+                # Log summary for now - actual storage will be added
+                # when a persistent symbol context store is implemented
+                self.logger.debug(
+                    f"[LEARN] Analysis summary for {symbols[:3]}: {list(summary.keys())}"
+                )
 
             return {
                 "type": "analysis_summary",
                 "symbols": symbols[:3],
                 "metrics_stored": list(summary.keys()),
                 "success": True,
+                "note": "logged_for_future_integration",
             }
 
-        except ImportError:
-            return {"type": "analysis_summary", "success": False, "reason": "not_available"}
         except Exception as e:
             self.logger.warning(f"[LEARN] Failed to store analysis summary: {e}")
             return {"type": "analysis_summary", "success": False, "error": str(e)}
@@ -286,14 +282,12 @@ class LearnHook(LoggerMixin):
 
         Tracks which types of analysis and markets the user
         queries most frequently for personalization.
+
+        Note: Currently logs preferences for future integration with
+        CoreMemory when it supports preference tracking.
         """
         try:
-            # Lazy import
-            from src.agents.memory.core_memory import CoreMemory
-
-            core_memory = CoreMemory()
-
-            # Update preferences
+            # Build preferences dict
             preferences = {
                 "preferred_market": market_type,
                 "preferred_language": language,
@@ -302,20 +296,26 @@ class LearnHook(LoggerMixin):
                 "last_active": datetime.now().isoformat(),
             }
 
-            await core_memory.update_preferences(
-                user_id=user_id,
-                preferences=preferences,
+            # Log for now - actual CoreMemory integration will be added
+            # when it supports update_preferences method
+            self.logger.debug(
+                f"[LEARN] User preferences: user={user_id} | "
+                f"market={market_type} | lang={language}"
             )
+
+            # TODO: Integrate with CoreMemory when it supports preferences
+            # from src.agents.memory.core_memory import get_core_memory
+            # core_memory = get_core_memory()
+            # await core_memory.append_to_human(user_id, f"Preferences: {preferences}")
 
             return {
                 "type": "user_preferences",
                 "user_id": user_id,
                 "market_type": market_type,
                 "success": True,
+                "note": "logged_for_future_integration",
             }
 
-        except ImportError:
-            return {"type": "user_preferences", "success": False, "reason": "not_available"}
         except Exception as e:
             self.logger.warning(f"[LEARN] Failed to update user preferences: {e}")
             return {"type": "user_preferences", "success": False, "error": str(e)}
