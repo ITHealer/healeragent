@@ -80,10 +80,10 @@ class GetVolumeProfileTool(BaseTool):
                 ToolParameter(
                     name="timeframe",
                     type="string",
-                    description="Timeframe for volume analysis",
+                    description="Timeframe for volume analysis. Recommend 3M+ for reliable results.",
                     required=False,
-                    default="1M",
-                    allowed_values=["1W", "1M", "3M", "6M"]
+                    default="3M",  # Changed from 1M - need more data for reliable volume profile
+                    allowed_values=["1M", "3M", "6M"]  # Removed 1W - too short
                 )
             ],
             returns={
@@ -103,8 +103,8 @@ class GetVolumeProfileTool(BaseTool):
     async def execute(
         self,
         symbol: str,
-        timeframe: str = "1M",
-        lookback_days: int = 60,
+        timeframe: str = "3M",  # Changed from 1M to match schema default
+        lookback_days: int = 90,  # Changed from 60 to match 3M
         num_bins: int = 10
     ) -> ToolOutput:
         """
@@ -122,9 +122,8 @@ class GetVolumeProfileTool(BaseTool):
         start_time = datetime.now()
         symbol_upper = symbol.upper()
         
-        # Map timeframe to lookback_days
+        # Map timeframe to lookback_days (1W removed - too short for volume profile)
         timeframe_map = {
-            "1W": 7,
             "1M": 30,
             "3M": 90,
             "6M": 180
@@ -148,43 +147,74 @@ class GetVolumeProfileTool(BaseTool):
             # ═══════════════════════════════════════════════════════════
             # STEP 1: Try with requested lookback
             # ═══════════════════════════════════════════════════════════
-            raw_data = await self.volume_handler.get_volume_profile(
-                symbol=symbol_upper,
-                lookback_days=lookback_days,
-                num_bins=num_bins
+            raw_data = None
+            last_error = None
+
+            try:
+                raw_data = await self.volume_handler.get_volume_profile(
+                    symbol=symbol_upper,
+                    lookback_days=lookback_days,
+                    num_bins=num_bins
+                )
+            except Exception as e:
+                last_error = str(e)
+                self.logger.warning(
+                    f"[{symbol_upper}] First attempt failed with {lookback_days} days: {e}"
+                )
+
+            # ═══════════════════════════════════════════════════════════
+            # STEP 2: Retry with more data if failed or insufficient
+            # ═══════════════════════════════════════════════════════════
+            need_retry = (
+                raw_data is None or
+                (raw_data and (raw_data.get("poc") is None or raw_data.get("poc") == 0))
             )
-            
-            # ═══════════════════════════════════════════════════════════
-            # STEP 2: Check if data is insufficient
-            # ═══════════════════════════════════════════════════════════
-            if raw_data:
-                poc = raw_data.get("poc")
-                
-                # If POC is None and lookback < 90, try with more data
-                if (poc is None or poc == 0) and lookback_days < 90:
-                    self.logger.warning(
-                        f"[{symbol_upper}] Insufficient data with {lookback_days} days. "
-                        f"Retrying with 90 days..."
-                    )
-                    
+
+            if need_retry and lookback_days < 90:
+                self.logger.info(
+                    f"[{symbol_upper}] Retrying with 90 days (was {lookback_days})..."
+                )
+                try:
                     raw_data = await self.volume_handler.get_volume_profile(
                         symbol=symbol_upper,
                         lookback_days=90,
                         num_bins=num_bins
                     )
-                    
                     lookback_days = 90
-            
+                    last_error = None  # Clear error on success
+                except Exception as e:
+                    last_error = str(e)
+                    self.logger.warning(f"[{symbol_upper}] Retry with 90 days also failed: {e}")
+
             # ═══════════════════════════════════════════════════════════
-            # STEP 3: Final check
+            # STEP 3: Final retry with 180 days if still failed
+            # ═══════════════════════════════════════════════════════════
+            if (raw_data is None or raw_data.get("poc") in [None, 0]) and lookback_days < 180:
+                self.logger.info(
+                    f"[{symbol_upper}] Final retry with 180 days..."
+                )
+                try:
+                    raw_data = await self.volume_handler.get_volume_profile(
+                        symbol=symbol_upper,
+                        lookback_days=180,
+                        num_bins=num_bins
+                    )
+                    lookback_days = 180
+                    last_error = None
+                except Exception as e:
+                    last_error = str(e)
+
+            # ═══════════════════════════════════════════════════════════
+            # STEP 4: Final check - return error if all attempts failed
             # ═══════════════════════════════════════════════════════════
             if not raw_data:
                 return create_error_output(
                     tool_name=self.schema.name,
-                    error=f"No volume data available for {symbol_upper}",
+                    error=f"No volume data available for {symbol_upper}: {last_error or 'Unknown error'}",
                     metadata={
                         "symbol": symbol_upper,
-                        "lookback_days_tried": [lookback_days, 90] if lookback_days < 90 else [lookback_days]
+                        "lookback_days_tried": [30, 90, 180] if lookback_days >= 180 else
+                                               [30, 90] if lookback_days >= 90 else [lookback_days]
                     }
                 )
             
