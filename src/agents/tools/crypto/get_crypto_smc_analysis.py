@@ -56,8 +56,11 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
     # Supported timeframes
     SUPPORTED_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
-    # FMP API fallback
-    FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+    # Binance API (primary fallback)
+    BINANCE_API_URL = "https://api.binance.com/api/v3/klines"
+
+    # FMP API (secondary fallback)
+    FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -235,12 +238,17 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                     },
                 )
 
-            # Fetch OHLCV data from internal API
+            # Fetch OHLCV data with fallback chain: Internal API → Binance → FMP
             ohlcv_data = await self._fetch_ohlcv_internal(symbol, timeframe)
 
             if not ohlcv_data or len(ohlcv_data) < 100:
-                # Fallback to FMP if internal API fails
-                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying FMP fallback")
+                # Primary fallback: Binance API
+                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying Binance fallback")
+                ohlcv_data = await self._fetch_ohlcv_binance(symbol, timeframe)
+
+            if not ohlcv_data or len(ohlcv_data) < 100:
+                # Secondary fallback: FMP API
+                self.logger.warning(f"[{self.schema.name}] Binance failed, trying FMP fallback")
                 ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe)
 
             if not ohlcv_data or len(ohlcv_data) < 100:
@@ -339,16 +347,87 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 },
             )
 
-            data = response.get("data", []) if isinstance(response, dict) else response
+            # Handle various response formats
+            if response is None:
+                return None
 
-            if data and len(data) > 0:
-                sorted_data = sorted(data, key=lambda x: x.get("time", x.get("timestamp", 0)))
+            # If response is a string, try to parse as JSON
+            if isinstance(response, str):
+                import json
+                try:
+                    response = json.loads(response)
+                except json.JSONDecodeError:
+                    self.logger.warning(f"[OHLCV-Internal] Invalid JSON response for {symbol}")
+                    return None
+
+            # Extract data from dict response
+            if isinstance(response, dict):
+                data = response.get("data", [])
+                # Handle nested data structure
+                if isinstance(data, dict):
+                    data = data.get("data", [])
+            elif isinstance(response, list):
+                data = response
+            else:
+                self.logger.warning(f"[OHLCV-Internal] Unexpected response type: {type(response)}")
+                return None
+
+            if data and isinstance(data, list) and len(data) > 0:
+                sorted_data = sorted(data, key=lambda x: x.get("time", x.get("timestamp", 0)) if isinstance(x, dict) else 0)
                 return sorted_data
 
             return None
 
         except Exception as e:
             self.logger.warning(f"[OHLCV-Internal] Fetch error for {symbol}: {e}")
+            return None
+
+    async def _fetch_ohlcv_binance(
+        self, symbol: str, timeframe: str, limit: int = 200
+    ) -> Optional[List[Dict]]:
+        """Primary fallback: Fetch OHLCV data from Binance API"""
+        try:
+            # Map timeframe to Binance interval
+            tf_map = {
+                "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"
+            }
+            binance_interval = tf_map.get(timeframe, "1h")
+
+            # Binance uses BTCUSDT format
+            binance_symbol = f"{symbol}USDT"
+
+            params = {
+                "symbol": binance_symbol,
+                "interval": binance_interval,
+                "limit": limit,
+            }
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(self.BINANCE_API_URL, params=params)
+                response.raise_for_status()
+                data = response.json()
+
+            if data and isinstance(data, list) and len(data) > 0:
+                # Binance kline format: [open_time, open, high, low, close, volume, close_time, ...]
+                ohlcv_data = []
+                for kline in data:
+                    ohlcv_data.append({
+                        "time": kline[0],  # open_time in milliseconds
+                        "timestamp": kline[0],
+                        "open": float(kline[1]),
+                        "high": float(kline[2]),
+                        "low": float(kline[3]),
+                        "close": float(kline[4]),
+                        "volume": float(kline[5]),
+                    })
+
+                self.logger.info(f"[OHLCV-Binance] Fetched {len(ohlcv_data)} candles for {symbol}")
+                return ohlcv_data
+
+            return None
+
+        except Exception as e:
+            self.logger.warning(f"[OHLCV-Binance] Fetch error for {symbol}: {e}")
             return None
 
     async def _fetch_ohlcv_fmp(
@@ -443,6 +522,8 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
 
             try:
                 ohlcv = await self._fetch_ohlcv_internal(symbol, tf)
+                if not ohlcv or len(ohlcv) < 100:
+                    ohlcv = await self._fetch_ohlcv_binance(symbol, tf)
                 if not ohlcv or len(ohlcv) < 100:
                     ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
 
