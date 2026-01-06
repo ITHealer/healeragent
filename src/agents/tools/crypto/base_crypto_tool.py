@@ -24,12 +24,10 @@ class BaseCryptoTool(BaseTool, LoggerMixin, ABC):
     """
     Base class for crypto tools using internal API
 
-    Internal API: http://10.10.0.2:20073
+    Internal API configured via settings:
+    - CRYPTO_INTERNAL_API_URL (default: http://10.10.0.2:20073)
+    - CRYPTO_INTERNAL_API_PREFIX (default: /api/v1/market/crypto)
     """
-
-    # API Configuration
-    DEFAULT_BASE_URL = "http://10.10.0.2:20073"
-    API_PREFIX = "/api/v1/market/crypto"
 
     # Default cache TTL (5 minutes for market data)
     DEFAULT_CACHE_TTL = 300
@@ -41,9 +39,10 @@ class BaseCryptoTool(BaseTool, LoggerMixin, ABC):
         """Initialize base crypto tool"""
         super().__init__()
 
-        # Get base URL from settings or use default
-        self.base_url = getattr(settings, 'CRYPTO_API_BASE_URL', self.DEFAULT_BASE_URL)
-        self.api_url = f"{self.base_url}{self.API_PREFIX}"
+        # Get API config from settings
+        self.base_url = settings.CRYPTO_INTERNAL_API_URL
+        self.api_prefix = settings.CRYPTO_INTERNAL_API_PREFIX
+        self.api_url = f"{self.base_url}{self.api_prefix}"
 
         self.logger.debug(f"[{self.__class__.__name__}] API URL: {self.api_url}")
 

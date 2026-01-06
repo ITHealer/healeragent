@@ -131,6 +131,10 @@ class Settings(BaseSettings):
     # Feature Flags
     USE_LLM_ROUTER: bool = Field(False, env='USE_LLM_ROUTER')  # Enable ChatGPT-style LLM Router
 
+    # Internal Crypto Market API Configuration
+    CRYPTO_INTERNAL_API_URL: str = Field("http://10.10.0.2:20073", env='CRYPTO_INTERNAL_API_URL')
+    CRYPTO_INTERNAL_API_PREFIX: str = Field("/api/v1/market/crypto", env='CRYPTO_INTERNAL_API_PREFIX')
+
 # Avoid having to re-read the .env file and create the Settings object every time you access it
 @lru_cache()
 def get_settings():

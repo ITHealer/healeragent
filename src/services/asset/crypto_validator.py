@@ -35,7 +35,9 @@ class CryptoSymbolValidator(LoggerMixin):
     """
     Validates crypto symbols using external market API.
 
-    API: GET http://10.10.0.2:20073/api/v1/market/crypto/search
+    API configured via settings:
+    - CRYPTO_INTERNAL_API_URL (default: http://10.10.0.2:20073)
+    - CRYPTO_INTERNAL_API_PREFIX (default: /api/v1/market/crypto)
 
     Features:
     - Validates if symbol is supported
@@ -43,10 +45,6 @@ class CryptoSymbolValidator(LoggerMixin):
     - Caches results in Redis for performance
     - Handles API errors gracefully
     """
-
-    # API Configuration
-    DEFAULT_BASE_URL = "http://10.10.0.2:20073"
-    SEARCH_ENDPOINT = "/api/v1/market/crypto/search"
 
     # Cache settings
     CACHE_TTL_SECONDS = 3600  # 1 hour
@@ -75,7 +73,10 @@ class CryptoSymbolValidator(LoggerMixin):
 
         super().__init__()
 
-        self.base_url = base_url or getattr(settings, 'CRYPTO_API_BASE_URL', self.DEFAULT_BASE_URL)
+        # Get API config from settings
+        self.base_url = base_url or settings.CRYPTO_INTERNAL_API_URL
+        self.api_prefix = settings.CRYPTO_INTERNAL_API_PREFIX
+        self.search_endpoint = f"{self.api_prefix}/search"
         self.redis = redis_client
         self.timeout = timeout
 
@@ -147,7 +148,7 @@ class CryptoSymbolValidator(LoggerMixin):
             List of matching CryptoSearchResult
         """
         try:
-            url = f"{self.base_url}{self.SEARCH_ENDPOINT}"
+            url = f"{self.base_url}{self.search_endpoint}"
             params = {
                 "SearchQuery": query,
                 "PageNumber": max_results
