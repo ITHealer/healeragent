@@ -331,17 +331,27 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             # Fetch OHLCV data with fallback chain: Internal Klines API (primary) → FMP (fallback)
             # Binance data (via internal API) is more accurate and up-to-date
             ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe, limit=candle_limit)
+            data_source = "Internal API (Binance)"
 
-            if not ohlcv_data or len(ohlcv_data) < 100:
+            # Determine minimum candles required
+            # If user explicitly specified lookback_days, use lower threshold (allow short-term analysis)
+            # Otherwise, require 100 candles for comprehensive SMC analysis
+            if lookback_days is not None:
+                min_candles = min(20, candle_limit)  # Allow analysis with fewer candles for short-term
+            else:
+                min_candles = 100  # Default: require 100 candles for robust SMC analysis
+
+            if not ohlcv_data or len(ohlcv_data) < min_candles:
                 # Fallback: FMP API
-                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying FMP fallback")
+                self.logger.warning(f"[{self.schema.name}] Internal API failed (got {len(ohlcv_data) if ohlcv_data else 0} candles, need {min_candles}), trying FMP fallback")
                 ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe, limit=candle_limit)
+                data_source = "FMP API"
 
-            if not ohlcv_data or len(ohlcv_data) < 100:
+            if not ohlcv_data or len(ohlcv_data) < min_candles:
                 return ToolOutput(
                     tool_name=self.schema.name,
                     status="error",
-                    error=f"Insufficient data for SMC analysis on {symbol}. Need at least 100 candles.",
+                    error=f"Insufficient data for SMC analysis on {symbol}. Need at least {min_candles} candles, got {len(ohlcv_data) if ohlcv_data else 0}.",
                     metadata={"symbol": symbol, "original_symbol": original_symbol},
                 )
 
@@ -378,6 +388,7 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 "timeframe": timeframe,
                 "current_price": current_price,
                 "data_range": data_range,
+                "data_source": data_source,
                 **smc_analysis,
                 "multi_tf": multi_tf_data,
                 "candle_count": len(ohlcv_data),
@@ -671,6 +682,8 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
         timeframe = data.get("timeframe", "N/A")
         price = data.get("current_price", 0)
         data_range = data.get("data_range", {})
+        data_source = data.get("data_source", "Unknown")
+        timestamp = data.get("timestamp", "")
         bias = data.get("bias", {})
         structure = data.get("market_structure", {})
         obs = data.get("order_blocks", {})
@@ -692,8 +705,17 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
         else:
             duration_str = f"{duration_hours:.1f} giờ"
 
+        # Format timestamp for display
+        timestamp_display = timestamp[:19].replace("T", " ") if timestamp else "N/A"
+
         lines = [
             f"🎯 SMC ANALYSIS - {symbol} ({timeframe}):",
+            "",
+            "=" * 50,
+            f"💵 CURRENT PRICE: {self._format_price(price)} USD" if price else "💵 CURRENT PRICE: N/A",
+            f"⏰ Data fetched at: {timestamp_display}",
+            f"📡 Data source: {data_source}",
+            "=" * 50,
             "",
             f"📅 Data Range: {candle_count} candles ({duration_str})",
         ]
@@ -706,8 +728,6 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             lines.append(f"   From: {from_display}")
             lines.append(f"   To: {to_display}")
 
-        lines.append("")
-        lines.append(f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A")
         lines.append("")
 
         # Trading Bias
@@ -790,6 +810,17 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 tf_bias = tf_data.get("bias", "neutral").upper()
                 tf_emoji = "🟢" if tf_bias == "BULLISH" else ("🔴" if tf_bias == "BEARISH" else "⚪")
                 lines.append(f"   • {tf}: {tf_emoji} {tf_bias} | OBs: {tf_data.get('bullish_obs', 0)}B/{tf_data.get('bearish_obs', 0)}S")
+            lines.append("")
+
+        # Add explicit scope note to prevent LLM from adding unverified speculation
+        lines.append("=" * 50)
+        lines.append("⚠️ IMPORTANT NOTE FOR RESPONSE:")
+        lines.append(f"• This analysis is based ONLY on {symbol} technical data shown above")
+        lines.append(f"• Current price: {self._format_price(price)} USD (as of {timestamp_display})")
+        lines.append("• DO NOT make claims about external markets (gold, stocks, altcoins)")
+        lines.append("• DO NOT speculate about information not present in this data")
+        lines.append("• Always cite the exact current price from this data when mentioning price")
+        lines.append("=" * 50)
 
         return "\n".join(lines)
 
