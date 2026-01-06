@@ -194,6 +194,7 @@ class LLMToolRouter(LoggerMixin):
         context: Optional[Any] = None,
         classification: Optional[Any] = None,
         use_heuristics_fallback: bool = True,
+        enable_web_search: bool = False,
     ) -> RouterDecision:
         """
         Route query to appropriate tools.
@@ -205,6 +206,7 @@ class LLMToolRouter(LoggerMixin):
             classification: Classification result with query_type, market_type, reasoning
                            IMPORTANT: Used to disambiguate symbols (e.g., BTC stock vs crypto)
             use_heuristics_fallback: Fall back to heuristics if LLM fails
+            enable_web_search: When True, FORCE include webSearch in selected tools
 
         Returns:
             RouterDecision with selected tools and strategy
@@ -213,7 +215,9 @@ class LLMToolRouter(LoggerMixin):
 
         try:
             # Build prompt with all tool summaries AND classification context
-            prompt = self._build_prompt(query, symbols, context, classification)
+            prompt = self._build_prompt(
+                query, symbols, context, classification, enable_web_search
+            )
 
             # Call LLM
             result = await self._call_llm(prompt)
@@ -223,6 +227,11 @@ class LLMToolRouter(LoggerMixin):
 
             # Validate tools exist
             decision.selected_tools = self._validate_tools(decision.selected_tools)
+
+            # FORCE add webSearch if enable_web_search=True
+            if enable_web_search and "webSearch" not in decision.selected_tools:
+                decision.selected_tools.append("webSearch")
+                decision.reasoning += " [webSearch enforced by user setting]"
 
             # Log decision
             elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -242,7 +251,11 @@ class LLMToolRouter(LoggerMixin):
 
             if use_heuristics_fallback:
                 self.logger.info("[ROUTER] Falling back to heuristics")
-                return self._heuristic_route(query, symbols, classification)
+                decision = self._heuristic_route(query, symbols, classification)
+                # Force webSearch even in fallback
+                if enable_web_search and "webSearch" not in decision.selected_tools:
+                    decision.selected_tools.append("webSearch")
+                return decision
 
             return RouterDecision.fallback(str(e))
 
@@ -252,11 +265,25 @@ class LLMToolRouter(LoggerMixin):
         symbols: Optional[List[str]] = None,
         context: Optional[Any] = None,
         classification: Optional[Any] = None,
+        enable_web_search: bool = False,
     ) -> str:
         """Build routing prompt with tool catalog and classification context."""
 
         # Get formatted tool catalog
         tool_catalog = self.catalog.format_for_router()
+
+        # Web search requirement hint
+        web_search_hint = ""
+        if enable_web_search:
+            web_search_hint = """
+⚠️ WEB SEARCH REQUIRED:
+User has explicitly enabled web search. You MUST include "webSearch" in selected_tools.
+Use webSearch to find:
+- Latest news and market sentiment
+- Strategy concepts (SMC, ICT, Order Blocks, FVG, BOS/CHoCH)
+- Recent developments not covered by financial data
+- Additional context beyond price/technical data
+"""
 
         # Context info
         symbols_hint = f"Symbols: {', '.join(symbols)}" if symbols else "No specific symbols"
@@ -304,6 +331,7 @@ select the most appropriate tools to answer the query.
 {symbols_hint}
 {context_hint}
 {classification_hint}
+{web_search_hint}
 </context>
 
 <instructions>

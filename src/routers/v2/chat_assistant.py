@@ -1438,6 +1438,7 @@ async def stream_chat_v3(
                 symbols=classification.symbols,
                 context=classification_context,
                 classification=classification,  # Pass classification for disambiguation
+                enable_web_search=data.enable_web_search,  # Force webSearch when enabled
             )
 
             stats["complexity"] = router_decision.complexity.value
@@ -1647,6 +1648,7 @@ async def complete_chat_v3(
             symbols=classification.symbols,
             context=classification_context,
             classification=classification,  # Pass classification for disambiguation
+            enable_web_search=data.enable_web_search,  # Force webSearch when enabled
         )
 
         # Execute with Unified Agent

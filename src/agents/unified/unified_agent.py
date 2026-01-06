@@ -1461,6 +1461,13 @@ Response Language: {system_language.upper()}
         skill = self.skill_registry.select_skill(market_type)
         analysis_framework = skill.get_analysis_framework()
 
+        # Check if web search results are present for source citation
+        has_web_search = any(
+            r.get("tool_name", "").lower() == "websearch"
+            for r in tool_results
+            if r.get("status") in ["success", "200"]
+        )
+
         # Format tool results
         results_text = "\n\n".join([
             f"**{r.get('tool_name', 'Unknown')}**:\n{r.get('formatted_context') or json.dumps(r.get('data', {}), indent=2)}"
@@ -1468,13 +1475,29 @@ Response Language: {system_language.upper()}
             if r.get("status") in ["success", "200"]
         ])
 
+        # Source citation instructions when web search is used
+        source_citation_instructions = ""
+        if has_web_search:
+            source_citation_instructions = """
+## SOURCE CITATION REQUIREMENTS
+
+When using information from webSearch results:
+- MUST include a "## Nguồn tham khảo / Sources" section at the END of your response
+- List all relevant sources as clickable markdown links: [Title](URL)
+- Only cite sources you actually used in your analysis
+- Format example:
+  ## Nguồn tham khảo
+  - [Article Title 1](https://example.com/article1)
+  - [Article Title 2](https://example.com/article2)
+"""
+
         system_prompt = f"""You are a {skill.config.description}.
 
 Current Date: {current_date}
 Response Language: {system_language.upper()}
 
 {analysis_framework}
-
+{source_citation_instructions}
 ---
 ## TOOL RESULTS TO SYNTHESIZE
 
@@ -1489,6 +1512,7 @@ Synthesize the above tool results into a comprehensive response following your a
 - Follow the structured format from your expertise
 - Be thorough but concise
 - Highlight key insights and actionable recommendations
+{"- Include source citations at the end if web search was used" if has_web_search else ""}
 """
 
         messages = [{"role": "system", "content": system_prompt}]
