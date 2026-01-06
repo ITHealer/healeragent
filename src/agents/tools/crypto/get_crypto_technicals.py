@@ -59,6 +59,9 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
     # Supported timeframes from internal API
     SUPPORTED_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
+    # Timeframe to hours mapping for candle calculation
+    TIMEFRAME_HOURS = {"15m": 0.25, "1h": 1, "4h": 4, "1d": 24}
+
     # Available indicator categories
     INDICATOR_CATEGORIES = {
         "momentum": ["rsi", "stoch_rsi", "stochastic", "macd"],
@@ -69,7 +72,7 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         "all": None,  # All indicators
     }
 
-    # FMP API (primary source)
+    # FMP API (fallback source)
     FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, api_key: Optional[str] = None):
@@ -156,11 +159,23 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                     required=False,
                     default=["all"],
                 ),
+                ToolParameter(
+                    name="lookback_days",
+                    type="integer",
+                    description=(
+                        "Number of days to look back for analysis. "
+                        "Example: '7 ngày' → lookback_days=7. "
+                        "If not specified, uses smart defaults based on timeframe."
+                    ),
+                    required=False,
+                    default=None,
+                ),
             ],
             returns={
                 "symbol": "string - Normalized symbol",
                 "timeframe": "string - Primary timeframe",
                 "current_price": "number - Current price",
+                "data_range": "object - Time range of data {from, to, candle_count, duration_days}",
                 "indicators": "object - All calculated indicators",
                 "signal": "object - Overall signal summary",
                 "multi_tf": "object - Multi-timeframe data (if requested)",
@@ -186,12 +201,87 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         """Extract base symbol (same as normalize for crypto)"""
         return self._normalize_crypto_symbol(symbol)
 
+    def _calculate_candle_limit(
+        self,
+        timeframe: str,
+        lookback_days: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> int:
+        """
+        Calculate optimal candle limit for technical analysis
+
+        Priority:
+        1. Explicit limit (if provided)
+        2. lookback_days converted to candles
+        3. Smart default based on timeframe
+
+        Returns:
+            Number of candles to fetch
+        """
+        hours = self.TIMEFRAME_HOURS.get(timeframe, 1)
+
+        # If explicit limit provided
+        if limit:
+            return min(limit, 1000)  # Cap at 1000
+
+        # If lookback_days provided
+        if lookback_days:
+            candles = int(lookback_days * 24 / hours)
+            return min(candles, 1000)
+
+        # Smart defaults for technical analysis
+        # RSI needs 14 periods, MACD needs 26+9, Ichimoku needs 52
+        defaults = {
+            "15m": 200,   # ~2 days
+            "1h": 200,    # ~8 days
+            "4h": 200,    # ~33 days
+            "1d": 200,    # ~200 days
+        }
+        return defaults.get(timeframe, 200)
+
+    def _calculate_data_range(
+        self,
+        ohlcv_data: List[Dict],
+        timeframe: str
+    ) -> Dict[str, Any]:
+        """
+        Calculate data range information from OHLCV data
+
+        Returns:
+            Dict with from, to, candle_count, duration_days, duration_hours
+        """
+        if not ohlcv_data:
+            return {}
+
+        candle_count = len(ohlcv_data)
+        hours = self.TIMEFRAME_HOURS.get(timeframe, 1)
+        duration_hours = candle_count * hours
+        duration_days = duration_hours / 24
+
+        # Get time range from data
+        first_candle = ohlcv_data[0]
+        last_candle = ohlcv_data[-1]
+
+        # Extract timestamps
+        from_time = first_candle.get("time", first_candle.get("timestamp", ""))
+        to_time = last_candle.get("time", last_candle.get("timestamp", ""))
+
+        return {
+            "from": from_time,
+            "to": to_time,
+            "candle_count": candle_count,
+            "duration_hours": round(duration_hours, 1),
+            "duration_days": round(duration_days, 1),
+            "timeframe": timeframe,
+        }
+
     async def execute(
         self,
         symbol: str,
         timeframe: str = "1h",
         timeframes: Optional[List[str]] = None,
         indicators: Optional[List[str]] = None,
+        lookback_days: Optional[int] = None,
         **kwargs
     ) -> ToolOutput:
         """
@@ -202,6 +292,7 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             timeframe: Primary timeframe for analysis
             timeframes: Optional list for multi-TF analysis
             indicators: List of indicator categories to calculate
+            lookback_days: Number of days to look back (optional)
 
         Returns:
             ToolOutput with comprehensive technical indicators
@@ -217,6 +308,9 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             if timeframe not in self.SUPPORTED_TIMEFRAMES:
                 timeframe = "1h"
 
+            # Calculate candle limit based on lookback_days or smart default
+            candle_limit = self._calculate_candle_limit(timeframe, lookback_days)
+
             # Default indicators to all
             if indicators is None or "all" in indicators:
                 indicator_categories = list(self.INDICATOR_CATEGORIES.keys())
@@ -225,10 +319,10 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 indicator_categories = indicators
 
             self.logger.info(f"  ┌─ 🔧 TOOL: {self.schema.name}")
-            self.logger.info(f"  │  Input: {{symbol={original_symbol}→{symbol}, tf={timeframe}}}")
+            self.logger.info(f"  │  Input: {{symbol={original_symbol}→{symbol}, tf={timeframe}, limit={candle_limit}}}")
 
-            # Check cache
-            cache_key = f"crypto:technicals:{symbol}:{timeframe}:{','.join(sorted(indicator_categories))}"
+            # Check cache (include candle_limit in key)
+            cache_key = f"crypto:technicals:{symbol}:{timeframe}:{candle_limit}:{','.join(sorted(indicator_categories))}"
             cached_result = await self._get_cached_result(cache_key)
 
             if cached_result:
@@ -250,13 +344,14 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                     },
                 )
 
-            # Fetch OHLCV data with fallback chain: FMP (primary) → Internal Klines API (fallback)
-            ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe)
+            # Fetch OHLCV data with fallback chain: Internal Klines API (primary) → FMP (fallback)
+            # Binance data (via internal API) is more accurate and up-to-date
+            ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe, limit=candle_limit)
 
             if not ohlcv_data or len(ohlcv_data) < 50:
-                # Fallback: Internal Klines API
-                self.logger.warning(f"[{self.schema.name}] FMP failed, trying Internal Klines API fallback")
-                ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe)
+                # Fallback: FMP API
+                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying FMP fallback")
+                ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe, limit=candle_limit)
 
             if not ohlcv_data or len(ohlcv_data) < 50:
                 return ToolOutput(
@@ -284,6 +379,9 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             # Generate signal summary
             signal_summary = self._generate_signal_summary(calculated_indicators, current_price)
 
+            # Calculate data range for context
+            data_range = self._calculate_data_range(ohlcv_data, timeframe)
+
             # Multi-timeframe analysis if requested
             multi_tf_data = None
             if timeframes and len(timeframes) > 1:
@@ -297,6 +395,7 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 "original_input": original_symbol,
                 "timeframe": timeframe,
                 "current_price": current_price,
+                "data_range": data_range,
                 "indicators": calculated_indicators,
                 "signal": signal_summary,
                 "multi_tf": multi_tf_data,
@@ -674,10 +773,10 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
                 continue
 
             try:
-                # FMP primary, Internal klines fallback
-                ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
+                # Internal klines primary, FMP fallback
+                ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
                 if not ohlcv or len(ohlcv) < 50:
-                    ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
+                    ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
 
                 if ohlcv and len(ohlcv) >= 50:
                     opens = [c.get("open", 0) for c in ohlcv]
@@ -710,16 +809,40 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         symbol = data.get("symbol", "Unknown")
         timeframe = data.get("timeframe", "N/A")
         price = data.get("current_price", 0)
+        data_range = data.get("data_range", {})
         indicators = data.get("indicators", {})
         signal = data.get("signal", {})
         multi_tf = data.get("multi_tf")
 
+        # Build data range description
+        candle_count = data_range.get("candle_count", data.get("candle_count", 0))
+        duration_days = data_range.get("duration_days", 0)
+        duration_hours = data_range.get("duration_hours", 0)
+        from_time = data_range.get("from", "")
+        to_time = data_range.get("to", "")
+
+        # Format time range description
+        if duration_days >= 1:
+            duration_str = f"{duration_days:.1f} ngày ({duration_hours:.0f} giờ)"
+        else:
+            duration_str = f"{duration_hours:.1f} giờ"
+
         lines = [
             f"📊 CRYPTO TECHNICALS - {symbol} ({timeframe}):",
             "",
-            f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A",
-            "",
+            f"📅 Data Range: {candle_count} candles ({duration_str})",
         ]
+
+        # Add time range if available
+        if from_time and to_time:
+            from_display = from_time[:16].replace("T", " ") if "T" in str(from_time) else str(from_time)[:16]
+            to_display = to_time[:16].replace("T", " ") if "T" in str(to_time) else str(to_time)[:16]
+            lines.append(f"   From: {from_display}")
+            lines.append(f"   To: {to_display}")
+
+        lines.append("")
+        lines.append(f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A")
+        lines.append("")
 
         # Overall Signal
         overall = signal.get("overall", "neutral").upper()

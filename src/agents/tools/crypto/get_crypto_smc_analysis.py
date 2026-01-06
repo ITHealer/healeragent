@@ -56,7 +56,10 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
     # Supported timeframes
     SUPPORTED_TIMEFRAMES = ["15m", "1h", "4h", "1d"]
 
-    # FMP API (primary source)
+    # Timeframe to hours mapping for candle calculation
+    TIMEFRAME_HOURS = {"15m": 0.25, "1h": 1, "4h": 4, "1d": 24}
+
+    # FMP API (fallback source)
     FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, api_key: Optional[str] = None):
@@ -142,11 +145,23 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                     required=False,
                     default=["all"],
                 ),
+                ToolParameter(
+                    name="lookback_days",
+                    type="integer",
+                    description=(
+                        "Number of days to look back for analysis. "
+                        "Example: '7 ngày' → lookback_days=7. "
+                        "If not specified, uses smart defaults based on timeframe."
+                    ),
+                    required=False,
+                    default=None,
+                ),
             ],
             returns={
                 "symbol": "string - Normalized symbol",
                 "timeframe": "string - Primary timeframe",
                 "current_price": "number - Current price",
+                "data_range": "object - Time range of data {from, to, candle_count, duration_days}",
                 "market_structure": "object - HH/HL/LH/LL, BOS, CHoCH",
                 "order_blocks": "object - Bullish/Bearish OBs",
                 "fair_value_gaps": "object - FVG/Imbalances",
@@ -172,12 +187,86 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             return symbol[:-4]
         return symbol
 
+    def _calculate_candle_limit(
+        self,
+        timeframe: str,
+        lookback_days: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> int:
+        """
+        Calculate optimal candle limit for SMC analysis
+
+        Priority:
+        1. Explicit limit (if provided)
+        2. lookback_days converted to candles
+        3. Smart default based on timeframe
+
+        Returns:
+            Number of candles to fetch
+        """
+        hours = self.TIMEFRAME_HOURS.get(timeframe, 1)
+
+        # If explicit limit provided
+        if limit:
+            return min(limit, 1000)  # Cap at 1000
+
+        # If lookback_days provided
+        if lookback_days:
+            candles = int(lookback_days * 24 / hours)
+            return min(candles, 1000)
+
+        # Smart defaults for SMC analysis (needs more data for structure)
+        defaults = {
+            "15m": 400,   # ~4 days
+            "1h": 300,    # ~12 days
+            "4h": 200,    # ~33 days
+            "1d": 100,    # ~100 days
+        }
+        return defaults.get(timeframe, 200)
+
+    def _calculate_data_range(
+        self,
+        ohlcv_data: List[Dict],
+        timeframe: str
+    ) -> Dict[str, Any]:
+        """
+        Calculate data range information from OHLCV data
+
+        Returns:
+            Dict with from, to, candle_count, duration_days, duration_hours
+        """
+        if not ohlcv_data:
+            return {}
+
+        candle_count = len(ohlcv_data)
+        hours = self.TIMEFRAME_HOURS.get(timeframe, 1)
+        duration_hours = candle_count * hours
+        duration_days = duration_hours / 24
+
+        # Get time range from data
+        first_candle = ohlcv_data[0]
+        last_candle = ohlcv_data[-1]
+
+        # Extract timestamps
+        from_time = first_candle.get("time", first_candle.get("timestamp", ""))
+        to_time = last_candle.get("time", last_candle.get("timestamp", ""))
+
+        return {
+            "from": from_time,
+            "to": to_time,
+            "candle_count": candle_count,
+            "duration_hours": round(duration_hours, 1),
+            "duration_days": round(duration_days, 1),
+            "timeframe": timeframe,
+        }
+
     async def execute(
         self,
         symbol: str,
         timeframe: str = "1h",
         timeframes: Optional[List[str]] = None,
         components: Optional[List[str]] = None,
+        lookback_days: Optional[int] = None,
         **kwargs
     ) -> ToolOutput:
         """
@@ -188,6 +277,7 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             timeframe: Primary timeframe for analysis
             timeframes: Optional list for multi-TF analysis
             components: SMC components to analyze
+            lookback_days: Number of days to look back (optional)
 
         Returns:
             ToolOutput with comprehensive SMC analysis
@@ -203,6 +293,9 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             if timeframe not in self.SUPPORTED_TIMEFRAMES:
                 timeframe = "1h"
 
+            # Calculate candle limit based on lookback_days or smart default
+            candle_limit = self._calculate_candle_limit(timeframe, lookback_days)
+
             # Default components to all
             if components is None or "all" in components:
                 selected_components = ["structure", "order_blocks", "fvg", "liquidity", "zones"]
@@ -210,10 +303,10 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 selected_components = components
 
             self.logger.info(f"  ┌─ 🔧 TOOL: {self.schema.name}")
-            self.logger.info(f"  │  Input: {{symbol={original_symbol}→{symbol}, tf={timeframe}}}")
+            self.logger.info(f"  │  Input: {{symbol={original_symbol}→{symbol}, tf={timeframe}, limit={candle_limit}}}")
 
-            # Check cache
-            cache_key = f"crypto:smc:{symbol}:{timeframe}:{','.join(sorted(selected_components))}"
+            # Check cache (include lookback_days in key)
+            cache_key = f"crypto:smc:{symbol}:{timeframe}:{candle_limit}:{','.join(sorted(selected_components))}"
             cached_result = await self._get_cached_result(cache_key)
 
             if cached_result:
@@ -235,13 +328,14 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                     },
                 )
 
-            # Fetch OHLCV data with fallback chain: FMP (primary) → Internal Klines API (fallback)
-            ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe)
+            # Fetch OHLCV data with fallback chain: Internal Klines API (primary) → FMP (fallback)
+            # Binance data (via internal API) is more accurate and up-to-date
+            ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe, limit=candle_limit)
 
             if not ohlcv_data or len(ohlcv_data) < 100:
-                # Fallback: Internal Klines API
-                self.logger.warning(f"[{self.schema.name}] FMP failed, trying Internal Klines API fallback")
-                ohlcv_data = await self._fetch_ohlcv_internal_klines(symbol, timeframe)
+                # Fallback: FMP API
+                self.logger.warning(f"[{self.schema.name}] Internal API failed, trying FMP fallback")
+                ohlcv_data = await self._fetch_ohlcv_fmp(symbol, timeframe, limit=candle_limit)
 
             if not ohlcv_data or len(ohlcv_data) < 100:
                 return ToolOutput(
@@ -267,6 +361,9 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
             # Get current price
             current_price = ohlcv_dict["close"][-1] if ohlcv_dict["close"] else None
 
+            # Calculate data range for context
+            data_range = self._calculate_data_range(ohlcv_data, timeframe)
+
             # Multi-timeframe SMC analysis if requested
             multi_tf_data = None
             if timeframes and len(timeframes) > 1:
@@ -280,6 +377,7 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 "original_input": original_symbol,
                 "timeframe": timeframe,
                 "current_price": current_price,
+                "data_range": data_range,
                 **smc_analysis,
                 "multi_tf": multi_tf_data,
                 "candle_count": len(ohlcv_data),
@@ -534,10 +632,10 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
                 continue
 
             try:
-                # FMP primary, Internal klines fallback
-                ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
+                # Internal klines primary, FMP fallback
+                ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
                 if not ohlcv or len(ohlcv) < 100:
-                    ohlcv = await self._fetch_ohlcv_internal_klines(symbol, tf)
+                    ohlcv = await self._fetch_ohlcv_fmp(symbol, tf)
 
                 if ohlcv and len(ohlcv) >= 100:
                     # Convert List[Dict] to Dict[str, List] for SMC calculators
@@ -572,6 +670,7 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
         symbol = data.get("symbol", "Unknown")
         timeframe = data.get("timeframe", "N/A")
         price = data.get("current_price", 0)
+        data_range = data.get("data_range", {})
         bias = data.get("bias", {})
         structure = data.get("market_structure", {})
         obs = data.get("order_blocks", {})
@@ -580,12 +679,36 @@ class GetCryptoSMCAnalysisTool(BaseCryptoTool):
         zones = data.get("premium_discount", {})
         multi_tf = data.get("multi_tf")
 
+        # Build data range description
+        candle_count = data_range.get("candle_count", data.get("candle_count", 0))
+        duration_days = data_range.get("duration_days", 0)
+        duration_hours = data_range.get("duration_hours", 0)
+        from_time = data_range.get("from", "")
+        to_time = data_range.get("to", "")
+
+        # Format time range description
+        if duration_days >= 1:
+            duration_str = f"{duration_days:.1f} ngày ({duration_hours:.0f} giờ)"
+        else:
+            duration_str = f"{duration_hours:.1f} giờ"
+
         lines = [
             f"🎯 SMC ANALYSIS - {symbol} ({timeframe}):",
             "",
-            f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A",
-            "",
+            f"📅 Data Range: {candle_count} candles ({duration_str})",
         ]
+
+        # Add time range if available
+        if from_time and to_time:
+            # Format timestamps for display
+            from_display = from_time[:16].replace("T", " ") if "T" in str(from_time) else str(from_time)[:16]
+            to_display = to_time[:16].replace("T", " ") if "T" in str(to_time) else str(to_time)[:16]
+            lines.append(f"   From: {from_display}")
+            lines.append(f"   To: {to_display}")
+
+        lines.append("")
+        lines.append(f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A")
+        lines.append("")
 
         # Trading Bias
         bias_dir = bias.get("direction", "neutral").upper()
