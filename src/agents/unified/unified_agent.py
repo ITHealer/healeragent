@@ -1447,6 +1447,10 @@ class UnifiedAgent(LoggerMixin):
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
+        # Get list of tool names for instruction
+        tool_names = [t.get("function", {}).get("name", "") for t in tools if t.get("function")]
+        tool_list_str = ", ".join(tool_names) if tool_names else "none"
+
         # Combine skill prompt with runtime context
         system_prompt = f"""{skill_prompt}
 
@@ -1461,11 +1465,25 @@ Response Language: {system_language.upper()}
 
 ## TOOL EXECUTION GUIDELINES
 
-1. Call tools to gather real-time data before analysis
+**IMPORTANT: The router has pre-selected these tools as needed for this query:**
+Tools to use: [{tool_list_str}]
+
+**Execution Rules:**
+1. You MUST call ALL the pre-selected tools above in your first turn to gather comprehensive data
 2. Execute multiple tools in parallel when possible
-3. If a tool fails, note the limitation and proceed with available data
-4. Synthesize all tool results into a comprehensive response
-5. Follow the analysis framework from your domain expertise above
+3. If a tool fails, note the limitation but still proceed
+4. Only skip a tool if it's truly redundant with another tool's data
+5. After gathering all data, synthesize into a comprehensive response
+
+**Evaluation after tool calls:**
+- Check if you have enough data to fully answer the user's question
+- If missing critical information, call additional tools
+- If data is sufficient, proceed to final response
+
+**Response Quality:**
+- Explain technical terms briefly (e.g., "RSI = 72 (quá mua)")
+- End with 2-3 follow-up questions for user engagement
+- Use friendly, advisor-like tone
 """
 
         messages = [{"role": "system", "content": system_prompt}]
