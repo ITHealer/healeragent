@@ -38,11 +38,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
-    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX"]
+    FMP_STABLE_URL = "https://financialmodelingprep.com/stable"
+    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX", "ATR", "SUPERTREND"]
 
     # Cache TTL settings
     CACHE_TTL_HISTORICAL = 300   # 5 minutes for historical OHLCV data
     CACHE_TTL_INDICATORS = 300   # 5 minutes for calculated indicators
+    CACHE_TTL_FMP_INDICATOR = 600  # 10 minutes for FMP API indicators
 
     # Indicator aliases mapping
     INDICATOR_ALIASES = {
@@ -59,7 +61,25 @@ class GetTechnicalIndicatorsTool(BaseTool):
         "SLOW_STOCHASTIC": "STOCH",
         "ON_BALANCE_VOLUME": "OBV",
         "VOLUME_WEIGHTED_AVERAGE_PRICE": "VWAP",
-        "AVERAGE_DIRECTIONAL_INDEX": "ADX"
+        "AVERAGE_DIRECTIONAL_INDEX": "ADX",
+        "AVERAGE_TRUE_RANGE": "ATR",
+        "ATR_14": "ATR",
+        "SUPER_TREND": "SUPERTREND"
+    }
+
+    # Data source tracking
+    INDICATOR_DATA_SOURCE = {
+        "RSI": "self-calc",
+        "MACD": "self-calc",
+        "SMA": "self-calc",
+        "EMA": "self-calc",
+        "BB": "self-calc",
+        "VWAP": "self-calc",
+        "STOCH": "self-calc",
+        "OBV": "self-calc",
+        "ADX": "FMP primary + self-calc fallback",
+        "ATR": "self-calc",
+        "SUPERTREND": "self-calc"
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -92,7 +112,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "VWAP: Volume Weighted Average Price (institutional benchmark)",
                 "Stochastic (14,3,3): Momentum oscillator with %K and %D",
                 "OBV: On-Balance Volume for volume-price trend confirmation",
-                "ADX (14): Average Directional Index for trend strength"
+                "ADX (14): Average Directional Index for trend strength (FMP + self-calc)",
+                "ATR (14): Average True Range for volatility measurement",
+                "Supertrend (10,3): Trend following indicator with buy/sell signals"
             ],
             limitations=[
                 "Daily timeframe only (EOD data)",
@@ -124,9 +146,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 ToolParameter(
                     name="indicators",
                     type="array",
-                    description="Indicators to calculate: RSI, MACD, SMA, EMA, BB, VWAP, STOCH, OBV, ADX (default: all)",
+                    description="Indicators to calculate: RSI, MACD, SMA, EMA, BB, VWAP, STOCH, OBV, ADX, ATR, SUPERTREND (default: all)",
                     required=False,
-                    default=["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX"]
+                    default=["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX", "ATR", "SUPERTREND"]
                 )
             ],
             returns={
@@ -328,11 +350,23 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 result_indicators["obv"] = obv_result
                 indicators_calculated.append("OBV")
 
-            # --- ADX (Average Directional Index) ---
+            # --- ADX (Average Directional Index) - FMP primary + self-calc fallback ---
             if "ADX" in indicators:
-                adx_result = self._calculate_adx(df)
+                adx_result = await self._calculate_adx_with_fmp_fallback(symbol, df)
                 result_indicators["adx"] = adx_result
                 indicators_calculated.append("ADX")
+
+            # --- ATR (Average True Range) ---
+            if "ATR" in indicators:
+                atr_result = self._calculate_atr(df)
+                result_indicators["atr"] = atr_result
+                indicators_calculated.append("ATR")
+
+            # --- Supertrend (10, 3) ---
+            if "SUPERTREND" in indicators:
+                supertrend_result = self._calculate_supertrend(df, current_price)
+                result_indicators["supertrend"] = supertrend_result
+                indicators_calculated.append("SUPERTREND")
 
             # ════════════════════════════════════════════════════════════
             # STEP 6: Generate Signals
@@ -854,9 +888,119 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "description": f"OBV trend: {trend}, divergence: {divergence}"
         }
 
-    def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> Dict[str, Any]:
+    async def _fetch_adx_from_fmp(self, symbol: str, period: int = 14) -> Optional[Dict]:
         """
-        ADX (Average Directional Index)
+        Fetch ADX from FMP API (primary source).
+
+        Endpoint: /stable/technical-indicators/adx
+        Cache TTL: 10 minutes
+        """
+        cache_key = f"fmp_adx:{symbol}:{period}"
+
+        # Check cache
+        cached = await self._get_cached_data(cache_key)
+        if cached:
+            self.logger.debug(f"[{symbol}] FMP ADX cache hit")
+            return cached
+
+        url = f"{self.FMP_STABLE_URL}/technical-indicators/adx"
+        params = {
+            "symbol": symbol,
+            "periodLength": period,
+            "timeframe": "daily",
+            "apikey": self.api_key
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and len(data) > 0:
+                        result = data[0]  # Get latest
+                        await self._set_cached_data(cache_key, result, self.CACHE_TTL_FMP_INDICATOR)
+                        return result
+        except Exception as e:
+            self.logger.warning(f"[{symbol}] FMP ADX fetch error: {e}")
+
+        return None
+
+    async def _calculate_adx_with_fmp_fallback(
+        self,
+        symbol: str,
+        df: pd.DataFrame,
+        period: int = 14
+    ) -> Dict[str, Any]:
+        """
+        ADX with FMP API primary and self-calc fallback.
+
+        Strategy: Try FMP first, fallback to self-calc if API fails.
+        """
+        data_source = "self-calc"
+
+        # Try FMP API first
+        fmp_adx = await self._fetch_adx_from_fmp(symbol, period)
+
+        if fmp_adx and "adx" in fmp_adx:
+            # Use FMP value, but still calculate +DI/-DI ourselves
+            current_adx = float(fmp_adx["adx"])
+            data_source = "FMP API"
+
+            # Calculate +DI/-DI for direction
+            high = df['high']
+            low = df['low']
+            close = df['close']
+
+            plus_dm = high.diff()
+            minus_dm = -low.diff()
+            plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+            minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+
+            tr1 = high - low
+            tr2 = (high - close.shift(1)).abs()
+            tr3 = (low - close.shift(1)).abs()
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+            atr = tr.ewm(span=period, adjust=False).mean()
+            plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+            minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+
+            current_plus_di = float(plus_di.iloc[-1])
+            current_minus_di = float(minus_di.iloc[-1])
+        else:
+            # Fallback to self-calc
+            self.logger.debug(f"[{symbol}] Using self-calc ADX (FMP unavailable)")
+            result = self._calculate_adx_selfcalc(df, period)
+            result["data_source"] = data_source
+            return result
+
+        # Determine trend strength
+        if current_adx < 20:
+            strength = "weak"
+        elif current_adx < 40:
+            strength = "developing"
+        elif current_adx < 60:
+            strength = "strong"
+        else:
+            strength = "very_strong"
+
+        direction = "bullish" if current_plus_di > current_minus_di else "bearish"
+
+        return {
+            "value": round(current_adx, 2),
+            "plus_di": round(current_plus_di, 2),
+            "minus_di": round(current_minus_di, 2),
+            "period": period,
+            "strength": strength,
+            "direction": direction,
+            "signal": f"{strength}_{direction}",
+            "data_source": data_source,
+            "description": f"ADX={current_adx:.1f} ({strength}), +DI={current_plus_di:.1f}, -DI={current_minus_di:.1f} ({direction})"
+        }
+
+    def _calculate_adx_selfcalc(self, df: pd.DataFrame, period: int = 14) -> Dict[str, Any]:
+        """
+        ADX (Average Directional Index) - Self-calculated
 
         Formula:
             +DM = High - High(prev) if positive and > -DM, else 0
@@ -929,7 +1073,147 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "strength": strength,
             "direction": direction,
             "signal": f"{strength}_{direction}",
+            "data_source": "self-calc",
             "description": f"ADX={current_adx:.1f} ({strength}), +DI={current_plus_di:.1f}, -DI={current_minus_di:.1f} ({direction})"
+        }
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> Dict[str, Any]:
+        """
+        ATR (Average True Range) - Volatility indicator
+
+        Formula:
+            TR = max(High-Low, |High-Close(prev)|, |Low-Close(prev)|)
+            ATR = EMA(TR, period)
+
+        Interpretation:
+            High ATR: High volatility, larger price moves expected
+            Low ATR: Low volatility, smaller price moves expected
+            ATR can be used for position sizing and stop-loss placement
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        # True Range
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # ATR using EMA
+        atr = tr.ewm(span=period, adjust=False).mean()
+        current_atr = float(atr.iloc[-1])
+        current_price = float(close.iloc[-1])
+
+        # ATR as percentage of price
+        atr_pct = (current_atr / current_price) * 100 if current_price > 0 else 0
+
+        # Historical ATR comparison (is current ATR high or low?)
+        atr_sma = atr.rolling(window=50).mean()
+        atr_relative = "high" if current_atr > atr_sma.iloc[-1] else "low"
+
+        return {
+            "value": round(current_atr, 2),
+            "period": period,
+            "atr_pct": round(atr_pct, 2),
+            "relative": atr_relative,
+            "description": f"ATR({period}) = ${current_atr:.2f} ({atr_pct:.2f}% of price, {atr_relative} volatility)"
+        }
+
+    def _calculate_supertrend(
+        self,
+        df: pd.DataFrame,
+        current_price: float,
+        period: int = 10,
+        multiplier: float = 3.0
+    ) -> Dict[str, Any]:
+        """
+        Supertrend - Trend following indicator
+
+        Formula:
+            Basic Upper Band = (High + Low) / 2 + Multiplier × ATR
+            Basic Lower Band = (High + Low) / 2 - Multiplier × ATR
+            Final bands follow persistence rules.
+            Supertrend = Lower Band in uptrend, Upper Band in downtrend
+
+        Interpretation:
+            Price > Supertrend: Uptrend (Buy signal)
+            Price < Supertrend: Downtrend (Sell signal)
+            Trend changes when price crosses Supertrend
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        # Calculate ATR
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr = tr.ewm(span=period, adjust=False).mean()
+
+        # HL2 (median price)
+        hl2 = (high + low) / 2
+
+        # Basic bands
+        basic_upper = hl2 + (multiplier * atr)
+        basic_lower = hl2 - (multiplier * atr)
+
+        # Final bands with persistence
+        final_upper = basic_upper.copy()
+        final_lower = basic_lower.copy()
+        supertrend = pd.Series(index=close.index, dtype=float)
+        direction = pd.Series(index=close.index, dtype=int)
+
+        # Initialize
+        final_upper.iloc[0] = basic_upper.iloc[0]
+        final_lower.iloc[0] = basic_lower.iloc[0]
+        supertrend.iloc[0] = final_lower.iloc[0]
+        direction.iloc[0] = 1  # Start bullish
+
+        for i in range(1, len(close)):
+            # Upper band persistence
+            if basic_upper.iloc[i] < final_upper.iloc[i-1] or close.iloc[i-1] > final_upper.iloc[i-1]:
+                final_upper.iloc[i] = basic_upper.iloc[i]
+            else:
+                final_upper.iloc[i] = final_upper.iloc[i-1]
+
+            # Lower band persistence
+            if basic_lower.iloc[i] > final_lower.iloc[i-1] or close.iloc[i-1] < final_lower.iloc[i-1]:
+                final_lower.iloc[i] = basic_lower.iloc[i]
+            else:
+                final_lower.iloc[i] = final_lower.iloc[i-1]
+
+            # Direction and Supertrend value
+            if direction.iloc[i-1] == 1:  # Was bullish
+                if close.iloc[i] < final_lower.iloc[i]:
+                    direction.iloc[i] = -1
+                    supertrend.iloc[i] = final_upper.iloc[i]
+                else:
+                    direction.iloc[i] = 1
+                    supertrend.iloc[i] = final_lower.iloc[i]
+            else:  # Was bearish
+                if close.iloc[i] > final_upper.iloc[i]:
+                    direction.iloc[i] = 1
+                    supertrend.iloc[i] = final_lower.iloc[i]
+                else:
+                    direction.iloc[i] = -1
+                    supertrend.iloc[i] = final_upper.iloc[i]
+
+        current_supertrend = float(supertrend.iloc[-1])
+        current_direction = int(direction.iloc[-1])
+        prev_direction = int(direction.iloc[-2]) if len(direction) > 1 else current_direction
+
+        # Check for trend change
+        trend_changed = current_direction != prev_direction
+
+        return {
+            "value": round(current_supertrend, 2),
+            "parameters": f"({period}, {multiplier})",
+            "direction": "bullish" if current_direction == 1 else "bearish",
+            "trend_changed": trend_changed,
+            "signal": "buy" if current_direction == 1 else "sell",
+            "description": f"Supertrend = ${current_supertrend:.2f}, {'BULLISH' if current_direction == 1 else 'BEARISH'}" + (" (TREND CHANGED!)" if trend_changed else "")
         }
 
     # ════════════════════════════════════════════════════════════════════════
@@ -1108,6 +1392,32 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     "description": f"ADX at {adx['value']:.1f} - ranging market, no clear trend"
                 })
 
+        # ATR Signals (volatility)
+        if "atr" in indicators:
+            atr = indicators["atr"]
+            if atr["relative"] == "high":
+                signals.append({
+                    "type": "ATR_HIGH_VOLATILITY",
+                    "strength": "moderate",
+                    "description": f"ATR at ${atr['value']:.2f} ({atr['atr_pct']:.1f}%) - high volatility, expect larger moves"
+                })
+
+        # Supertrend Signals
+        if "supertrend" in indicators:
+            st = indicators["supertrend"]
+            if st["trend_changed"]:
+                signals.append({
+                    "type": f"SUPERTREND_{st['signal'].upper()}_SIGNAL",
+                    "strength": "strong",
+                    "description": f"Supertrend TREND CHANGE to {st['direction'].upper()} - potential entry point"
+                })
+            else:
+                signals.append({
+                    "type": f"SUPERTREND_{st['direction'].upper()}",
+                    "strength": "moderate",
+                    "description": f"Supertrend indicates {st['direction']} trend"
+                })
+
         return signals
 
     # ════════════════════════════════════════════════════════════════════════
@@ -1221,7 +1531,28 @@ class GetTechnicalIndicatorsTool(BaseTool):
             lines.append(f"  ADX: {adx['value']:.1f} ({adx['strength'].upper().replace('_', ' ')})")
             lines.append(f"  +DI: {adx['plus_di']:.1f} | -DI: {adx['minus_di']:.1f}")
             lines.append(f"  Direction: {adx['direction'].upper()}")
+            lines.append(f"  Data Source: {adx.get('data_source', 'self-calc')}")
             lines.append(f"  Interpretation: <20 weak, 20-40 developing, >40 strong trend")
+
+        # ATR Section
+        if "atr" in indicators:
+            atr = indicators["atr"]
+            lines.append("")
+            lines.append(f"ATR (Average True Range):")
+            lines.append(f"  Value: ${atr['value']:.2f} ({atr['atr_pct']:.2f}% of price)")
+            lines.append(f"  Volatility: {atr['relative'].upper()}")
+            lines.append(f"  Use: Position sizing, stop-loss placement")
+
+        # Supertrend Section
+        if "supertrend" in indicators:
+            st = indicators["supertrend"]
+            lines.append("")
+            lines.append(f"Supertrend {st['parameters']}:")
+            lines.append(f"  Value: ${st['value']:.2f}")
+            lines.append(f"  Direction: {st['direction'].upper()}")
+            lines.append(f"  Signal: {st['signal'].upper()}")
+            if st.get("trend_changed"):
+                lines.append(f"  *** TREND JUST CHANGED! ***")
 
         # Signals Summary
         if signals:
@@ -1230,17 +1561,95 @@ class GetTechnicalIndicatorsTool(BaseTool):
             lines.append("SIGNALS:")
             for sig in signals:
                 strength = sig.get("strength", "moderate")
-                icon = "⚠️" if strength == "strong" else "→"
+                icon = "[!]" if strength == "strong" else "[>]"
                 lines.append(f"  {icon} {sig['type']}: {sig['description']}")
+
+        # Generate comprehensive insights
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("TECHNICAL INSIGHTS SUMMARY:")
+        insights = self._generate_insights_summary(indicators, signals, price)
+        for insight in insights:
+            lines.append(f"  • {insight}")
 
         # Data scope note
         lines.append("")
         lines.append("-" * 60)
-        lines.append(f"NOTE: Analysis based on daily OHLCV data. Indicators calculated")
-        lines.append(f"using standard parameters. This is technical data only - not")
-        lines.append(f"investment advice. Always consider fundamentals and market context.")
+        lines.append(f"DATA CONTEXT:")
+        lines.append(f"  Analysis Date: {latest_date}")
+        lines.append(f"  Timeframe: {timeframe} ({result_data.get('data_points', 0)} trading days)")
+        lines.append(f"  Price: ${price:,.2f}")
+        lines.append("")
+        lines.append(f"DISCLAIMER: This is technical analysis data only - not investment")
+        lines.append(f"advice. Always consider fundamentals, news, and market context.")
+        lines.append(f"Past performance does not guarantee future results.")
 
         return "\n".join(lines)
+
+    def _generate_insights_summary(
+        self,
+        indicators: Dict[str, Any],
+        signals: List[Dict],
+        current_price: float
+    ) -> List[str]:
+        """
+        Generate comprehensive insights based on all indicators.
+        """
+        insights = []
+
+        # Count bullish vs bearish signals
+        bullish_count = sum(1 for s in signals if "BULLISH" in s["type"] or "BUY" in s["type"] or "OVERSOLD" in s["type"])
+        bearish_count = sum(1 for s in signals if "BEARISH" in s["type"] or "SELL" in s["type"] or "OVERBOUGHT" in s["type"])
+
+        # Overall sentiment
+        if bullish_count > bearish_count + 2:
+            insights.append(f"OVERALL: Technical indicators lean BULLISH ({bullish_count} bullish vs {bearish_count} bearish signals)")
+        elif bearish_count > bullish_count + 2:
+            insights.append(f"OVERALL: Technical indicators lean BEARISH ({bearish_count} bearish vs {bullish_count} bullish signals)")
+        else:
+            insights.append(f"OVERALL: Mixed signals - NEUTRAL ({bullish_count} bullish, {bearish_count} bearish)")
+
+        # Trend analysis
+        if "adx" in indicators:
+            adx = indicators["adx"]
+            if adx["strength"] in ["strong", "very_strong"]:
+                insights.append(f"TREND: Strong {adx['direction']} trend confirmed (ADX={adx['value']:.1f})")
+            elif adx["strength"] == "weak":
+                insights.append("TREND: No clear trend - ranging/consolidating market")
+
+        # Momentum analysis
+        if "rsi" in indicators:
+            rsi = indicators["rsi"]
+            if rsi["signal"] == "overbought":
+                insights.append(f"MOMENTUM: RSI overbought ({rsi['value']:.1f}) - potential pullback ahead")
+            elif rsi["signal"] == "oversold":
+                insights.append(f"MOMENTUM: RSI oversold ({rsi['value']:.1f}) - potential bounce ahead")
+
+        # Volume confirmation
+        if "obv" in indicators:
+            obv = indicators["obv"]
+            if obv["divergence"] != "none":
+                insights.append(f"VOLUME: {obv['divergence'].replace('_', ' ').upper()} - watch for reversal")
+
+        # Supertrend
+        if "supertrend" in indicators:
+            st = indicators["supertrend"]
+            if st.get("trend_changed"):
+                insights.append(f"SUPERTREND: Fresh {st['signal'].upper()} signal - potential entry point")
+
+        # Volatility
+        if "atr" in indicators:
+            atr = indicators["atr"]
+            if atr["relative"] == "high":
+                insights.append(f"VOLATILITY: High ({atr['atr_pct']:.1f}% ATR) - use wider stops")
+
+        # Support/Resistance from Bollinger Bands
+        if "bollinger_bands" in indicators:
+            bb = indicators["bollinger_bands"]
+            if bb["bandwidth_pct"] < 5:
+                insights.append("VOLATILITY: BB squeeze detected - potential breakout imminent")
+
+        return insights if insights else ["No significant patterns detected"]
 
 
 # ============================================================================
