@@ -1149,7 +1149,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             current_adx = float(fmp_adx["adx"])
             data_source = "FMP API"
 
-            # Calculate +DI/-DI for direction
+            # Calculate +DI/-DI for direction using Wilder's smoothing
             high = df['high']
             low = df['low']
             close = df['close']
@@ -1164,9 +1164,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
             tr3 = (low - close.shift(1)).abs()
             tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-            atr = tr.ewm(span=period, adjust=False).mean()
-            plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
-            minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+            # WILDER'S SMOOTHING: alpha = 1/period (NOT span=period!)
+            # This matches industry standard (TradingView, Bloomberg, Polygon)
+            atr = tr.ewm(alpha=1/period, adjust=False).mean()
+            plus_di = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, np.nan)
+            minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, np.nan)
 
             current_plus_di = float(plus_di.iloc[-1])
             current_minus_di = float(minus_di.iloc[-1])
@@ -1240,16 +1242,18 @@ class GetTechnicalIndicatorsTool(BaseTool):
         tr3 = (low - close.shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        # Smoothed values using EMA
-        atr = tr.ewm(span=period, adjust=False).mean()
-        plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
-        minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+        # WILDER'S SMOOTHING: alpha = 1/period
+        # This matches TradingView, Bloomberg, Polygon, FMP
+        # Previously used: ewm(span=period) which gives different results
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, np.nan)
+        minus_di = 100 * minus_dm.ewm(alpha=1/period, adjust=False).mean() / atr.replace(0, np.nan)
 
-        # DX and ADX
+        # DX and ADX using Wilder's smoothing
         di_sum = plus_di + minus_di
         di_diff = (plus_di - minus_di).abs()
         dx = 100 * di_diff / di_sum.replace(0, np.nan)
-        adx = dx.ewm(span=period, adjust=False).mean()
+        adx = dx.ewm(alpha=1/period, adjust=False).mean()
 
         current_adx = float(adx.iloc[-1])
         current_plus_di = float(plus_di.iloc[-1])
@@ -1303,8 +1307,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
         tr3 = (low - close.shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
-        # ATR using EMA
-        atr = tr.ewm(span=period, adjust=False).mean()
+        # ATR using WILDER'S SMOOTHING: alpha = 1/period
+        # This matches TradingView, Bloomberg, Polygon
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
         current_atr = float(atr.iloc[-1])
         current_price = float(close.iloc[-1])
 
@@ -1348,12 +1353,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
         low = df['low']
         close = df['close']
 
-        # Calculate ATR
+        # Calculate ATR using WILDER'S SMOOTHING
         tr1 = high - low
         tr2 = (high - close.shift(1)).abs()
         tr3 = (low - close.shift(1)).abs()
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.ewm(span=period, adjust=False).mean()
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
 
         # HL2 (median price)
         hl2 = (high + low) / 2
