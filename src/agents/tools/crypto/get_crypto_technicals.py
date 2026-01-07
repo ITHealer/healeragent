@@ -62,12 +62,12 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
     # Timeframe to hours mapping for candle calculation
     TIMEFRAME_HOURS = {"15m": 0.25, "1h": 1, "4h": 4, "1d": 24}
 
-    # Available indicator categories
+    # Available indicator categories (expanded with new indicators)
     INDICATOR_CATEGORIES = {
-        "momentum": ["rsi", "stoch_rsi", "stochastic", "macd"],
-        "trend": ["adx", "supertrend", "ichimoku"],
-        "volatility": ["atr", "bollinger"],
-        "volume": ["obv", "vwap"],
+        "momentum": ["rsi", "stoch_rsi", "stochastic", "macd", "cci", "williams_r", "awesome_osc"],
+        "trend": ["adx", "supertrend", "ichimoku", "parabolic_sar", "aroon"],
+        "volatility": ["atr", "bollinger", "keltner", "donchian"],
+        "volume": ["obv", "vwap", "mfi", "cmf", "ad_line"],
         "moving_averages": ["sma_20", "sma_50", "sma_200", "ema_12", "ema_26", "ema_50"],
         "all": None,  # All indicators
     }
@@ -620,6 +620,18 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             macd_result = technicals.calculate_macd(closes)
             result["macd"] = macd_result
 
+            # CCI (Commodity Channel Index)
+            cci_result = technicals.calculate_cci(highs, lows, closes)
+            result["cci"] = cci_result
+
+            # Williams %R
+            williams_r_result = technicals.calculate_williams_r(highs, lows, closes)
+            result["williams_r"] = williams_r_result
+
+            # Awesome Oscillator
+            ao_result = technicals.calculate_awesome_oscillator(highs, lows)
+            result["awesome_osc"] = ao_result
+
         # Trend indicators
         if "trend" in categories:
             # ADX
@@ -634,6 +646,14 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             ichimoku_result = technicals.calculate_ichimoku(highs, lows, closes)
             result["ichimoku"] = ichimoku_result
 
+            # Parabolic SAR
+            psar_result = technicals.calculate_parabolic_sar(highs, lows, closes)
+            result["parabolic_sar"] = psar_result
+
+            # Aroon
+            aroon_result = technicals.calculate_aroon(highs, lows)
+            result["aroon"] = aroon_result
+
         # Volatility indicators
         if "volatility" in categories:
             # ATR
@@ -644,6 +664,14 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             bb_result = technicals.calculate_bollinger(closes)
             result["bollinger"] = bb_result
 
+            # Keltner Channels
+            keltner_result = technicals.calculate_keltner_channels(highs, lows, closes)
+            result["keltner"] = keltner_result
+
+            # Donchian Channels
+            donchian_result = technicals.calculate_donchian_channels(highs, lows, closes)
+            result["donchian"] = donchian_result
+
         # Volume indicators
         if "volume" in categories:
             # OBV
@@ -653,6 +681,18 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             # VWAP
             vwap_result = technicals.calculate_vwap(highs, lows, closes, volumes)
             result["vwap"] = vwap_result
+
+            # MFI (Money Flow Index)
+            mfi_result = technicals.calculate_mfi(highs, lows, closes, volumes)
+            result["mfi"] = mfi_result
+
+            # CMF (Chaikin Money Flow)
+            cmf_result = technicals.calculate_cmf(highs, lows, closes, volumes)
+            result["cmf"] = cmf_result
+
+            # A/D Line (Accumulation/Distribution)
+            ad_result = technicals.calculate_ad_line(highs, lows, closes, volumes)
+            result["ad_line"] = ad_result
 
         # Moving Averages
         if "moving_averages" in categories:
@@ -805,11 +845,12 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         return multi_tf_result
 
     def _build_formatted_context(self, data: Dict[str, Any]) -> str:
-        """Build human-readable formatted context for LLM"""
+        """Build human-readable formatted context for LLM with comprehensive indicators"""
         symbol = data.get("symbol", "Unknown")
         timeframe = data.get("timeframe", "N/A")
         price = data.get("current_price", 0)
         data_range = data.get("data_range", {})
+        timestamp = data.get("timestamp", "")
         indicators = data.get("indicators", {})
         signal = data.get("signal", {})
         multi_tf = data.get("multi_tf")
@@ -827,8 +868,16 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
         else:
             duration_str = f"{duration_hours:.1f} giờ"
 
+        # Format timestamp
+        timestamp_display = timestamp[:19].replace("T", " ") if timestamp else "N/A"
+
         lines = [
             f"📊 CRYPTO TECHNICALS - {symbol} ({timeframe}):",
+            "",
+            "=" * 55,
+            f"💵 CURRENT PRICE: {self._format_price(price)} USD" if price else "💵 CURRENT PRICE: N/A",
+            f"⏰ Data fetched at: {timestamp_display}",
+            "=" * 55,
             "",
             f"📅 Data Range: {candle_count} candles ({duration_str})",
         ]
@@ -839,69 +888,267 @@ class GetCryptoTechnicalsTool(BaseCryptoTool):
             to_display = to_time[:16].replace("T", " ") if "T" in str(to_time) else str(to_time)[:16]
             lines.append(f"   From: {from_display}")
             lines.append(f"   To: {to_display}")
-
-        lines.append("")
-        lines.append(f"💵 Current Price: {self._format_price(price)}" if price else "💵 Price: N/A")
         lines.append("")
 
-        # Overall Signal
+        # Overall Signal Summary
         overall = signal.get("overall", "neutral").upper()
         strength = signal.get("strength", 0)
         emoji = "🟢" if overall == "BULLISH" else ("🔴" if overall == "BEARISH" else "⚪")
-        lines.append(f"📈 Overall Signal: {emoji} {overall} ({strength:.0f}%)")
-        lines.append(f"   Bullish: {signal.get('bullish_count', 0)} | Bearish: {signal.get('bearish_count', 0)}")
+        lines.append(f"📈 OVERALL SIGNAL: {emoji} {overall} ({strength:.0f}% confidence)")
+        lines.append(f"   Bullish signals: {signal.get('bullish_count', 0)} | Bearish signals: {signal.get('bearish_count', 0)}")
+        if signal.get('details'):
+            for detail in signal['details'][:3]:
+                lines.append(f"   • {detail}")
         lines.append("")
 
-        # Momentum
-        rsi = indicators.get("rsi", {})
-        macd = indicators.get("macd", {})
-        if rsi or macd:
-            lines.append("📉 Momentum:")
-            if rsi:
-                lines.append(f"   • RSI(14): {rsi.get('value', 'N/A')} - {rsi.get('signal', 'N/A')}")
-            if macd:
-                # MACD calculator returns: macd_line, signal_line, histogram
-                macd_val = macd.get('macd_line')
-                signal_val = macd.get('signal_line')
-                lines.append(f"   • MACD: {macd_val:.4f}" if macd_val else "   • MACD: N/A")
-                lines.append(f"   • Signal: {signal_val:.4f}" if signal_val else "   • Signal: N/A")
+        # ═══════════════════════════════════════════════════════════════
+        # MOMENTUM INDICATORS
+        # ═══════════════════════════════════════════════════════════════
+        momentum_indicators = ["rsi", "stoch_rsi", "stochastic", "macd", "cci", "williams_r", "awesome_osc"]
+        has_momentum = any(indicators.get(ind) for ind in momentum_indicators)
+        if has_momentum:
+            lines.append("📉 MOMENTUM INDICATORS:")
+            lines.append("-" * 40)
+
+            # RSI
+            rsi = indicators.get("rsi", {})
+            if rsi and rsi.get("value") is not None:
+                rsi_emoji = "🔴" if rsi.get("signal") == "overbought" else ("🟢" if rsi.get("signal") == "oversold" else "⚪")
+                lines.append(f"   RSI(14): {rsi.get('value')} {rsi_emoji} [{rsi.get('signal', 'N/A').upper()}]")
+
+            # Stochastic RSI
+            stoch_rsi = indicators.get("stoch_rsi", {})
+            if stoch_rsi and stoch_rsi.get("k") is not None:
+                lines.append(f"   StochRSI: K={stoch_rsi.get('k')} D={stoch_rsi.get('d')} [{stoch_rsi.get('signal', 'N/A').upper()}]")
+
+            # Stochastic
+            stoch = indicators.get("stochastic", {})
+            if stoch and stoch.get("k") is not None:
+                stoch_emoji = "🔴" if stoch.get("signal") == "overbought" else ("🟢" if stoch.get("signal") == "oversold" else "⚪")
+                lines.append(f"   Stochastic: %K={stoch.get('k')} %D={stoch.get('d')} {stoch_emoji} [{stoch.get('signal', 'N/A').upper()}]")
+
+            # MACD
+            macd = indicators.get("macd", {})
+            if macd and macd.get("macd_line") is not None:
+                macd_emoji = "🟢" if macd.get("histogram", 0) > 0 else "🔴"
+                lines.append(f"   MACD: Line={macd.get('macd_line'):.4f} Signal={macd.get('signal_line'):.4f} Hist={macd.get('histogram'):.4f} {macd_emoji}")
+
+            # CCI
+            cci = indicators.get("cci", {})
+            if cci and cci.get("value") is not None:
+                cci_emoji = "🔴" if cci.get("signal") == "overbought" else ("🟢" if cci.get("signal") == "oversold" else "⚪")
+                lines.append(f"   CCI(20): {cci.get('value')} {cci_emoji} [{cci.get('interpretation', 'N/A')}]")
+
+            # Williams %R
+            williams_r = indicators.get("williams_r", {})
+            if williams_r and williams_r.get("value") is not None:
+                wr_emoji = "🔴" if williams_r.get("signal") == "overbought" else ("🟢" if williams_r.get("signal") == "oversold" else "⚪")
+                lines.append(f"   Williams %R(14): {williams_r.get('value')} {wr_emoji} [{williams_r.get('interpretation', 'N/A')}]")
+
+            # Awesome Oscillator
+            ao = indicators.get("awesome_osc", {})
+            if ao and ao.get("value") is not None:
+                ao_emoji = "🟢" if ao.get("value", 0) > 0 else "🔴"
+                ao_trend = "↑" if ao.get("increasing") else "↓"
+                lines.append(f"   Awesome Osc: {ao.get('value'):.4f} {ao_trend} {ao_emoji} [{ao.get('interpretation', 'N/A')}]")
+
             lines.append("")
 
-        # Trend
-        adx = indicators.get("adx", {})
-        supertrend = indicators.get("supertrend", {})
-        if adx or supertrend:
-            lines.append("📈 Trend:")
-            if adx:
-                # ADX calculator returns: adx, plus_di, minus_di, signal, trend_strength
-                adx_val = adx.get('adx')
-                trend_str = adx.get('trend_strength', adx.get('signal', 'N/A'))
-                lines.append(f"   • ADX: {adx_val:.1f} - {trend_str}" if adx_val else "   • ADX: N/A")
-            if supertrend:
-                st_dir = supertrend.get("direction", "N/A").upper()
-                lines.append(f"   • Supertrend: {st_dir}")
+        # ═══════════════════════════════════════════════════════════════
+        # TREND INDICATORS
+        # ═══════════════════════════════════════════════════════════════
+        trend_indicators = ["adx", "supertrend", "ichimoku", "parabolic_sar", "aroon"]
+        has_trend = any(indicators.get(ind) for ind in trend_indicators)
+        if has_trend:
+            lines.append("📈 TREND INDICATORS:")
+            lines.append("-" * 40)
+
+            # ADX
+            adx = indicators.get("adx", {})
+            if adx and adx.get("adx") is not None:
+                adx_emoji = "💪" if adx.get("adx", 0) >= 25 else "😐"
+                lines.append(f"   ADX(14): {adx.get('adx'):.1f} {adx_emoji} +DI={adx.get('plus_di'):.1f} -DI={adx.get('minus_di'):.1f}")
+                lines.append(f"   └─ Trend: {adx.get('signal', 'N/A').upper().replace('_', ' ')}")
+
+            # Supertrend
+            supertrend = indicators.get("supertrend", {})
+            if supertrend and supertrend.get("value") is not None:
+                st_emoji = "🟢" if supertrend.get("direction") == "bullish" else "🔴"
+                lines.append(f"   Supertrend: {supertrend.get('value'):.2f} {st_emoji} [{supertrend.get('direction', 'N/A').upper()}]")
+
+            # Parabolic SAR
+            psar = indicators.get("parabolic_sar", {})
+            if psar and psar.get("value") is not None:
+                psar_emoji = "🟢" if psar.get("direction") == "bullish" else "🔴"
+                trend_change = " ⚠️REVERSAL" if psar.get("trend_changed") else ""
+                lines.append(f"   Parabolic SAR: {psar.get('value'):.2f} {psar_emoji} [{psar.get('interpretation', 'N/A')}]{trend_change}")
+
+            # Aroon
+            aroon = indicators.get("aroon", {})
+            if aroon and aroon.get("aroon_up") is not None:
+                aroon_emoji = "🟢" if aroon.get("oscillator", 0) > 0 else "🔴"
+                lines.append(f"   Aroon(25): Up={aroon.get('aroon_up'):.0f} Down={aroon.get('aroon_down'):.0f} Osc={aroon.get('oscillator'):.0f} {aroon_emoji}")
+                lines.append(f"   └─ [{aroon.get('interpretation', 'N/A')}]")
+
+            # Ichimoku
+            ichimoku = indicators.get("ichimoku", {})
+            if ichimoku and ichimoku.get("tenkan") is not None:
+                ich_emoji = "🟢" if "bullish" in ichimoku.get("signal", "").lower() else ("🔴" if "bearish" in ichimoku.get("signal", "").lower() else "⚪")
+                lines.append(f"   Ichimoku: {ich_emoji} [{ichimoku.get('signal', 'N/A').upper().replace('_', ' ')}]")
+                lines.append(f"   └─ Tenkan={ichimoku.get('tenkan'):.2f} Kijun={ichimoku.get('kijun'):.2f}")
+                lines.append(f"   └─ Cloud: {ichimoku.get('cloud_bottom'):.2f} - {ichimoku.get('cloud_top'):.2f}")
+                lines.append(f"   └─ Price vs Cloud: {ichimoku.get('price_vs_cloud', 'N/A').upper()}")
+
             lines.append("")
 
-        # Volatility
-        atr = indicators.get("atr", {})
-        bb = indicators.get("bollinger", {})
-        if atr or bb:
-            lines.append("📊 Volatility:")
-            if atr:
-                # ATR calculator returns: value, percent, period, volatility
-                atr_val = atr.get('value')
-                lines.append(f"   • ATR(14): {atr_val:.4f}" if atr_val else "   • ATR: N/A")
-            if bb:
-                lines.append(f"   • BB %B: {bb.get('percent_b', 'N/A'):.2f}" if bb.get('percent_b') else "   • BB %B: N/A")
+        # ═══════════════════════════════════════════════════════════════
+        # VOLATILITY INDICATORS
+        # ═══════════════════════════════════════════════════════════════
+        volatility_indicators = ["atr", "bollinger", "keltner", "donchian"]
+        has_volatility = any(indicators.get(ind) for ind in volatility_indicators)
+        if has_volatility:
+            lines.append("📊 VOLATILITY INDICATORS:")
+            lines.append("-" * 40)
+
+            # ATR
+            atr = indicators.get("atr", {})
+            if atr and atr.get("value") is not None:
+                vol_emoji = "🔥" if atr.get("volatility") == "high" else ("📈" if atr.get("volatility") == "medium" else "😴")
+                lines.append(f"   ATR(14): {atr.get('value'):.4f} ({atr.get('percent'):.2f}%) {vol_emoji} [{atr.get('volatility', 'N/A').upper()}]")
+
+            # Bollinger Bands
+            bb = indicators.get("bollinger", {})
+            if bb and bb.get("upper") is not None:
+                bb_emoji = "🔴" if bb.get("signal") == "overbought" else ("🟢" if bb.get("signal") == "oversold" else "⚪")
+                lines.append(f"   Bollinger Bands: {bb_emoji} [{bb.get('signal', 'N/A').upper().replace('_', ' ')}]")
+                lines.append(f"   └─ Upper={bb.get('upper'):.2f} Middle={bb.get('middle'):.2f} Lower={bb.get('lower'):.2f}")
+                lines.append(f"   └─ %B={bb.get('percent_b'):.2f}% Bandwidth={bb.get('bandwidth'):.2f}%")
+
+            # Keltner Channels
+            keltner = indicators.get("keltner", {})
+            if keltner and keltner.get("upper") is not None:
+                kc_emoji = "🔴" if keltner.get("signal") == "overbought" else ("🟢" if keltner.get("signal") == "oversold" else "⚪")
+                lines.append(f"   Keltner Channels: {kc_emoji} [{keltner.get('interpretation', 'N/A')}]")
+                lines.append(f"   └─ Upper={keltner.get('upper'):.2f} Middle={keltner.get('middle'):.2f} Lower={keltner.get('lower'):.2f}")
+
+            # Donchian Channels
+            donchian = indicators.get("donchian", {})
+            if donchian and donchian.get("upper") is not None:
+                dc_emoji = "🚀" if donchian.get("signal") == "breakout_high" else ("💥" if donchian.get("signal") == "breakout_low" else "⚪")
+                lines.append(f"   Donchian Channels(20): {dc_emoji} [{donchian.get('interpretation', 'N/A')}]")
+                lines.append(f"   └─ Upper={donchian.get('upper'):.2f} Middle={donchian.get('middle'):.2f} Lower={donchian.get('lower'):.2f}")
+                lines.append(f"   └─ Width={donchian.get('width'):.4f}")
+
             lines.append("")
 
-        # Multi-TF Summary
+        # ═══════════════════════════════════════════════════════════════
+        # VOLUME INDICATORS
+        # ═══════════════════════════════════════════════════════════════
+        volume_indicators = ["obv", "vwap", "mfi", "cmf", "ad_line"]
+        has_volume = any(indicators.get(ind) for ind in volume_indicators)
+        if has_volume:
+            lines.append("📦 VOLUME INDICATORS:")
+            lines.append("-" * 40)
+
+            # OBV
+            obv = indicators.get("obv", {})
+            if obv and obv.get("value") is not None:
+                obv_emoji = "🟢" if obv.get("signal") == "accumulation" else ("🔴" if obv.get("signal") == "distribution" else "⚪")
+                lines.append(f"   OBV: {obv.get('value'):,.0f} {obv_emoji} [{obv.get('signal', 'N/A').upper()}]")
+
+            # VWAP
+            vwap = indicators.get("vwap", {})
+            if vwap and vwap.get("value") is not None:
+                vwap_emoji = "🟢" if vwap.get("signal") == "above_vwap" else "🔴"
+                lines.append(f"   VWAP: {vwap.get('value'):.2f} {vwap_emoji} Price {vwap.get('signal', 'N/A').replace('_', ' ').upper()}")
+                lines.append(f"   └─ Deviation: {vwap.get('deviation'):.2f} ({vwap.get('deviation_percent'):.2f}%)")
+
+            # MFI
+            mfi = indicators.get("mfi", {})
+            if mfi and mfi.get("value") is not None:
+                mfi_emoji = "🔴" if mfi.get("signal") == "overbought" else ("🟢" if mfi.get("signal") == "oversold" else "⚪")
+                lines.append(f"   MFI(14): {mfi.get('value'):.1f} {mfi_emoji} [{mfi.get('interpretation', 'N/A')}]")
+
+            # CMF
+            cmf = indicators.get("cmf", {})
+            if cmf and cmf.get("value") is not None:
+                cmf_emoji = "🟢" if cmf.get("signal") == "accumulation" else ("🔴" if cmf.get("signal") == "distribution" else "⚪")
+                lines.append(f"   CMF(21): {cmf.get('value'):.4f} {cmf_emoji} [{cmf.get('interpretation', 'N/A')}]")
+
+            # A/D Line
+            ad_line = indicators.get("ad_line", {})
+            if ad_line and ad_line.get("value") is not None:
+                ad_emoji = "🟢" if ad_line.get("signal") == "accumulation" else ("🔴" if ad_line.get("signal") == "distribution" else "⚪")
+                lines.append(f"   A/D Line: {ad_line.get('value'):,.0f} {ad_emoji} [{ad_line.get('interpretation', 'N/A')}]")
+
+            lines.append("")
+
+        # ═══════════════════════════════════════════════════════════════
+        # MOVING AVERAGES
+        # ═══════════════════════════════════════════════════════════════
+        ma_indicators = ["sma_20", "sma_50", "sma_200", "ema_12", "ema_26", "ema_50"]
+        has_ma = any(indicators.get(ind) for ind in ma_indicators)
+        if has_ma:
+            lines.append("📏 MOVING AVERAGES:")
+            lines.append("-" * 40)
+
+            # SMAs
+            sma_20 = indicators.get("sma_20", {})
+            sma_50 = indicators.get("sma_50", {})
+            sma_200 = indicators.get("sma_200", {})
+
+            if sma_20 and sma_20.get("value"):
+                sma20_emoji = "🟢" if sma_20.get("trend") == "above" else "🔴"
+                lines.append(f"   SMA(20): {sma_20.get('value'):.2f} {sma20_emoji} Price {sma_20.get('trend', 'N/A').upper()}")
+            if sma_50 and sma_50.get("value"):
+                sma50_emoji = "🟢" if sma_50.get("trend") == "above" else "🔴"
+                lines.append(f"   SMA(50): {sma_50.get('value'):.2f} {sma50_emoji} Price {sma_50.get('trend', 'N/A').upper()}")
+            if sma_200 and sma_200.get("value"):
+                sma200_emoji = "🟢" if sma_200.get("trend") == "above" else "🔴"
+                lines.append(f"   SMA(200): {sma_200.get('value'):.2f} {sma200_emoji} Price {sma_200.get('trend', 'N/A').upper()}")
+
+            # EMAs
+            ema_12 = indicators.get("ema_12", {})
+            ema_26 = indicators.get("ema_26", {})
+            ema_50 = indicators.get("ema_50", {})
+
+            if ema_12 and ema_12.get("value"):
+                ema12_emoji = "🟢" if ema_12.get("trend") == "above" else "🔴"
+                lines.append(f"   EMA(12): {ema_12.get('value'):.2f} {ema12_emoji} Price {ema_12.get('trend', 'N/A').upper()}")
+            if ema_26 and ema_26.get("value"):
+                ema26_emoji = "🟢" if ema_26.get("trend") == "above" else "🔴"
+                lines.append(f"   EMA(26): {ema_26.get('value'):.2f} {ema26_emoji} Price {ema_26.get('trend', 'N/A').upper()}")
+            if ema_50 and ema_50.get("value"):
+                ema50_emoji = "🟢" if ema_50.get("trend") == "above" else "🔴"
+                lines.append(f"   EMA(50): {ema_50.get('value'):.2f} {ema50_emoji} Price {ema_50.get('trend', 'N/A').upper()}")
+
+            lines.append("")
+
+        # ═══════════════════════════════════════════════════════════════
+        # MULTI-TIMEFRAME SUMMARY
+        # ═══════════════════════════════════════════════════════════════
         if multi_tf:
-            lines.append("⏱️ Multi-Timeframe:")
+            lines.append("⏱️ MULTI-TIMEFRAME ANALYSIS:")
+            lines.append("-" * 40)
             for tf, tf_data in multi_tf.items():
                 tf_signal = tf_data.get("signal", "N/A").upper()
                 tf_emoji = "🟢" if tf_signal == "BULLISH" else ("🔴" if tf_signal == "BEARISH" else "⚪")
-                lines.append(f"   • {tf}: {tf_emoji} {tf_signal}")
+                tf_rsi = tf_data.get("rsi", "N/A")
+                tf_rsi_str = f"RSI={tf_rsi:.1f}" if isinstance(tf_rsi, (int, float)) else ""
+                lines.append(f"   {tf}: {tf_emoji} {tf_signal} ({tf_data.get('strength', 0):.0f}%) {tf_rsi_str}")
+            lines.append("")
+
+        # ═══════════════════════════════════════════════════════════════
+        # DATA SCOPE NOTE FOR LLM
+        # ═══════════════════════════════════════════════════════════════
+        lines.append("=" * 55)
+        lines.append("⚠️ IMPORTANT NOTE FOR RESPONSE:")
+        lines.append(f"• This analysis is based ONLY on {symbol} technical data shown above")
+        lines.append(f"• Current price: {self._format_price(price)} USD (as of {timestamp_display})")
+        lines.append("• DO NOT make claims about external markets (gold, stocks, altcoins)")
+        lines.append("• Always use specific indicator values when providing analysis")
+        lines.append("• Cite exact numbers and timeframes from this data")
+        lines.append("=" * 55)
 
         return "\n".join(lines)
 
