@@ -50,6 +50,57 @@ RESOLUTION_CACHE_PREFIX = "symbol_resolution:"
 RESOLUTION_CACHE_TTL = 300  # 5 minutes
 
 
+# Common company name to ticker mapping
+# These are well-known company names that users might type instead of tickers
+COMMON_NAME_TO_TICKER = {
+    # FAANG+ and major tech
+    "google": "GOOGL",
+    "alphabet": "GOOGL",
+    "amazon": "AMZN",
+    "netflix": "NFLX",
+    "facebook": "META",
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "nvidia": "NVDA",
+    "tesla": "TSLA",
+    "meta": "META",
+
+    # Other major companies
+    "berkshire": "BRK-B",
+    "salesforce": "CRM",
+    "oracle": "ORCL",
+    "intel": "INTC",
+    "amd": "AMD",
+    "paypal": "PYPL",
+    "adobe": "ADBE",
+    "cisco": "CSCO",
+    "pepsi": "PEP",
+    "cocacola": "KO",
+    "coca-cola": "KO",
+    "mcdonalds": "MCD",
+    "walmart": "WMT",
+    "disney": "DIS",
+    "boeing": "BA",
+    "jpmorgan": "JPM",
+    "goldmansachs": "GS",
+    "visa": "V",
+    "mastercard": "MA",
+
+    # Vietnamese aliases
+    "táo": "AAPL",
+    "苹果": "AAPL",
+    "特斯拉": "TSLA",
+    "谷歌": "GOOGL",
+    "亚马逊": "AMZN",
+
+    # Crypto common names
+    "bitcoin": "BTC",
+    "ethereum": "ETH",
+    "比特币": "BTC",
+    "以太坊": "ETH",
+}
+
+
 class SymbolResolver(LoggerMixin):
     """
     Multi-layer symbol resolution service.
@@ -194,12 +245,23 @@ class SymbolResolver(LoggerMixin):
         Resolve a single symbol through multiple layers.
 
         Resolution order:
+        0. Common name normalization (GOOGLE → GOOGL)
         1. Pattern detection (exchange suffix, crypto pair)
         2. Symbol cache lookup
         3. UI context + ambiguity resolution
         4. LLM semantic (if needed)
         """
         symbol = raw_symbol.upper().strip()
+
+        # Layer 0: Common Name Normalization
+        # Check if this is a well-known company name that should be mapped to ticker
+        symbol_lower = raw_symbol.lower().strip()
+        if symbol_lower in COMMON_NAME_TO_TICKER:
+            normalized_symbol = COMMON_NAME_TO_TICKER[symbol_lower]
+            self.logger.debug(
+                f"[SYMBOL_RESOLVER] Normalized: {raw_symbol} → {normalized_symbol}"
+            )
+            symbol = normalized_symbol
 
         # Layer 1: Pattern Detection
         pattern_result = self._resolve_by_pattern(symbol)

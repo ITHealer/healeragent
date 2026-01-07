@@ -667,6 +667,7 @@ class UnifiedAgent(LoggerMixin):
             conversation_summary=conversation_summary,
             tools=tools,
             user_id=user_id,
+            complexity=router_decision.complexity,
         )
 
         turns = []
@@ -814,6 +815,7 @@ class UnifiedAgent(LoggerMixin):
             tools=tools,
             user_id=user_id,
             images=images,
+            complexity=router_decision.complexity,
         )
 
         total_tool_calls = 0
@@ -1415,6 +1417,7 @@ class UnifiedAgent(LoggerMixin):
         tools: List[Dict[str, Any]],
         user_id: Optional[int],
         images: Optional[List[Any]] = None,
+        complexity: Optional[Complexity] = None,
     ) -> List[Dict[str, Any]]:
         """Build messages for agent with tools using domain-specific skill prompts."""
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
@@ -1451,19 +1454,40 @@ class UnifiedAgent(LoggerMixin):
         tool_names = [t.get("function", {}).get("name", "") for t in tools if t.get("function")]
         tool_list_str = ", ".join(tool_names) if tool_names else "none"
 
-        # Combine skill prompt with runtime context
-        system_prompt = f"""{skill_prompt}
+        # Count symbols to determine data volume
+        num_symbols = len(classification.symbols) if classification and classification.symbols else 0
+        is_high_volume = complexity == Complexity.COMPLEX or (num_symbols > 5 and len(tool_names) > 4)
 
----
-## RUNTIME CONTEXT
+        # Build execution guidelines based on complexity
+        if is_high_volume:
+            # COMPLEX query with many symbols - use incremental approach
+            execution_guidelines = f"""## TOOL EXECUTION GUIDELINES
 
-Current Date: {current_date}
-Response Language: {system_language.upper()}
-{symbols_hint}
-{categories_hint}
-{user_context}
+**IMPORTANT: This is a COMPLEX query with {num_symbols} symbols and {len(tool_names)} tools.**
+**To avoid context overflow, use INCREMENTAL data gathering across multiple turns.**
 
-## TOOL EXECUTION GUIDELINES
+Tools available: [{tool_list_str}]
+
+**Execution Strategy (Incremental):**
+1. **Turn 1**: Start with essential data (price, basic indicators) for ALL symbols
+2. **Turn 2**: Add detailed analysis (patterns, support/resistance) for TOP symbols
+3. **Turn 3+**: Get fundamentals/news only for most relevant symbols
+4. Do NOT call all tools for all symbols at once - this will overflow context
+
+**Priority Order:**
+1. getStockPrice → Basic price snapshot for all
+2. getTechnicalIndicators → Key indicators (RSI, MACD) for all
+3. detectChartPatterns, getSupportResistance → Only for interesting symbols
+4. getIncomeStatement, getBalanceSheet, getCashFlow → Only for deep-dive symbols
+5. getStockNews, webSearch → Only if specifically needed
+
+**After each turn:**
+- Evaluate which symbols need more analysis
+- Focus on most actionable insights
+- Synthesize when you have enough data for a useful response"""
+        else:
+            # SIMPLE/MEDIUM query - can call all tools in first turn
+            execution_guidelines = f"""## TOOL EXECUTION GUIDELINES
 
 **IMPORTANT: The router has pre-selected these tools as needed for this query:**
 Tools to use: [{tool_list_str}]
@@ -1478,7 +1502,21 @@ Tools to use: [{tool_list_str}]
 **Evaluation after tool calls:**
 - Check if you have enough data to fully answer the user's question
 - If missing critical information, call additional tools
-- If data is sufficient, proceed to final response
+- If data is sufficient, proceed to final response"""
+
+        # Combine skill prompt with runtime context
+        system_prompt = f"""{skill_prompt}
+
+---
+## RUNTIME CONTEXT
+
+Current Date: {current_date}
+Response Language: {system_language.upper()}
+{symbols_hint}
+{categories_hint}
+{user_context}
+
+{execution_guidelines}
 
 **Response Quality:**
 - Explain technical terms briefly (e.g., "RSI = 72 (quá mua)")
