@@ -69,17 +69,18 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
     # Data source tracking
     INDICATOR_DATA_SOURCE = {
-        "RSI": "self-calc",
+        "RSI": "self-calc (Wilder's smoothing)",
         "MACD": "self-calc",
-        "SMA": "self-calc",
+        "SMA": "self-calc (requires 260+ days for SMA-200)",
         "EMA": "self-calc",
         "BB": "self-calc",
-        "VWAP": "self-calc",
+        "VWAP": "FMP intraday 1h + daily fallback",
         "STOCH": "self-calc",
         "OBV": "self-calc",
         "ADX": "FMP primary + self-calc fallback",
         "ATR": "self-calc",
-        "SUPERTREND": "self-calc"
+        "SUPERTREND": "self-calc",
+        "52W_RANGE": "self-calc from historical data"
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -217,14 +218,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
         start_time = datetime.now()
         symbol = symbol.upper()
 
-        # Map timeframe to lookback days (need extra for SMA-200)
+        # Map timeframe to lookback days
+        # IMPORTANT: Always fetch >= 260 days for SMA-200 calculation
         timeframe_map = {
-            "1M": 50,    # 30 days + buffer for indicators
-            "3M": 120,   # 90 days + buffer
-            "6M": 220,   # 180 days + buffer
-            "1Y": 300    # 252 days + buffer for SMA-200
+            "1M": 260,   # Need 260 for SMA-200 even on 1M view
+            "3M": 260,   # Need 260 for SMA-200
+            "6M": 280,   # 180 days + buffer
+            "1Y": 320    # 252 days + buffer
         }
-        lookback_days = timeframe_map.get(timeframe, 120)
+        lookback_days = timeframe_map.get(timeframe, 260)
 
         try:
             # ════════════════════════════════════════════════════════════
@@ -332,9 +334,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 result_indicators["bollinger_bands"] = bb_result
                 indicators_calculated.append("BB")
 
-            # --- VWAP (Volume Weighted Average Price) ---
+            # --- VWAP (Volume Weighted Average Price) - Using intraday data ---
             if "VWAP" in indicators:
-                vwap_result = self._calculate_vwap(df, current_price)
+                # Try intraday VWAP first (accurate), fallback to daily
+                vwap_result = await self._calculate_vwap_intraday(symbol, current_price)
+                if vwap_result.get("value") is None:
+                    # Fallback to daily typical price
+                    vwap_result = self._calculate_vwap_daily_fallback(df, current_price)
                 result_indicators["vwap"] = vwap_result
                 indicators_calculated.append("VWAP")
 
@@ -367,6 +373,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 supertrend_result = self._calculate_supertrend(df, current_price)
                 result_indicators["supertrend"] = supertrend_result
                 indicators_calculated.append("SUPERTREND")
+
+            # ════════════════════════════════════════════════════════════
+            # STEP 5.5: Calculate 52-week range (always included)
+            # ════════════════════════════════════════════════════════════
+            range_52w_result = self._calculate_52_week_range(df, current_price)
+            result_indicators["range_52w"] = range_52w_result
 
             # ════════════════════════════════════════════════════════════
             # STEP 6: Generate Signals
@@ -474,11 +486,17 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
     def _calculate_rsi(self, df: pd.DataFrame, period: int = 14) -> Dict[str, Any]:
         """
-        RSI (Relative Strength Index) - 14-period
+        RSI (Relative Strength Index) - 14-period using WILDER'S SMOOTHING
 
         Formula:
             RSI = 100 - (100 / (1 + RS))
             RS = Average Gain / Average Loss (over 14 periods)
+
+        IMPORTANT: Uses Wilder's smoothing (alpha=1/period) to match:
+        - TradingView
+        - Bloomberg
+        - FMP API
+        - Most professional platforms
 
         Interpretation:
             > 70: Overbought (potential reversal down)
@@ -491,9 +509,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
         gain = delta.where(delta > 0, 0.0)
         loss = (-delta).where(delta < 0, 0.0)
 
-        # Use exponential moving average for smoother RSI
-        avg_gain = gain.ewm(span=period, adjust=False).mean()
-        avg_loss = loss.ewm(span=period, adjust=False).mean()
+        # WILDER'S SMOOTHING: alpha = 1/period
+        # This matches TradingView, Bloomberg, FMP, and industry standard
+        # Previously used: ewm(span=period) which gives different results
+        avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
 
         rs = avg_gain / avg_loss.replace(0, np.nan)
         rsi = 100 - (100 / (1 + rs))
@@ -512,6 +532,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "value": round(current_rsi, 2),
             "period": period,
             "signal": signal,
+            "calculation_method": "wilder_smoothing",
             "description": f"RSI({period}) = {current_rsi:.1f} ({signal})"
         }
 
@@ -725,46 +746,228 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "description": f"BB: Upper={current_upper:.2f}, Middle={current_middle:.2f}, Lower={current_lower:.2f}, %B={percent_b:.2f}"
         }
 
-    def _calculate_vwap(self, df: pd.DataFrame, current_price: float) -> Dict[str, Any]:
+    async def _fetch_intraday_data(self, symbol: str) -> Optional[List[Dict]]:
         """
-        VWAP (Volume Weighted Average Price)
+        Fetch 1-hour intraday data from FMP for VWAP calculation.
+
+        Endpoint: /stable/historical-chart/1hour
+        Returns today's (or most recent trading day's) hourly bars.
+        """
+        url = f"{self.FMP_STABLE_URL}/historical-chart/1hour"
+        params = {
+            "symbol": symbol,
+            "apikey": self.api_key
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(url, params=params)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data and len(data) > 0:
+                        return data
+        except Exception as e:
+            self.logger.warning(f"[{symbol}] Intraday fetch error: {e}")
+
+        return None
+
+    async def _calculate_vwap_intraday(
+        self,
+        symbol: str,
+        current_price: float
+    ) -> Dict[str, Any]:
+        """
+        VWAP (Volume Weighted Average Price) using INTRADAY data
 
         Formula:
-            VWAP = Cumulative(Typical Price × Volume) / Cumulative(Volume)
+            VWAP = Σ(Typical Price × Volume) / Σ(Volume)
             Typical Price = (High + Low + Close) / 3
 
-        Note: For daily data, we calculate cumulative VWAP over the analysis period.
-        Institutional traders use VWAP as a benchmark - price above VWAP is bullish.
+        IMPORTANT: Standard VWAP resets daily and uses intraday data.
+        This method fetches 1-hour bars from FMP for accurate calculation.
+
+        Reference: https://site.financialmodelingprep.com/how-to/how-to-use-vwap-with-hour-stock-chart-api
 
         Interpretation:
-            Price > VWAP: Bullish (buyers in control)
-            Price < VWAP: Bearish (sellers in control)
+            Price > VWAP: Bullish (buyers in control, institutional buying)
+            Price < VWAP: Bearish (sellers in control, institutional selling)
         """
-        high = df['high']
-        low = df['low']
-        close = df['close']
-        volume = df['volume']
+        # Try to fetch intraday data
+        intraday_data = await self._fetch_intraday_data(symbol)
 
-        # Typical Price
-        tp = (high + low + close) / 3
+        if not intraday_data:
+            # Fallback: Return None to indicate VWAP unavailable
+            return {
+                "value": None,
+                "price_vs_vwap": "N/A",
+                "distance_pct": None,
+                "signal": "unavailable",
+                "data_source": "failed",
+                "description": "VWAP unavailable - could not fetch intraday data"
+            }
 
-        # Cumulative VWAP
-        cumulative_tp_vol = (tp * volume).cumsum()
-        cumulative_vol = volume.cumsum()
+        # Get today's date (or most recent trading day)
+        from datetime import datetime
+        today = datetime.now().strftime("%Y-%m-%d")
 
-        vwap = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
-        current_vwap = float(vwap.iloc[-1])
+        # Filter to today's data only
+        today_data = [d for d in intraday_data if d.get("date", "").startswith(today)]
+
+        if not today_data:
+            # Use most recent trading day if today has no data (weekend/holiday)
+            dates = set(d.get("date", "")[:10] for d in intraday_data if d.get("date"))
+            if dates:
+                latest_date = max(dates)
+                today_data = [d for d in intraday_data if d.get("date", "").startswith(latest_date)]
+            else:
+                today_data = intraday_data[:10]  # Use most recent 10 bars as fallback
+
+        if not today_data:
+            return {
+                "value": None,
+                "price_vs_vwap": "N/A",
+                "distance_pct": None,
+                "signal": "unavailable",
+                "data_source": "no_data",
+                "description": "VWAP unavailable - no recent trading data"
+            }
+
+        # Calculate VWAP from intraday bars
+        total_tp_vol = 0.0
+        total_vol = 0
+
+        for bar in today_data:
+            high = float(bar.get("high", 0))
+            low = float(bar.get("low", 0))
+            close = float(bar.get("close", 0))
+            volume = int(bar.get("volume", 0))
+
+            typical_price = (high + low + close) / 3
+            total_tp_vol += typical_price * volume
+            total_vol += volume
+
+        if total_vol == 0:
+            return {
+                "value": None,
+                "price_vs_vwap": "N/A",
+                "distance_pct": None,
+                "signal": "unavailable",
+                "data_source": "zero_volume",
+                "description": "VWAP unavailable - zero volume"
+            }
+
+        vwap = total_tp_vol / total_vol
 
         # Price vs VWAP
-        distance_pct = ((current_price - current_vwap) / current_vwap) * 100 if current_vwap > 0 else 0
-        position = "above" if current_price > current_vwap else "below"
+        distance_pct = ((current_price - vwap) / vwap) * 100 if vwap > 0 else 0
+        position = "above" if current_price > vwap else "below"
 
         return {
-            "value": round(current_vwap, 2),
+            "value": round(vwap, 2),
             "price_vs_vwap": position,
             "distance_pct": round(distance_pct, 2),
             "signal": "bullish" if position == "above" else "bearish",
-            "description": f"VWAP = ${current_vwap:.2f}, Price {position} ({distance_pct:+.2f}%)"
+            "data_source": "FMP_intraday_1h",
+            "bars_used": len(today_data),
+            "description": f"VWAP = ${vwap:.2f}, Price {position} ({distance_pct:+.2f}%)"
+        }
+
+    def _calculate_vwap_daily_fallback(
+        self,
+        df: pd.DataFrame,
+        current_price: float
+    ) -> Dict[str, Any]:
+        """
+        VWAP fallback using daily data (less accurate).
+
+        This is a FALLBACK only - for accurate VWAP use _calculate_vwap_intraday.
+        Daily VWAP = Today's Typical Price (not cumulative).
+        """
+        # Use only the most recent day's data
+        high = float(df['high'].iloc[-1])
+        low = float(df['low'].iloc[-1])
+        close = float(df['close'].iloc[-1])
+
+        # Typical Price for today
+        vwap = (high + low + close) / 3
+
+        # Price vs VWAP
+        distance_pct = ((current_price - vwap) / vwap) * 100 if vwap > 0 else 0
+        position = "above" if current_price > vwap else "below"
+
+        return {
+            "value": round(vwap, 2),
+            "price_vs_vwap": position,
+            "distance_pct": round(distance_pct, 2),
+            "signal": "bullish" if position == "above" else "bearish",
+            "data_source": "daily_typical_price",
+            "note": "Approximation - for accurate VWAP use intraday data",
+            "description": f"VWAP (daily) = ${vwap:.2f}, Price {position} ({distance_pct:+.2f}%)"
+        }
+
+    def _calculate_52_week_range(
+        self,
+        df: pd.DataFrame,
+        current_price: float
+    ) -> Dict[str, Any]:
+        """
+        Calculate 52-week high/low and position within range.
+
+        Formula:
+            Position = (Current - Low) / (High - Low) × 100%
+
+        Interpretation:
+            0% = At 52-week low
+            100% = At 52-week high
+            50% = Exactly in middle
+            >80% = Near yearly highs (extended)
+            <20% = Near yearly lows (potential value)
+        """
+        # Need at least 252 days for 52-week range (or use all available)
+        if len(df) >= 252:
+            high_52w = float(df['high'].tail(252).max())
+            low_52w = float(df['low'].tail(252).min())
+        else:
+            # Use all available data if less than 252 days
+            high_52w = float(df['high'].max())
+            low_52w = float(df['low'].min())
+
+        # Calculate position in range
+        range_52w = high_52w - low_52w
+        if range_52w > 0:
+            position_pct = ((current_price - low_52w) / range_52w) * 100
+        else:
+            position_pct = 50.0
+
+        # Determine position description
+        if position_pct >= 95:
+            position_desc = "at_52w_high"
+        elif position_pct >= 80:
+            position_desc = "near_highs"
+        elif position_pct <= 5:
+            position_desc = "at_52w_low"
+        elif position_pct <= 20:
+            position_desc = "near_lows"
+        elif position_pct >= 60:
+            position_desc = "upper_half"
+        elif position_pct <= 40:
+            position_desc = "lower_half"
+        else:
+            position_desc = "middle"
+
+        # Distance from high/low
+        distance_from_high_pct = ((high_52w - current_price) / high_52w) * 100 if high_52w > 0 else 0
+        distance_from_low_pct = ((current_price - low_52w) / low_52w) * 100 if low_52w > 0 else 0
+
+        return {
+            "high_52w": round(high_52w, 2),
+            "low_52w": round(low_52w, 2),
+            "range": round(range_52w, 2),
+            "position_pct": round(position_pct, 1),
+            "position_desc": position_desc,
+            "distance_from_high_pct": round(distance_from_high_pct, 1),
+            "distance_from_low_pct": round(distance_from_low_pct, 1),
+            "description": f"52W Range: ${low_52w:.2f} - ${high_52w:.2f}, Position: {position_pct:.1f}% ({position_desc})"
         }
 
     def _calculate_stochastic(
@@ -1418,6 +1621,35 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     "description": f"Supertrend indicates {st['direction']} trend"
                 })
 
+        # 52-Week Range Signals
+        if "range_52w" in indicators:
+            r52w = indicators["range_52w"]
+            position = r52w.get("position_pct", 50)
+            if position >= 95:
+                signals.append({
+                    "type": "52W_AT_HIGH",
+                    "strength": "strong",
+                    "description": f"At 52-week high ({position:.1f}%) - extended, potential profit-taking"
+                })
+            elif position >= 80:
+                signals.append({
+                    "type": "52W_NEAR_HIGH",
+                    "strength": "moderate",
+                    "description": f"Near 52-week high ({position:.1f}%) - strong momentum but extended"
+                })
+            elif position <= 5:
+                signals.append({
+                    "type": "52W_AT_LOW",
+                    "strength": "strong",
+                    "description": f"At 52-week low ({position:.1f}%) - potential capitulation or value"
+                })
+            elif position <= 20:
+                signals.append({
+                    "type": "52W_NEAR_LOW",
+                    "strength": "moderate",
+                    "description": f"Near 52-week low ({position:.1f}%) - potential value or continued weakness"
+                })
+
         return signals
 
     # ════════════════════════════════════════════════════════════════════════
@@ -1499,9 +1731,27 @@ class GetTechnicalIndicatorsTool(BaseTool):
             vwap = indicators["vwap"]
             lines.append("")
             lines.append(f"VWAP (Volume Weighted Average Price):")
-            lines.append(f"  Value: ${vwap['value']:,.2f}")
-            lines.append(f"  Price vs VWAP: {vwap['price_vs_vwap'].upper()} ({vwap['distance_pct']:+.2f}%)")
-            lines.append(f"  Note: Institutional benchmark - price above VWAP = bullish")
+            if vwap.get('value') is not None:
+                lines.append(f"  Value: ${vwap['value']:,.2f}")
+                lines.append(f"  Price vs VWAP: {vwap['price_vs_vwap'].upper()} ({vwap.get('distance_pct', 0):+.2f}%)")
+                lines.append(f"  Data Source: {vwap.get('data_source', 'N/A')}")
+                if vwap.get('bars_used'):
+                    lines.append(f"  Bars Used: {vwap['bars_used']} (intraday)")
+                lines.append(f"  Note: Institutional benchmark - price above VWAP = bullish")
+            else:
+                lines.append(f"  Status: {vwap.get('description', 'Unavailable')}")
+
+        # 52-Week Range Section
+        if "range_52w" in indicators:
+            r52w = indicators["range_52w"]
+            lines.append("")
+            lines.append(f"52-WEEK RANGE:")
+            lines.append(f"  High: ${r52w['high_52w']:,.2f}")
+            lines.append(f"  Low: ${r52w['low_52w']:,.2f}")
+            lines.append(f"  Current Position: {r52w['position_pct']:.1f}% ({r52w['position_desc'].upper().replace('_', ' ')})")
+            lines.append(f"  Distance from High: {r52w['distance_from_high_pct']:.1f}%")
+            lines.append(f"  Distance from Low: {r52w['distance_from_low_pct']:.1f}%")
+            lines.append(f"  Interpretation: 0%=at low, 100%=at high, >80%=near highs")
 
         # Stochastic Section
         if "stochastic" in indicators:
@@ -1648,6 +1898,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
             bb = indicators["bollinger_bands"]
             if bb["bandwidth_pct"] < 5:
                 insights.append("VOLATILITY: BB squeeze detected - potential breakout imminent")
+
+        # 52-Week Range Position
+        if "range_52w" in indicators:
+            r52w = indicators["range_52w"]
+            position = r52w.get("position_pct", 50)
+            if position >= 80:
+                insights.append(f"52W POSITION: Trading near yearly highs ({position:.1f}%) - extended but strong momentum")
+            elif position <= 20:
+                insights.append(f"52W POSITION: Trading near yearly lows ({position:.1f}%) - potential value or continued weakness")
 
         return insights if insights else ["No significant patterns detected"]
 
