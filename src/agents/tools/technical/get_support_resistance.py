@@ -1,3 +1,4 @@
+import json
 import httpx
 import logging
 import numpy as np
@@ -13,32 +14,31 @@ from src.agents.tools.base import (
     create_success_output,
     create_error_output
 )
+from src.helpers.redis_cache import get_redis_client_llm
 
 
 class GetSupportResistanceTool(BaseTool):
     """
-    Atomic tool để tính support/resistance levels
-    
+    Support/Resistance Level Calculator
+
     Methods:
-    1. Classic Pivot Points (từ H/L/C ngày trước)
-    2. Swing Highs/Lows (local extrema clustering)
-    3. Key MA levels (20/50/200 SMA)
-    
+    1. Standard Pivot Points (P0 - 90% traders use this)
+    2. Fibonacci Retracement (P0 - Key S/R levels)
+    3. Swing Highs/Lows (local extrema clustering)
+    4. Key MA levels (20/50/200 SMA)
+
+    Features:
+    - Redis caching (5-min TTL)
+    - Formatted context with insights
+    - Clear interpretations for each level
+
     Usage:
         tool = GetSupportResistanceTool()
-        result = await tool.safe_execute(
-            symbol="AAPL",
-            lookback_days=60
-        )
-        
-        if result.is_success():
-            pivot = result.data['pivot_points']['pivot']
-            resistance_levels = result.data['resistance_levels']
-            support_levels = result.data['support_levels']
+        result = await tool.safe_execute(symbol="AAPL", lookback_days=60)
     """
-    
-    # FMP API Configuration
+
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
+    CACHE_TTL = 300  # 5 minutes
     
     def __init__(self, api_key: Optional[str] = None):
         """
@@ -70,12 +70,12 @@ class GetSupportResistanceTool(BaseTool):
                 "Use when user asks about support levels, resistance levels, or key price levels."
             ),
             capabilities=[
-                "✅ Major support levels (3-5 levels)",
-                "✅ Major resistance levels (3-5 levels)",
-                "✅ Level strength ratings (weak/moderate/strong)",
-                "✅ Distance from current price",
-                "✅ Volume-confirmed levels",
-                "✅ Historical price reaction analysis"
+                "Standard Pivot Points (P, R1, R2, R3, S1, S2, S3)",
+                "Fibonacci Retracement (23.6%, 38.2%, 50%, 61.8%, 78.6%)",
+                "Swing Highs/Lows from price action",
+                "Key Moving Averages (20/50/200 SMA)",
+                "Level strength ratings and distance from price",
+                "Trading range analysis with position %"
             ],
             limitations=[
                 "❌ Requires minimum 6 months historical data",
@@ -130,58 +130,107 @@ class GetSupportResistanceTool(BaseTool):
         )
         
     
+    async def _get_cached_data(self, cache_key: str) -> Optional[Any]:
+        """Get cached data from Redis"""
+        try:
+            redis_client = await get_redis_client_llm()
+            if redis_client:
+                cached = await redis_client.get(cache_key)
+                if cached:
+                    if isinstance(cached, bytes):
+                        cached = cached.decode('utf-8')
+                    return json.loads(cached)
+        except Exception as e:
+            self.logger.warning(f"[CACHE] Read error: {e}")
+        return None
+
+    async def _set_cached_data(self, cache_key: str, data: Any, ttl: int) -> None:
+        """Set data in Redis cache"""
+        try:
+            redis_client = await get_redis_client_llm()
+            if redis_client:
+                await redis_client.set(cache_key, json.dumps(data), ex=ttl)
+        except Exception as e:
+            self.logger.warning(f"[CACHE] Write error: {e}")
+
     async def execute(self, symbol: str, lookback_days: int = 60) -> ToolOutput:
         """
         Execute S/R calculation
-        
+
         Args:
             symbol: Stock symbol
             lookback_days: Days of historical data to analyze
-            
+
         Returns:
-            ToolOutput with S/R levels
+            ToolOutput with S/R levels including Pivot Points and Fibonacci
         """
         symbol_upper = symbol.upper()
-        
+        start_time = datetime.now()
+
         # Validate lookback_days
         lookback_days = max(30, min(252, lookback_days))
-        
+
         self.logger.info(
-            f"[getSupportResistance] Executing for symbol={symbol_upper}, "
-            f"lookback_days={lookback_days}"
+            f"[getSupportResistance] {symbol_upper} | lookback={lookback_days} days"
         )
-        
+
         try:
+            # Check cache
+            cache_key = f"stock_sr:{symbol_upper}:{lookback_days}"
+            cached_result = await self._get_cached_data(cache_key)
+
+            if cached_result:
+                execution_time = (datetime.now() - start_time).total_seconds() * 1000
+                cached_result["from_cache"] = True
+                return create_success_output(
+                    tool_name=self.schema.name,
+                    data=cached_result,
+                    formatted_context=self._build_formatted_context(cached_result),
+                    metadata={
+                        "source": "Redis Cache",
+                        "execution_time_ms": int(execution_time),
+                        "cache_hit": True
+                    }
+                )
+
             # Fetch historical data
             historical_data = await self._fetch_historical_data(
                 symbol_upper,
                 lookback_days
             )
-            
+
             if not historical_data or len(historical_data) < 30:
                 return create_error_output(
                     tool_name=self.schema.name,
                     error=f"Insufficient historical data for {symbol_upper}"
                 )
-            
+
             # Calculate S/R levels
             sr_data = self._calculate_support_resistance(
                 historical_data,
                 symbol_upper
             )
-            
+
+            # Cache the result
+            await self._set_cached_data(cache_key, sr_data, self.CACHE_TTL)
+
+            execution_time = (datetime.now() - start_time).total_seconds() * 1000
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=sr_data,
+                formatted_context=self._build_formatted_context(sr_data),
                 metadata={
-                    "source": "Calculated from FMP historical data",
+                    "source": "FMP API + Self-calculated",
                     "symbol_queried": symbol_upper,
                     "lookback_days": lookback_days,
                     "data_points": len(historical_data),
+                    "execution_time_ms": int(execution_time),
+                    "cache_hit": False,
                     "timestamp": datetime.now().isoformat()
                 }
             )
-            
+
         except Exception as e:
             self.logger.error(
                 f"[getSupportResistance] Error for {symbol_upper}: {e}",
@@ -236,31 +285,50 @@ class GetSupportResistanceTool(BaseTool):
     ) -> Dict[str, Any]:
         """
         Calculate support and resistance levels
-        
+
         Methods:
-        1. Classic Pivot Points
-        2. Swing Highs/Lows
-        3. Key Moving Averages
+        1. Standard Pivot Points (from yesterday's OHLC)
+        2. Fibonacci Retracement (from swing high/low)
+        3. Swing Highs/Lows (local extrema)
+        4. Key Moving Averages
         """
         # Extract OHLC data
         closes = np.array([float(d['close']) for d in historical_data])
         highs = np.array([float(d['high']) for d in historical_data])
         lows = np.array([float(d['low']) for d in historical_data])
-        
+
         current_price = closes[-1]
-        
+        latest_date = historical_data[-1].get("date", "N/A")
+
         # 1. Calculate Pivot Points (from yesterday's data)
         pivot_points = self._calculate_pivot_points(
             high=highs[-2],
             low=lows[-2],
             close=closes[-2]
         )
-        
-        # 2. Find Swing Highs/Lows
+
+        # 2. Find Swing Highs/Lows for Fibonacci
         swing_highs = self._find_swing_highs(highs)
         swing_lows = self._find_swing_lows(lows)
-        
-        # 3. Calculate Key Moving Averages
+
+        # Get recent swing high and low for Fibonacci
+        recent_high = max(highs[-30:]) if len(highs) >= 30 else max(highs)
+        recent_low = min(lows[-30:]) if len(lows) >= 30 else min(lows)
+
+        # Determine trend direction
+        if current_price > (recent_high + recent_low) / 2:
+            trend_direction = "UP"
+        else:
+            trend_direction = "DOWN"
+
+        # 3. Calculate Fibonacci Retracement
+        fibonacci = self._calculate_fibonacci_retracement(
+            swing_high=recent_high,
+            swing_low=recent_low,
+            trend_direction=trend_direction
+        )
+
+        # 4. Calculate Key Moving Averages
         ma_levels = self._calculate_ma_levels(closes)
         
         # 4. Aggregate and rank resistance levels
@@ -365,29 +433,18 @@ class GetSupportResistanceTool(BaseTool):
         return {
             "symbol": symbol,
             "current_price": round(current_price, 2),
+            "latest_date": latest_date,
             "pivot_points": pivot_points,
+            "fibonacci_retracement": fibonacci,
             "resistance_levels": resistance_levels[:5],
             "support_levels": support_levels[:5],
             "nearest_resistance": nearest_resistance,
             "nearest_support": nearest_support,
-            "trading_range": trading_range,  # ← Required field
+            "trading_range": trading_range,
             "key_moving_averages": ma_levels,
             "analysis_period": f"{len(historical_data)} days",
             "timestamp": datetime.now().isoformat()
         }
-
-        # return {
-        #     "symbol": symbol,
-        #     "current_price": round(current_price, 2),
-        #     "pivot_points": pivot_points,
-        #     "resistance_levels": resistance_levels[:5],  # Top 5
-        #     "support_levels": support_levels[:5],  # Top 5
-        #     "nearest_resistance": nearest_resistance,
-        #     "nearest_support": nearest_support,
-        #     "key_moving_averages": ma_levels,
-        #     "analysis_period": f"{len(historical_data)} days",
-        #     "timestamp": datetime.now().isoformat()
-        # }
     
     def _calculate_pivot_points(
         self,
@@ -415,7 +472,67 @@ class GetSupportResistanceTool(BaseTool):
             "s2": round(s2, 2),
             "s3": round(s3, 2)
         }
-    
+
+    def _calculate_fibonacci_retracement(
+        self,
+        swing_high: float,
+        swing_low: float,
+        trend_direction: str = "UP"
+    ) -> Dict[str, Any]:
+        """
+        Calculate Fibonacci Retracement levels.
+
+        Key levels: 23.6%, 38.2%, 50%, 61.8%, 78.6%
+
+        For UPTREND: Retracement from high going down (looking for support)
+        For DOWNTREND: Retracement from low going up (looking for resistance)
+
+        Args:
+            swing_high: Recent swing high price
+            swing_low: Recent swing low price
+            trend_direction: "UP" or "DOWN"
+
+        Returns:
+            Dict with Fibonacci levels and interpretation
+        """
+        diff = swing_high - swing_low
+
+        # Standard Fibonacci ratios
+        fib_ratios = {
+            "0.0": 0.0,
+            "23.6": 0.236,
+            "38.2": 0.382,
+            "50.0": 0.500,
+            "61.8": 0.618,  # Golden ratio - most important
+            "78.6": 0.786,
+            "100.0": 1.0
+        }
+
+        if trend_direction == "UP":
+            # In uptrend, we measure from high going down
+            levels = {}
+            for name, ratio in fib_ratios.items():
+                levels[f"{name}%"] = round(swing_high - diff * ratio, 2)
+            key_level = levels["61.8%"]
+            interpretation = "In UPTREND: Watch 38.2%, 50%, 61.8% for pullback support"
+        else:
+            # In downtrend, we measure from low going up
+            levels = {}
+            for name, ratio in fib_ratios.items():
+                levels[f"{name}%"] = round(swing_low + diff * ratio, 2)
+            key_level = levels["38.2%"]
+            interpretation = "In DOWNTREND: Watch 38.2%, 50%, 61.8% for bounce resistance"
+
+        return {
+            "levels": levels,
+            "swing_high": round(swing_high, 2),
+            "swing_low": round(swing_low, 2),
+            "trend_direction": trend_direction,
+            "key_level": key_level,
+            "golden_ratio_level": levels["61.8%"],
+            "interpretation": interpretation
+        }
+
     def _find_swing_highs(self, highs: np.ndarray, order: int = 5) -> List[float]:
         """Find swing highs (local maxima)"""
         # Find local maxima
@@ -462,7 +579,7 @@ class GetSupportResistanceTool(BaseTool):
     ) -> List[Dict]:
         """
         Cluster nearby levels and rank by proximity
-        
+
         Args:
             levels: List of level dicts
             current_price: Current stock price
@@ -471,23 +588,23 @@ class GetSupportResistanceTool(BaseTool):
         """
         if not levels:
             return []
-        
+
         # Filter by direction
         if direction == "above":
             filtered = [l for l in levels if l['price'] > current_price]
         else:
             filtered = [l for l in levels if l['price'] < current_price]
-        
+
         if not filtered:
             return []
-        
+
         # Sort by distance from current price
         filtered.sort(key=lambda x: abs(x['price'] - current_price))
-        
+
         # Cluster nearby levels
         clustered = []
         tolerance = current_price * (tolerance_pct / 100)
-        
+
         for level in filtered:
             # Check if similar level already exists
             is_duplicate = False
@@ -500,10 +617,10 @@ class GetSupportResistanceTool(BaseTool):
                         existing['strength'] = level['strength']
                     is_duplicate = True
                     break
-            
+
             if not is_duplicate:
                 clustered.append(level)
-        
+
         # Add distance_pct field
         for level in clustered:
             distance_pct = abs(
@@ -511,8 +628,214 @@ class GetSupportResistanceTool(BaseTool):
             )
             level['distance_pct'] = round(distance_pct, 2)
             level['price'] = round(level['price'], 2)
-        
+
         return clustered
+
+    def _build_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Build formatted context for LLM interpretation.
+
+        Provides clear, actionable insights for trading decisions.
+        """
+        symbol = data.get("symbol", "N/A")
+        current_price = data.get("current_price", 0)
+        pivot_points = data.get("pivot_points", {})
+        fibonacci = data.get("fibonacci_retracement", {})
+        trading_range = data.get("trading_range", {})
+        resistance_levels = data.get("resistance_levels", [])
+        support_levels = data.get("support_levels", [])
+        nearest_resistance = data.get("nearest_resistance")
+        nearest_support = data.get("nearest_support")
+        ma_levels = data.get("key_moving_averages", {})
+
+        lines = []
+        lines.append(f"=== {symbol} SUPPORT/RESISTANCE ANALYSIS ===")
+        lines.append(f"Current Price: ${current_price:,.2f}")
+        lines.append("")
+
+        # Position Analysis
+        lines.append("📍 PRICE POSITION:")
+        if trading_range.get("position_in_range_pct") is not None:
+            position = trading_range["position_in_range_pct"]
+            if position < 30:
+                position_desc = "NEAR SUPPORT (potential bounce zone)"
+            elif position > 70:
+                position_desc = "NEAR RESISTANCE (potential reversal zone)"
+            else:
+                position_desc = "MID-RANGE (neutral zone)"
+            lines.append(f"  Position in range: {position:.1f}% - {position_desc}")
+        lines.append("")
+
+        # Pivot Points
+        lines.append("🎯 PIVOT POINTS (Yesterday's OHLC):")
+        if pivot_points:
+            lines.append(f"  R3: ${pivot_points.get('r3', 0):,.2f}")
+            lines.append(f"  R2: ${pivot_points.get('r2', 0):,.2f}")
+            lines.append(f"  R1: ${pivot_points.get('r1', 0):,.2f}")
+            lines.append(f"  P:  ${pivot_points.get('pivot', 0):,.2f} (Central Pivot)")
+            lines.append(f"  S1: ${pivot_points.get('s1', 0):,.2f}")
+            lines.append(f"  S2: ${pivot_points.get('s2', 0):,.2f}")
+            lines.append(f"  S3: ${pivot_points.get('s3', 0):,.2f}")
+        lines.append("")
+
+        # Fibonacci Retracement
+        lines.append("📐 FIBONACCI RETRACEMENT:")
+        if fibonacci:
+            fib_levels = fibonacci.get("levels", {})
+            trend = fibonacci.get("trend_direction", "N/A")
+            lines.append(f"  Trend: {trend}")
+            lines.append(f"  Swing Range: ${fibonacci.get('swing_low', 0):,.2f} - ${fibonacci.get('swing_high', 0):,.2f}")
+
+            # Show key levels
+            for key in ["23.6%", "38.2%", "50.0%", "61.8%", "78.6%"]:
+                level_val = fib_levels.get(key, 0)
+                golden_marker = " ⭐ (Golden Ratio)" if key == "61.8%" else ""
+                lines.append(f"  {key}: ${level_val:,.2f}{golden_marker}")
+
+            lines.append(f"  → {fibonacci.get('interpretation', '')}")
+        lines.append("")
+
+        # Key Resistance Levels
+        lines.append("🔴 RESISTANCE LEVELS (Above Current Price):")
+        if resistance_levels:
+            for r in resistance_levels[:5]:
+                lines.append(
+                    f"  ${r['price']:,.2f} ({r['type']}) - {r['distance_pct']:.1f}% away"
+                )
+        else:
+            lines.append("  No resistance levels identified")
+        lines.append("")
+
+        # Key Support Levels
+        lines.append("🟢 SUPPORT LEVELS (Below Current Price):")
+        if support_levels:
+            for s in support_levels[:5]:
+                lines.append(
+                    f"  ${s['price']:,.2f} ({s['type']}) - {s['distance_pct']:.1f}% away"
+                )
+        else:
+            lines.append("  No support levels identified")
+        lines.append("")
+
+        # Moving Average Levels
+        lines.append("📊 KEY MOVING AVERAGES:")
+        if ma_levels:
+            for period, value in sorted(ma_levels.items(), key=lambda x: int(x[0])):
+                ma_position = "above" if value > current_price else "below"
+                lines.append(f"  SMA-{period}: ${value:,.2f} ({ma_position} price)")
+        lines.append("")
+
+        # Trading Insights
+        lines.append("💡 TRADING INSIGHTS:")
+        insights = self._generate_sr_insights(data)
+        for insight in insights:
+            lines.append(f"  • {insight}")
+        lines.append("")
+
+        # Disclaimer
+        lines.append("⚠️ DISCLAIMER:")
+        lines.append("  S/R levels are based on historical price action.")
+        lines.append("  Levels may be broken. Always use stop-loss and proper risk management.")
+
+        return "\n".join(lines)
+
+    def _generate_sr_insights(self, data: Dict[str, Any]) -> List[str]:
+        """Generate actionable insights from S/R analysis"""
+        insights = []
+
+        current_price = data.get("current_price", 0)
+        trading_range = data.get("trading_range", {})
+        nearest_support = data.get("nearest_support")
+        nearest_resistance = data.get("nearest_resistance")
+        pivot_points = data.get("pivot_points", {})
+        fibonacci = data.get("fibonacci_retracement", {})
+        ma_levels = data.get("key_moving_averages", {})
+
+        # Position in range insight
+        position = trading_range.get("position_in_range_pct", 50)
+        if position < 20:
+            insights.append(
+                "Price is very close to support - potential bounce opportunity. "
+                "Watch for bullish reversal patterns."
+            )
+        elif position < 40:
+            insights.append(
+                "Price in lower half of range - leaning towards support. "
+                "Good entry zone for longs if support holds."
+            )
+        elif position > 80:
+            insights.append(
+                "Price near resistance - caution for longs. "
+                "Consider taking profits or wait for breakout confirmation."
+            )
+        elif position > 60:
+            insights.append(
+                "Price in upper half of range - approaching resistance. "
+                "Potential short opportunity if resistance holds."
+            )
+        else:
+            insights.append(
+                "Price in middle of range - wait for clearer direction. "
+                "Watch for break of support or resistance."
+            )
+
+        # Pivot level insight
+        pivot = pivot_points.get("pivot", 0)
+        if pivot > 0:
+            if current_price > pivot:
+                insights.append(
+                    f"Trading above central pivot (${pivot:,.2f}) - short-term bullish bias."
+                )
+            else:
+                insights.append(
+                    f"Trading below central pivot (${pivot:,.2f}) - short-term bearish bias."
+                )
+
+        # Fibonacci insight
+        golden_ratio = fibonacci.get("golden_ratio_level", 0)
+        if golden_ratio > 0:
+            distance_pct = abs((current_price - golden_ratio) / current_price * 100)
+            if distance_pct < 2:
+                insights.append(
+                    f"Price near 61.8% Fibonacci level (${golden_ratio:,.2f}) - "
+                    "key level for potential reversal."
+                )
+
+        # MA alignment insight
+        if ma_levels:
+            above_mas = sum(1 for v in ma_levels.values() if current_price > v)
+            total_mas = len(ma_levels)
+            if above_mas == total_mas:
+                insights.append(
+                    "Price above all key MAs (20/50/200) - strong bullish structure."
+                )
+            elif above_mas == 0:
+                insights.append(
+                    "Price below all key MAs (20/50/200) - bearish structure."
+                )
+            else:
+                insights.append(
+                    f"Price above {above_mas}/{total_mas} key MAs - mixed signals."
+                )
+
+        # Risk/Reward insight
+        if nearest_support and nearest_resistance:
+            support_dist = abs(current_price - nearest_support["price"])
+            resistance_dist = abs(nearest_resistance["price"] - current_price)
+
+            if resistance_dist > 0:
+                rr_ratio = support_dist / resistance_dist
+                if rr_ratio < 0.5:
+                    insights.append(
+                        f"Risk/Reward favorable for longs (R:R = 1:{1/rr_ratio:.1f})."
+                    )
+                elif rr_ratio > 2:
+                    insights.append(
+                        f"Risk/Reward unfavorable for longs (R:R = 1:{1/rr_ratio:.1f}). "
+                        "Consider waiting for better entry."
+                    )
+
+        return insights
 
 
 # ============================================================================
