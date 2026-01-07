@@ -338,6 +338,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "DOJI",
                     "signal": "NEUTRAL",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "Indecision candle - open and close nearly equal",
                     "trading_hint": "Wait for next candle confirmation before trading"
@@ -352,6 +353,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "HAMMER",
                     "signal": "BULLISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "Bullish reversal - rejection of lower prices",
                     "trading_hint": "Potential long entry if confirmed by bullish candle"
@@ -366,6 +368,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "SHOOTING_STAR",
                     "signal": "BEARISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "Bearish reversal - rejection of higher prices",
                     "trading_hint": "Potential short entry if confirmed by bearish candle"
@@ -380,6 +383,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "BULLISH_ENGULFING",
                     "signal": "BULLISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "Strong bullish reversal - buyers overwhelm sellers",
                     "trading_hint": "Consider long entry with stop below engulfing low"
@@ -394,6 +398,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "BEARISH_ENGULFING",
                     "signal": "BEARISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "Strong bearish reversal - sellers overwhelm buyers",
                     "trading_hint": "Consider short entry with stop above engulfing high"
@@ -412,6 +417,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "MORNING_STAR",
                     "signal": "BULLISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "3-candle bullish reversal - trend exhaustion + reversal",
                     "trading_hint": "Strong buy signal, enter long with stop below star low"
@@ -430,6 +436,7 @@ class DetectChartPatternsTool(BaseTool):
                     "type": "EVENING_STAR",
                     "signal": "BEARISH",
                     "date": date,
+                    "price_at_signal": round(c, 2),
                     "confidence": confidence,
                     "description": "3-candle bearish reversal - trend exhaustion + reversal",
                     "trading_hint": "Strong sell signal, enter short with stop above star high"
@@ -848,6 +855,8 @@ class DetectChartPatternsTool(BaseTool):
             lines.append(f"  Pattern: {recent_signal['type']}")
             lines.append(f"  Signal: {recent_signal['signal']}")
             lines.append(f"  Date: {recent_signal['date']}")
+            if recent_signal.get('price_at_signal'):
+                lines.append(f"  Price at Signal: ${recent_signal['price_at_signal']}")
             lines.append(f"  Confidence: {recent_signal['confidence']}%")
             lines.append(f"  Description: {recent_signal['description']}")
             lines.append(f"  Trading Hint: {recent_signal['trading_hint']}")
@@ -861,8 +870,9 @@ class DetectChartPatternsTool(BaseTool):
         if bullish_patterns:
             lines.append("🟢 RECENT BULLISH PATTERNS:")
             for p in bullish_patterns[-5:]:
+                price_info = f" @ ${p['price_at_signal']}" if p.get('price_at_signal') else ""
                 lines.append(
-                    f"  [{p['date']}] {p['type']} ({p['confidence']}% confidence)"
+                    f"  [{p['date']}] {p['type']}{price_info} ({p['confidence']}% confidence)"
                 )
             lines.append("")
 
@@ -871,8 +881,9 @@ class DetectChartPatternsTool(BaseTool):
         if bearish_patterns:
             lines.append("🔴 RECENT BEARISH PATTERNS:")
             for p in bearish_patterns[-5:]:
+                price_info = f" @ ${p['price_at_signal']}" if p.get('price_at_signal') else ""
                 lines.append(
-                    f"  [{p['date']}] {p['type']} ({p['confidence']}% confidence)"
+                    f"  [{p['date']}] {p['type']}{price_info} ({p['confidence']}% confidence)"
                 )
             lines.append("")
 

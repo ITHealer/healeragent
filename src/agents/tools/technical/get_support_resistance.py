@@ -301,19 +301,33 @@ class GetSupportResistanceTool(BaseTool):
         latest_date = historical_data[-1].get("date", "N/A")
 
         # 1. Calculate Pivot Points (from yesterday's data)
+        pivot_data_date = historical_data[-2].get("date", "N/A")  # Yesterday's date
         pivot_points = self._calculate_pivot_points(
             high=highs[-2],
             low=lows[-2],
-            close=closes[-2]
+            close=closes[-2],
+            data_date=pivot_data_date
         )
 
-        # 2. Find Swing Highs/Lows for Fibonacci
-        swing_highs = self._find_swing_highs(highs)
-        swing_lows = self._find_swing_lows(lows)
+        # 2. Find Swing Highs/Lows for Fibonacci (with dates)
+        swing_highs = self._find_swing_highs(highs, historical_data)
+        swing_lows = self._find_swing_lows(lows, historical_data)
 
-        # Get recent swing high and low for Fibonacci
+        # Get recent swing high and low for Fibonacci (with dates)
+        # Find the high and low in the last 30 days with their dates
+        recent_30_days = historical_data[-30:] if len(historical_data) >= 30 else historical_data
+
         recent_high = max(highs[-30:]) if len(highs) >= 30 else max(highs)
         recent_low = min(lows[-30:]) if len(lows) >= 30 else min(lows)
+
+        # Find dates for the high and low
+        recent_high_date = "N/A"
+        recent_low_date = "N/A"
+        for d in recent_30_days:
+            if float(d['high']) == recent_high:
+                recent_high_date = d.get("date", "N/A")
+            if float(d['low']) == recent_low:
+                recent_low_date = d.get("date", "N/A")
 
         # Determine trend direction
         if current_price > (recent_high + recent_low) / 2:
@@ -321,11 +335,13 @@ class GetSupportResistanceTool(BaseTool):
         else:
             trend_direction = "DOWN"
 
-        # 3. Calculate Fibonacci Retracement
+        # 3. Calculate Fibonacci Retracement (with anchor dates)
         fibonacci = self._calculate_fibonacci_retracement(
             swing_high=recent_high,
             swing_low=recent_low,
-            trend_direction=trend_direction
+            trend_direction=trend_direction,
+            swing_high_date=recent_high_date,
+            swing_low_date=recent_low_date
         )
 
         # 4. Calculate Key Moving Averages
@@ -341,12 +357,13 @@ class GetSupportResistanceTool(BaseTool):
             {"price": pivot_points['r3'], "type": "Pivot R3", "strength": 0.4}
         ])
         
-        # Add swing highs as resistance
+        # Add swing highs as resistance (now with dates)
         for swing_high in swing_highs:
-            if swing_high > current_price:
+            if swing_high["price"] > current_price:
                 all_resistances.append({
-                    "price": swing_high,
+                    "price": swing_high["price"],
                     "type": "Swing High",
+                    "date": swing_high["date"],
                     "strength": 0.7
                 })
         
@@ -376,12 +393,13 @@ class GetSupportResistanceTool(BaseTool):
             {"price": pivot_points['s3'], "type": "Pivot S3", "strength": 0.4}
         ])
         
-        # Add swing lows as support
+        # Add swing lows as support (now with dates)
         for swing_low in swing_lows:
-            if swing_low < current_price:
+            if swing_low["price"] < current_price:
                 all_supports.append({
-                    "price": swing_low,
+                    "price": swing_low["price"],
                     "type": "Swing Low",
+                    "date": swing_low["date"],
                     "strength": 0.7
                 })
         
@@ -450,19 +468,31 @@ class GetSupportResistanceTool(BaseTool):
         self,
         high: float,
         low: float,
-        close: float
-    ) -> Dict[str, float]:
-        """Calculate classic pivot points"""
+        close: float,
+        data_date: str = "N/A"
+    ) -> Dict[str, Any]:
+        """
+        Calculate classic pivot points.
+
+        Args:
+            high: Previous day's high
+            low: Previous day's low
+            close: Previous day's close
+            data_date: Date of the OHLC data used (yesterday)
+
+        Returns:
+            Dict with pivot levels, timeframe, and data date for validation
+        """
         pivot = (high + low + close) / 3
-        
+
         r1 = 2 * pivot - low
         r2 = pivot + (high - low)
         r3 = high + 2 * (pivot - low)
-        
+
         s1 = 2 * pivot - high
         s2 = pivot - (high - low)
         s3 = low - 2 * (high - pivot)
-        
+
         return {
             "pivot": round(pivot, 2),
             "r1": round(r1, 2),
@@ -470,14 +500,19 @@ class GetSupportResistanceTool(BaseTool):
             "r3": round(r3, 2),
             "s1": round(s1, 2),
             "s2": round(s2, 2),
-            "s3": round(s3, 2)
+            "s3": round(s3, 2),
+            "timeframe": "Daily",
+            "data_date": data_date,
+            "calculation_note": f"Calculated from {data_date} OHLC data (H: ${high:.2f}, L: ${low:.2f}, C: ${close:.2f})"
         }
 
     def _calculate_fibonacci_retracement(
         self,
         swing_high: float,
         swing_low: float,
-        trend_direction: str = "UP"
+        trend_direction: str = "UP",
+        swing_high_date: str = "N/A",
+        swing_low_date: str = "N/A"
     ) -> Dict[str, Any]:
         """
         Calculate Fibonacci Retracement levels.
@@ -491,9 +526,11 @@ class GetSupportResistanceTool(BaseTool):
             swing_high: Recent swing high price
             swing_low: Recent swing low price
             trend_direction: "UP" or "DOWN"
+            swing_high_date: Date when swing high occurred
+            swing_low_date: Date when swing low occurred
 
         Returns:
-            Dict with Fibonacci levels and interpretation
+            Dict with Fibonacci levels, anchor points with dates, and interpretation
         """
         diff = swing_high - swing_low
 
@@ -526,31 +563,64 @@ class GetSupportResistanceTool(BaseTool):
         return {
             "levels": levels,
             "swing_high": round(swing_high, 2),
+            "swing_high_date": swing_high_date,
             "swing_low": round(swing_low, 2),
+            "swing_low_date": swing_low_date,
+            "anchor_range": f"{swing_low_date} to {swing_high_date}",
             "trend_direction": trend_direction,
             "key_level": key_level,
             "golden_ratio_level": levels["61.8%"],
             "interpretation": interpretation
         }
 
-    def _find_swing_highs(self, highs: np.ndarray, order: int = 5) -> List[float]:
-        """Find swing highs (local maxima)"""
+    def _find_swing_highs(
+        self,
+        highs: np.ndarray,
+        historical_data: List[Dict],
+        order: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Find swing highs (local maxima) with dates.
+
+        Returns:
+            List of dicts with 'price' and 'date' for each swing high
+        """
         # Find local maxima
         maxima_indices = argrelextrema(highs, np.greater, order=order)[0]
-        
-        # Get unique swing highs
-        swing_highs = [highs[i] for i in maxima_indices]
-        
+
+        # Get swing highs with dates
+        swing_highs = []
+        for i in maxima_indices:
+            swing_highs.append({
+                "price": float(highs[i]),
+                "date": historical_data[i].get("date", "N/A")
+            })
+
         return swing_highs[-10:]  # Last 10 swing highs
-    
-    def _find_swing_lows(self, lows: np.ndarray, order: int = 5) -> List[float]:
-        """Find swing lows (local minima)"""
+
+    def _find_swing_lows(
+        self,
+        lows: np.ndarray,
+        historical_data: List[Dict],
+        order: int = 5
+    ) -> List[Dict[str, Any]]:
+        """
+        Find swing lows (local minima) with dates.
+
+        Returns:
+            List of dicts with 'price' and 'date' for each swing low
+        """
         # Find local minima
         minima_indices = argrelextrema(lows, np.less, order=order)[0]
-        
-        # Get unique swing lows
-        swing_lows = [lows[i] for i in minima_indices]
-        
+
+        # Get swing lows with dates
+        swing_lows = []
+        for i in minima_indices:
+            swing_lows.append({
+                "price": float(lows[i]),
+                "date": historical_data[i].get("date", "N/A")
+            })
+
         return swing_lows[-10:]  # Last 10 swing lows
     
     def _calculate_ma_levels(self, closes: np.ndarray) -> Dict[str, float]:
@@ -667,8 +737,10 @@ class GetSupportResistanceTool(BaseTool):
         lines.append("")
 
         # Pivot Points
-        lines.append("🎯 PIVOT POINTS (Yesterday's OHLC):")
+        lines.append("🎯 PIVOT POINTS (Daily):")
         if pivot_points:
+            data_date = pivot_points.get('data_date', 'N/A')
+            lines.append(f"  Data Source: {data_date} OHLC")
             lines.append(f"  R3: ${pivot_points.get('r3', 0):,.2f}")
             lines.append(f"  R2: ${pivot_points.get('r2', 0):,.2f}")
             lines.append(f"  R1: ${pivot_points.get('r1', 0):,.2f}")
@@ -683,8 +755,15 @@ class GetSupportResistanceTool(BaseTool):
         if fibonacci:
             fib_levels = fibonacci.get("levels", {})
             trend = fibonacci.get("trend_direction", "N/A")
+            swing_high = fibonacci.get('swing_high', 0)
+            swing_low = fibonacci.get('swing_low', 0)
+            swing_high_date = fibonacci.get('swing_high_date', 'N/A')
+            swing_low_date = fibonacci.get('swing_low_date', 'N/A')
+
             lines.append(f"  Trend: {trend}")
-            lines.append(f"  Swing Range: ${fibonacci.get('swing_low', 0):,.2f} - ${fibonacci.get('swing_high', 0):,.2f}")
+            lines.append(f"  Anchor High: ${swing_high:,.2f} ({swing_high_date})")
+            lines.append(f"  Anchor Low:  ${swing_low:,.2f} ({swing_low_date})")
+            lines.append(f"  Anchor Range: {swing_low_date} to {swing_high_date}")
 
             # Show key levels
             for key in ["23.6%", "38.2%", "50.0%", "61.8%", "78.6%"]:
@@ -699,8 +778,9 @@ class GetSupportResistanceTool(BaseTool):
         lines.append("🔴 RESISTANCE LEVELS (Above Current Price):")
         if resistance_levels:
             for r in resistance_levels[:5]:
+                date_info = f" [{r['date']}]" if r.get('date') else ""
                 lines.append(
-                    f"  ${r['price']:,.2f} ({r['type']}) - {r['distance_pct']:.1f}% away"
+                    f"  ${r['price']:,.2f} ({r['type']}{date_info}) - {r['distance_pct']:.1f}% away"
                 )
         else:
             lines.append("  No resistance levels identified")
@@ -710,8 +790,9 @@ class GetSupportResistanceTool(BaseTool):
         lines.append("🟢 SUPPORT LEVELS (Below Current Price):")
         if support_levels:
             for s in support_levels[:5]:
+                date_info = f" [{s['date']}]" if s.get('date') else ""
                 lines.append(
-                    f"  ${s['price']:,.2f} ({s['type']}) - {s['distance_pct']:.1f}% away"
+                    f"  ${s['price']:,.2f} ({s['type']}{date_info}) - {s['distance_pct']:.1f}% away"
                 )
         else:
             lines.append("  No support levels identified")
