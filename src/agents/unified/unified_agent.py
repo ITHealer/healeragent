@@ -277,6 +277,8 @@ class UnifiedAgent(LoggerMixin):
         conversation_summary: Optional[str] = None,
         enable_reasoning: bool = True,
         images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run agent with streaming.
@@ -288,8 +290,20 @@ class UnifiedAgent(LoggerMixin):
         - content: Response content chunks
         - done: Completion
         - error: Error occurred
+
+        Args:
+            model_name: Override model for final response (uses instance default if not provided)
+            provider_type: Override provider (uses instance default if not provided)
         """
         flow_id = f"UA-{uuid.uuid4().hex[:8]}"
+
+        # Resolve effective model/provider from user input or instance defaults
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+
+        self.logger.debug(
+            f"[{flow_id}] Using model={effective_model}, provider={effective_provider}"
+        )
 
         try:
             # Emit routing decision
@@ -328,13 +342,15 @@ class UnifiedAgent(LoggerMixin):
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
                 ):
                     yield {"type": "content", "content": chunk}
 
                 yield {"type": "done", "total_turns": 1, "total_tool_calls": 0}
                 return
 
-            # Route to streaming strategy
+            # Route to streaming strategy (pass effective model/provider)
             if router_decision.complexity == Complexity.SIMPLE:
                 async for event in self._stream_simple(
                     query=query,
@@ -349,6 +365,8 @@ class UnifiedAgent(LoggerMixin):
                     conversation_summary=conversation_summary,
                     enable_reasoning=enable_reasoning,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
                 ):
                     yield event
 
@@ -366,6 +384,8 @@ class UnifiedAgent(LoggerMixin):
                     conversation_summary=conversation_summary,
                     enable_reasoning=enable_reasoning,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
                 ):
                     yield event
 
@@ -383,6 +403,8 @@ class UnifiedAgent(LoggerMixin):
                     conversation_summary=conversation_summary,
                     enable_reasoning=enable_reasoning,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
                 ):
                     yield event
 
@@ -491,8 +513,12 @@ class UnifiedAgent(LoggerMixin):
         conversation_summary: Optional[str],
         enable_reasoning: bool,
         images: Optional[List[Any]],
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream simple strategy."""
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
         symbols = classification.symbols if classification else []
         num_symbols = len(symbols)
 
@@ -586,9 +612,9 @@ class UnifiedAgent(LoggerMixin):
         )
 
         async for chunk in self.llm_provider.stream_response(
-            model_name=self.model_name,
+            model_name=effective_model,
             messages=messages,
-            provider_type=self.provider_type,
+            provider_type=effective_provider,
             api_key=self.api_key,
             max_tokens=2000,
             temperature=0.3,
@@ -758,8 +784,12 @@ class UnifiedAgent(LoggerMixin):
         conversation_summary: Optional[str],
         enable_reasoning: bool,
         images: Optional[List[Any]],
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream iterative strategy."""
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
         max_turns = router_decision.suggested_max_turns
 
         if enable_reasoning:
@@ -799,8 +829,12 @@ class UnifiedAgent(LoggerMixin):
                     "content": f"Turn {turn_num}: Deciding next action",
                 }
 
-            # Call LLM
-            response = await self._call_llm_with_tools(messages, tools, flow_id)
+            # Call LLM (using effective model)
+            response = await self._call_llm_with_tools(
+                messages, tools, flow_id,
+                model_name=effective_model,
+                provider_type=effective_provider,
+            )
 
             tool_calls = self._parse_tool_calls(response)
             assistant_content = response.get("content") or ""
@@ -816,9 +850,9 @@ class UnifiedAgent(LoggerMixin):
                     }
 
                 async for chunk in self.llm_provider.stream_response(
-                    model_name=self.model_name,
+                    model_name=effective_model,
                     messages=messages,
-                    provider_type=self.provider_type,
+                    provider_type=effective_provider,
                     api_key=self.api_key,
                     max_tokens=4000,
                     temperature=0.3,
@@ -909,9 +943,9 @@ class UnifiedAgent(LoggerMixin):
         })
 
         async for chunk in self.llm_provider.stream_response(
-            model_name=self.model_name,
+            model_name=effective_model,
             messages=messages,
-            provider_type=self.provider_type,
+            provider_type=effective_provider,
             api_key=self.api_key,
             max_tokens=4000,
             temperature=0.3,
@@ -979,6 +1013,8 @@ class UnifiedAgent(LoggerMixin):
         conversation_summary: Optional[str],
         enable_reasoning: bool,
         images: Optional[List[Any]],
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Stream complex strategy."""
         if enable_reasoning:
@@ -1004,6 +1040,8 @@ class UnifiedAgent(LoggerMixin):
             conversation_summary=conversation_summary,
             enable_reasoning=enable_reasoning,
             images=images,
+            model_name=model_name,
+            provider_type=provider_type,
         ):
             yield event
 
@@ -1066,8 +1104,13 @@ class UnifiedAgent(LoggerMixin):
         core_memory: Optional[str],
         conversation_summary: Optional[str],
         images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response without tools."""
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+
         messages = self._build_no_tools_messages(
             query=query,
             classification=classification,
@@ -1079,9 +1122,9 @@ class UnifiedAgent(LoggerMixin):
         )
 
         async for chunk in self.llm_provider.stream_response(
-            model_name=self.model_name,
+            model_name=effective_model,
             messages=messages,
-            provider_type=self.provider_type,
+            provider_type=effective_provider,
             api_key=self.api_key,
             max_tokens=2000,
             temperature=0.7,
@@ -1305,13 +1348,18 @@ class UnifiedAgent(LoggerMixin):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         flow_id: str,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Call LLM with tool definitions."""
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+
         try:
             response = await self.llm_provider.generate_response(
-                model_name=self.model_name,
+                model_name=effective_model,
                 messages=messages,
-                provider_type=self.provider_type,
+                provider_type=effective_provider,
                 api_key=self.api_key,
                 tools=tools,
                 tool_choice="auto",

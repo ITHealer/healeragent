@@ -1470,6 +1470,7 @@ async def stream_chat_v3(
             unified_agent = _get_unified_agent()
 
             # Stream events from Unified Agent
+            # Pass user-provided model_name for final response generation
             async for event in unified_agent.run_stream(
                 query=query,
                 router_decision=router_decision,
@@ -1480,6 +1481,8 @@ async def stream_chat_v3(
                 session_id=session_id,
                 enable_reasoning=data.enable_thinking,
                 images=processed_images,
+                model_name=data.model_name,
+                provider_type=data.provider_type,
             ):
                 event_type = event.get("type", "unknown")
 
