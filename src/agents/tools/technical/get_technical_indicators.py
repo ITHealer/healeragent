@@ -26,6 +26,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
     - SMA (20,50,200): Trend direction and support/resistance
     - EMA (12,26): Faster trend detection
     - Bollinger Bands (20,2): Volatility and price channels
+    - VWAP: Volume Weighted Average Price (institutional benchmark)
+    - Stochastic (14,3,3): Momentum oscillator
+    - OBV: On-Balance Volume for trend confirmation
+    - ADX (14): Trend strength measurement
 
     Features:
     - Redis caching for historical data (5-min TTL for intraday freshness)
@@ -34,7 +38,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
-    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB"]
+    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX"]
 
     # Cache TTL settings
     CACHE_TTL_HISTORICAL = 300   # 5 minutes for historical OHLCV data
@@ -49,7 +53,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
         "RSI_14": "RSI",
         "RSI14": "RSI",
         "SIMPLE_MOVING_AVERAGE": "SMA",
-        "EXPONENTIAL_MOVING_AVERAGE": "EMA"
+        "EXPONENTIAL_MOVING_AVERAGE": "EMA",
+        "STOCHASTIC": "STOCH",
+        "STOCHASTIC_OSCILLATOR": "STOCH",
+        "SLOW_STOCHASTIC": "STOCH",
+        "ON_BALANCE_VOLUME": "OBV",
+        "VOLUME_WEIGHTED_AVERAGE_PRICE": "VWAP",
+        "AVERAGE_DIRECTIONAL_INDEX": "ADX"
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -78,7 +88,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "MACD (12,26,9): Trend momentum with signal line crossovers",
                 "SMA (20,50,200): Short/medium/long-term trend direction",
                 "EMA (12,26): Exponential moving averages for faster signals",
-                "Bollinger Bands (20,2): Volatility channels and breakout detection"
+                "Bollinger Bands (20,2): Volatility channels and breakout detection",
+                "VWAP: Volume Weighted Average Price (institutional benchmark)",
+                "Stochastic (14,3,3): Momentum oscillator with %K and %D",
+                "OBV: On-Balance Volume for volume-price trend confirmation",
+                "ADX (14): Average Directional Index for trend strength"
             ],
             limitations=[
                 "Daily timeframe only (EOD data)",
@@ -110,9 +124,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 ToolParameter(
                     name="indicators",
                     type="array",
-                    description="Indicators to calculate: RSI, MACD, SMA, EMA, BB (default: all)",
+                    description="Indicators to calculate: RSI, MACD, SMA, EMA, BB, VWAP, STOCH, OBV, ADX (default: all)",
                     required=False,
-                    default=["RSI", "MACD", "SMA", "EMA", "BB"]
+                    default=["RSI", "MACD", "SMA", "EMA", "BB", "VWAP", "STOCH", "OBV", "ADX"]
                 )
             ],
             returns={
@@ -295,6 +309,30 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 bb_result = self._calculate_bollinger_bands(df, current_price)
                 result_indicators["bollinger_bands"] = bb_result
                 indicators_calculated.append("BB")
+
+            # --- VWAP (Volume Weighted Average Price) ---
+            if "VWAP" in indicators:
+                vwap_result = self._calculate_vwap(df, current_price)
+                result_indicators["vwap"] = vwap_result
+                indicators_calculated.append("VWAP")
+
+            # --- Stochastic Oscillator (14, 3, 3) ---
+            if "STOCH" in indicators:
+                stoch_result = self._calculate_stochastic(df)
+                result_indicators["stochastic"] = stoch_result
+                indicators_calculated.append("STOCH")
+
+            # --- OBV (On-Balance Volume) ---
+            if "OBV" in indicators:
+                obv_result = self._calculate_obv(df)
+                result_indicators["obv"] = obv_result
+                indicators_calculated.append("OBV")
+
+            # --- ADX (Average Directional Index) ---
+            if "ADX" in indicators:
+                adx_result = self._calculate_adx(df)
+                result_indicators["adx"] = adx_result
+                indicators_calculated.append("ADX")
 
             # ════════════════════════════════════════════════════════════
             # STEP 6: Generate Signals
@@ -653,6 +691,247 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "description": f"BB: Upper={current_upper:.2f}, Middle={current_middle:.2f}, Lower={current_lower:.2f}, %B={percent_b:.2f}"
         }
 
+    def _calculate_vwap(self, df: pd.DataFrame, current_price: float) -> Dict[str, Any]:
+        """
+        VWAP (Volume Weighted Average Price)
+
+        Formula:
+            VWAP = Cumulative(Typical Price × Volume) / Cumulative(Volume)
+            Typical Price = (High + Low + Close) / 3
+
+        Note: For daily data, we calculate cumulative VWAP over the analysis period.
+        Institutional traders use VWAP as a benchmark - price above VWAP is bullish.
+
+        Interpretation:
+            Price > VWAP: Bullish (buyers in control)
+            Price < VWAP: Bearish (sellers in control)
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+        volume = df['volume']
+
+        # Typical Price
+        tp = (high + low + close) / 3
+
+        # Cumulative VWAP
+        cumulative_tp_vol = (tp * volume).cumsum()
+        cumulative_vol = volume.cumsum()
+
+        vwap = cumulative_tp_vol / cumulative_vol.replace(0, np.nan)
+        current_vwap = float(vwap.iloc[-1])
+
+        # Price vs VWAP
+        distance_pct = ((current_price - current_vwap) / current_vwap) * 100 if current_vwap > 0 else 0
+        position = "above" if current_price > current_vwap else "below"
+
+        return {
+            "value": round(current_vwap, 2),
+            "price_vs_vwap": position,
+            "distance_pct": round(distance_pct, 2),
+            "signal": "bullish" if position == "above" else "bearish",
+            "description": f"VWAP = ${current_vwap:.2f}, Price {position} ({distance_pct:+.2f}%)"
+        }
+
+    def _calculate_stochastic(
+        self,
+        df: pd.DataFrame,
+        k_period: int = 14,
+        d_period: int = 3,
+        smooth_k: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Stochastic Oscillator (Slow Stochastic)
+
+        Formula:
+            %K = 100 × (Close - Lowest Low) / (Highest High - Lowest Low)
+            %D = 3-period SMA of %K
+
+        For Slow Stochastic: %K is smoothed with 3-period SMA first.
+
+        Interpretation:
+            > 80: Overbought (potential reversal down)
+            < 20: Oversold (potential reversal up)
+            %K crosses above %D: Buy signal
+            %K crosses below %D: Sell signal
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        # Lowest low and highest high over k_period
+        lowest_low = low.rolling(window=k_period).min()
+        highest_high = high.rolling(window=k_period).max()
+
+        # Guard against division by zero
+        denominator = highest_high - lowest_low
+        denominator = denominator.replace(0, np.nan)
+
+        # Fast %K
+        fast_k = 100 * (close - lowest_low) / denominator
+
+        # Slow %K (smoothed)
+        slow_k = fast_k.rolling(window=smooth_k).mean()
+
+        # %D (signal line)
+        slow_d = slow_k.rolling(window=d_period).mean()
+
+        current_k = float(slow_k.iloc[-1])
+        current_d = float(slow_d.iloc[-1])
+        prev_k = float(slow_k.iloc[-2]) if len(slow_k) > 1 else current_k
+        prev_d = float(slow_d.iloc[-2]) if len(slow_d) > 1 else current_d
+
+        # Determine signal
+        if current_k > 80:
+            signal = "overbought"
+        elif current_k < 20:
+            signal = "oversold"
+        elif current_k > current_d and prev_k <= prev_d:
+            signal = "bullish_crossover"
+        elif current_k < current_d and prev_k >= prev_d:
+            signal = "bearish_crossover"
+        else:
+            signal = "neutral"
+
+        return {
+            "k": round(current_k, 2),
+            "d": round(current_d, 2),
+            "parameters": f"({k_period}, {d_period}, {smooth_k})",
+            "signal": signal,
+            "description": f"Stoch %K={current_k:.1f}, %D={current_d:.1f} ({signal})"
+        }
+
+    def _calculate_obv(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """
+        OBV (On-Balance Volume)
+
+        Formula:
+            If Close > Close(prev): OBV = OBV(prev) + Volume
+            If Close < Close(prev): OBV = OBV(prev) - Volume
+            If Close = Close(prev): OBV = OBV(prev)
+
+        Interpretation:
+            OBV rising with price: Confirms uptrend (accumulation)
+            OBV falling with price: Confirms downtrend (distribution)
+            OBV diverging from price: Potential trend reversal
+        """
+        close = df['close']
+        volume = df['volume']
+
+        obv = pd.Series(index=close.index, dtype=float)
+        obv.iloc[0] = volume.iloc[0]
+
+        for i in range(1, len(close)):
+            if close.iloc[i] > close.iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] + volume.iloc[i]
+            elif close.iloc[i] < close.iloc[i-1]:
+                obv.iloc[i] = obv.iloc[i-1] - volume.iloc[i]
+            else:
+                obv.iloc[i] = obv.iloc[i-1]
+
+        current_obv = float(obv.iloc[-1])
+
+        # Trend detection using 20-period SMA
+        obv_sma = obv.rolling(window=20).mean()
+        trend = "increasing" if current_obv > obv_sma.iloc[-1] else "decreasing"
+
+        # Check OBV vs price trend (divergence detection)
+        price_change = close.iloc[-1] - close.iloc[-20] if len(close) > 20 else 0
+        obv_change = obv.iloc[-1] - obv.iloc[-20] if len(obv) > 20 else 0
+
+        if price_change > 0 and obv_change < 0:
+            divergence = "bearish_divergence"
+        elif price_change < 0 and obv_change > 0:
+            divergence = "bullish_divergence"
+        else:
+            divergence = "none"
+
+        return {
+            "value": int(current_obv),
+            "trend": trend,
+            "divergence": divergence,
+            "signal": "bullish" if trend == "increasing" else "bearish",
+            "description": f"OBV trend: {trend}, divergence: {divergence}"
+        }
+
+    def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> Dict[str, Any]:
+        """
+        ADX (Average Directional Index)
+
+        Formula:
+            +DM = High - High(prev) if positive and > -DM, else 0
+            -DM = Low(prev) - Low if positive and > +DM, else 0
+            TR = max(High-Low, |High-Close(prev)|, |Low-Close(prev)|)
+            +DI = 100 × EMA(+DM) / EMA(TR)
+            -DI = 100 × EMA(-DM) / EMA(TR)
+            DX = 100 × |+DI - -DI| / (+DI + -DI)
+            ADX = EMA(DX)
+
+        Interpretation:
+            ADX < 20: Weak trend (ranging market)
+            ADX 20-40: Developing trend
+            ADX 40-60: Strong trend
+            ADX > 60: Very strong trend
+            +DI > -DI: Bullish trend
+            +DI < -DI: Bearish trend
+        """
+        high = df['high']
+        low = df['low']
+        close = df['close']
+
+        # Calculate +DM and -DM
+        plus_dm = high.diff()
+        minus_dm = -low.diff()
+
+        # Apply conditions
+        plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0)
+        minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0)
+
+        # True Range
+        tr1 = high - low
+        tr2 = (high - close.shift(1)).abs()
+        tr3 = (low - close.shift(1)).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+        # Smoothed values using EMA
+        atr = tr.ewm(span=period, adjust=False).mean()
+        plus_di = 100 * plus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+        minus_di = 100 * minus_dm.ewm(span=period, adjust=False).mean() / atr.replace(0, np.nan)
+
+        # DX and ADX
+        di_sum = plus_di + minus_di
+        di_diff = (plus_di - minus_di).abs()
+        dx = 100 * di_diff / di_sum.replace(0, np.nan)
+        adx = dx.ewm(span=period, adjust=False).mean()
+
+        current_adx = float(adx.iloc[-1])
+        current_plus_di = float(plus_di.iloc[-1])
+        current_minus_di = float(minus_di.iloc[-1])
+
+        # Determine trend strength
+        if current_adx < 20:
+            strength = "weak"
+        elif current_adx < 40:
+            strength = "developing"
+        elif current_adx < 60:
+            strength = "strong"
+        else:
+            strength = "very_strong"
+
+        # Trend direction
+        direction = "bullish" if current_plus_di > current_minus_di else "bearish"
+
+        return {
+            "value": round(current_adx, 2),
+            "plus_di": round(current_plus_di, 2),
+            "minus_di": round(current_minus_di, 2),
+            "period": period,
+            "strength": strength,
+            "direction": direction,
+            "signal": f"{strength}_{direction}",
+            "description": f"ADX={current_adx:.1f} ({strength}), +DI={current_plus_di:.1f}, -DI={current_minus_di:.1f} ({direction})"
+        }
+
     # ════════════════════════════════════════════════════════════════════════
     # SIGNAL GENERATION
     # ════════════════════════════════════════════════════════════════════════
@@ -760,6 +1039,75 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     "description": f"Bollinger Bands squeeze (bandwidth={bb['bandwidth_pct']:.1f}%) - potential breakout"
                 })
 
+        # VWAP Signals
+        if "vwap" in indicators:
+            vwap = indicators["vwap"]
+            signals.append({
+                "type": f"VWAP_{'BULLISH' if vwap['signal'] == 'bullish' else 'BEARISH'}",
+                "strength": "moderate",
+                "description": f"Price {vwap['price_vs_vwap']} VWAP ({vwap['distance_pct']:+.1f}%) - institutional benchmark"
+            })
+
+        # Stochastic Signals
+        if "stochastic" in indicators:
+            stoch = indicators["stochastic"]
+            if stoch["signal"] == "overbought":
+                signals.append({
+                    "type": "STOCH_OVERBOUGHT",
+                    "strength": "strong",
+                    "description": f"Stochastic at {stoch['k']:.1f} - stock may be overbought"
+                })
+            elif stoch["signal"] == "oversold":
+                signals.append({
+                    "type": "STOCH_OVERSOLD",
+                    "strength": "strong",
+                    "description": f"Stochastic at {stoch['k']:.1f} - stock may be oversold"
+                })
+            elif stoch["signal"] == "bullish_crossover":
+                signals.append({
+                    "type": "STOCH_BULLISH_CROSS",
+                    "strength": "strong",
+                    "description": "Stochastic %K crossed above %D - bullish signal"
+                })
+            elif stoch["signal"] == "bearish_crossover":
+                signals.append({
+                    "type": "STOCH_BEARISH_CROSS",
+                    "strength": "strong",
+                    "description": "Stochastic %K crossed below %D - bearish signal"
+                })
+
+        # OBV Signals
+        if "obv" in indicators:
+            obv = indicators["obv"]
+            if obv["divergence"] == "bullish_divergence":
+                signals.append({
+                    "type": "OBV_BULLISH_DIVERGENCE",
+                    "strength": "strong",
+                    "description": "OBV rising while price falling - potential bullish reversal"
+                })
+            elif obv["divergence"] == "bearish_divergence":
+                signals.append({
+                    "type": "OBV_BEARISH_DIVERGENCE",
+                    "strength": "strong",
+                    "description": "OBV falling while price rising - potential bearish reversal"
+                })
+
+        # ADX Signals
+        if "adx" in indicators:
+            adx = indicators["adx"]
+            if adx["strength"] in ["strong", "very_strong"]:
+                signals.append({
+                    "type": f"ADX_STRONG_TREND_{adx['direction'].upper()}",
+                    "strength": "strong",
+                    "description": f"ADX at {adx['value']:.1f} - {adx['strength'].replace('_', ' ')} {adx['direction']} trend"
+                })
+            elif adx["strength"] == "weak":
+                signals.append({
+                    "type": "ADX_WEAK_TREND",
+                    "strength": "moderate",
+                    "description": f"ADX at {adx['value']:.1f} - ranging market, no clear trend"
+                })
+
         return signals
 
     # ════════════════════════════════════════════════════════════════════════
@@ -835,6 +1183,45 @@ class GetTechnicalIndicatorsTool(BaseTool):
             lines.append(f"  Lower: ${bb['lower']:,.2f}")
             lines.append(f"  %B: {bb['percent_b']:.2f} | Bandwidth: {bb['bandwidth_pct']:.1f}%")
             lines.append(f"  Position: {bb['position'].upper().replace('_', ' ')}")
+
+        # VWAP Section
+        if "vwap" in indicators:
+            vwap = indicators["vwap"]
+            lines.append("")
+            lines.append(f"VWAP (Volume Weighted Average Price):")
+            lines.append(f"  Value: ${vwap['value']:,.2f}")
+            lines.append(f"  Price vs VWAP: {vwap['price_vs_vwap'].upper()} ({vwap['distance_pct']:+.2f}%)")
+            lines.append(f"  Note: Institutional benchmark - price above VWAP = bullish")
+
+        # Stochastic Section
+        if "stochastic" in indicators:
+            stoch = indicators["stochastic"]
+            lines.append("")
+            lines.append(f"Stochastic Oscillator {stoch['parameters']}:")
+            lines.append(f"  %K: {stoch['k']:.1f}")
+            lines.append(f"  %D: {stoch['d']:.1f}")
+            lines.append(f"  Signal: {stoch['signal'].upper().replace('_', ' ')}")
+            lines.append(f"  Interpretation: >80 overbought, <20 oversold")
+
+        # OBV Section
+        if "obv" in indicators:
+            obv = indicators["obv"]
+            lines.append("")
+            lines.append(f"OBV (On-Balance Volume):")
+            lines.append(f"  Value: {obv['value']:,}")
+            lines.append(f"  Trend: {obv['trend'].upper()}")
+            if obv['divergence'] != "none":
+                lines.append(f"  Divergence: {obv['divergence'].upper().replace('_', ' ')}")
+
+        # ADX Section
+        if "adx" in indicators:
+            adx = indicators["adx"]
+            lines.append("")
+            lines.append(f"ADX (Average Directional Index):")
+            lines.append(f"  ADX: {adx['value']:.1f} ({adx['strength'].upper().replace('_', ' ')})")
+            lines.append(f"  +DI: {adx['plus_di']:.1f} | -DI: {adx['minus_di']:.1f}")
+            lines.append(f"  Direction: {adx['direction'].upper()}")
+            lines.append(f"  Interpretation: <20 weak, 20-40 developing, >40 strong trend")
 
         # Signals Summary
         if signals:
