@@ -494,6 +494,8 @@ class NormalModeChatHandler(LoggerMixin):
                     enable_llm_events=enable_llm_events,
                     charts=charts_data,
                     images=images,
+                    model_name=model,  # Pass user-provided model
+                    provider_type=provider,  # Pass user-provided provider
                 ):
                     # Collect content for saving to database
                     if event.get("type") == "content":
@@ -1257,6 +1259,8 @@ class NormalModeChatHandler(LoggerMixin):
         enable_llm_events: bool = True,
         charts: Optional[List[Dict[str, Any]]] = None,
         images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run the Normal Mode agent with TRUE STREAMING from LLM.
@@ -1283,6 +1287,7 @@ class NormalModeChatHandler(LoggerMixin):
 
         try:
             # Use run_stream for TRUE streaming from LLM
+            # Pass user-provided model_name/provider_type for final response
             async for event in self.agent.run_stream(
                 query=query,
                 classification=classification,
@@ -1295,6 +1300,8 @@ class NormalModeChatHandler(LoggerMixin):
                 enable_thinking=enable_thinking,
                 enable_llm_events=enable_llm_events,
                 images=images,
+                model_name=model_name,  # User-provided model for final response
+                provider_type=provider_type,  # User-provided provider
             ):
                 event_type = event.get("type", "")
 

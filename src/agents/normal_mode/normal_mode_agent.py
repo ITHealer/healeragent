@@ -422,6 +422,8 @@ class NormalModeAgent(LoggerMixin):
         enable_thinking: bool = True,
         enable_llm_events: bool = True,
         images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run the agent loop with streaming and thinking/reasoning output.
@@ -458,6 +460,15 @@ class NormalModeAgent(LoggerMixin):
         self._current_user_id = user_id
         self._current_session_id = session_id
 
+        # Resolve effective model/provider from user input or instance defaults
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+        effective_api_key = self.api_key
+
+        self.logger.debug(
+            f"[{flow_id}] Using model={effective_model}, provider={effective_provider}"
+        )
+
         try:
             # Emit initial thinking - analyzing query
             if enable_thinking:
@@ -487,6 +498,9 @@ class NormalModeAgent(LoggerMixin):
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -516,6 +530,9 @@ class NormalModeAgent(LoggerMixin):
                     core_memory=core_memory,
                     conversation_summary=conversation_summary,
                     images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                    api_key=effective_api_key,
                 ):
                     yield {"type": "content", "content": chunk}
 
@@ -556,11 +573,14 @@ class NormalModeAgent(LoggerMixin):
                         "phase": f"turn_{turn_num}_decision",
                     }
 
-                # Call LLM with tools
+                # Call LLM with tools (using user-provided model if available)
                 response = await self._call_llm_with_tools(
                     messages=messages,
                     tools=tools,
                     flow_id=flow_id,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                    api_key=effective_api_key,
                 )
 
                 tool_calls = self._parse_tool_calls(response)
@@ -587,10 +607,14 @@ class NormalModeAgent(LoggerMixin):
                     # Note: We ALWAYS call _stream_final_response even if assistant_content
                     # is empty, because some LLMs return empty content when not calling tools
                     # but we still need to generate a proper response.
+                    # Use user-provided model for final response
                     response_generated = False
                     async for chunk in self._stream_final_response(
                         messages=messages,
                         flow_id=flow_id,
+                        model_name=effective_model,
+                        provider_type=effective_provider,
+                        api_key=effective_api_key,
                     ):
                         response_generated = True
                         yield {"type": "content", "content": chunk}
@@ -763,18 +787,30 @@ class NormalModeAgent(LoggerMixin):
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         flow_id: str,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Call LLM with tool definitions.
 
         Uses OpenAI function calling format.
+
+        Args:
+            model_name: Override model (uses instance default if not provided)
+            provider_type: Override provider (uses instance default if not provided)
+            api_key: Override API key (uses instance default if not provided)
         """
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+        effective_api_key = api_key or self.api_key
+
         try:
             params = {
-                "model_name": self.model_name,
+                "model_name": effective_model,
                 "messages": messages,
-                "provider_type": self.provider_type,
-                "api_key": self.api_key,
+                "provider_type": effective_provider,
+                "api_key": effective_api_key,
                 "tools": tools,
                 "tool_choice": "auto",
                 "max_tokens": 4000,
@@ -922,13 +958,25 @@ class NormalModeAgent(LoggerMixin):
         self,
         messages: List[Dict[str, Any]],
         flow_id: str,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """
         Stream final response after tools have been executed.
 
         This enables TRUE streaming from the LLM instead of
         returning the complete response at once.
+
+        Args:
+            model_name: Override model (uses instance default if not provided)
+            provider_type: Override provider (uses instance default if not provided)
+            api_key: Override API key (uses instance default if not provided)
         """
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+        effective_api_key = api_key or self.api_key
+
         # Add instruction to synthesize if needed
         last_msg = messages[-1] if messages else {}
         if last_msg.get("role") == "tool":
@@ -942,10 +990,10 @@ class NormalModeAgent(LoggerMixin):
 
         try:
             async for chunk in self.llm_provider.stream_response(
-                model_name=self.model_name,
+                model_name=effective_model,
                 messages=messages,
-                provider_type=self.provider_type,
-                api_key=self.api_key,
+                provider_type=effective_provider,
+                api_key=effective_api_key,
                 max_tokens=4000,
                 temperature=0.3,
             ):
