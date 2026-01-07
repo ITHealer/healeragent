@@ -386,8 +386,8 @@ class BaseTool(ABC):
                 import re
                 pattern = param.pattern
                 if param.name == "symbol":
-                    # Standard stock symbol pattern: AAPL, BTC, GOOGL.L (London)
-                    pattern = r"^[A-Z0-9]{1,10}(\.[A-Z]{1,2})?$"
+                    # Standard stock symbol pattern: AAPL, BTC, GOOGL.L (London), BRK-A, BRK-B (with hyphen)
+                    pattern = r"^[A-Z0-9]{1,10}(-[A-Z0-9]{1,4})?(\.[A-Z]{1,2})?$"
 
                 if not re.match(pattern, str(value)):
                     errors.append(f"{param.name} must match pattern {pattern}, got {value}")
@@ -468,8 +468,10 @@ class BaseTool(ABC):
                 result.status = "partial"
                 result.metadata["validation_warning"] = "Missing expected fields"
             
+            # Use appropriate emoji based on status
+            status_emoji = "✅" if result.status == "success" else "⚠️" if result.status == "partial" else "❌"
             self.logger.info(
-                f"[{tool_name}] ✅ {result.status.upper()} ({elapsed_ms}ms)"
+                f"[{tool_name}] {status_emoji} {result.status.upper()} ({elapsed_ms}ms)"
             )
             
             return result
