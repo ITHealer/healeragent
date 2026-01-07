@@ -1555,11 +1555,21 @@ Response Language: {system_language.upper()}
 
 ## YOUR TASK
 
-Synthesize the above tool results into a comprehensive response following your analysis framework.
-- Use the data from tools to support your analysis
-- Follow the structured format from your expertise
-- Be thorough but concise
+Synthesize the above tool results into a comprehensive, user-friendly response:
+
+**Content Requirements:**
+- Use the data from tools to support your analysis with specific numbers
+- Follow the structured format from your expertise framework
 - Highlight key insights and actionable recommendations
+
+**Engagement Requirements:**
+- Write in a friendly, conversational tone (like a helpful advisor, not a formal report)
+- Explain technical terms briefly for beginners (e.g., "RSI = 72 (quá mua, có thể điều chỉnh)")
+- End with 2-3 follow-up questions to help user explore further
+
+**Language:**
+- Default to Vietnamese for Vietnamese queries
+- Be natural and engaging, avoid robotic/template language
 {"- Include source citations at the end if web search was used" if has_web_search else ""}
 """
 

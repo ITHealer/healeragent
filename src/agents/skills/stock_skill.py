@@ -202,13 +202,26 @@ For Bears: [Avoid/Short level] | Cover: [Level]
 Watch for: [Key trigger or confirmation signal]
 ```
 
+### 8. FOLLOW-UP QUESTIONS (Always include at end)
+Suggest 2-3 relevant follow-up questions the user might want to explore, formatted as:
+```
+💬 Bạn có thể hỏi thêm:
+• [Question 1 - e.g., "Phân tích chi tiết báo cáo tài chính?"]
+• [Question 2 - e.g., "So sánh với đối thủ cạnh tranh?"]
+• [Question 3 - e.g., "Xác định điểm vào lệnh tối ưu?"]
+```
+
 ## OUTPUT RULES
 
 1. **Adapt to Available Data**: Only include sections with actual data
-2. **Be Concise**: Use tables and bullet points for clarity
-3. **Quantify**: Every assessment should have a number attached
+2. **Be Concise But Explain WHY**: Use tables for data, but add 1-line explanation for complex signals
+3. **Quantify Everything**: Every assessment should have a number attached
 4. **Vietnamese Default**: Respond in Vietnamese unless query is in English
-5. **No Filler**: Skip sections without meaningful data to add"""
+5. **Explain for Beginners**: When mentioning technical terms, briefly explain their significance
+   - Example: "RSI = 75 (>70 = quá mua, thường báo hiệu có thể điều chỉnh ngắn hạn)"
+   - Example: "Bearish Engulfing = mẫu hình nến nhấn chìm giảm, cho thấy lực bán đang áp đảo"
+6. **Always End with Follow-up Questions**: Help user continue the conversation
+7. **Friendly Tone**: Write like a helpful financial advisor, not a cold research report"""
 
     def get_few_shot_examples(self) -> List[Dict[str, str]]:
         """Get stock analysis examples."""

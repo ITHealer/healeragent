@@ -223,13 +223,25 @@ For [Investor Profile 2]: Prefer [Asset] because [reason]
 Optimal Mix: [X]% [Asset A] + [Y]% [Asset B] for balanced exposure
 ```
 
+### 8. FOLLOW-UP QUESTIONS (Always include at end)
+Suggest 2-3 relevant follow-up questions to continue the conversation:
+```
+💬 Bạn có thể hỏi thêm:
+• [Question 1 - e.g., "Phân tích chi tiết từng tài sản?"]
+• [Question 2 - e.g., "Chiến lược rebalance định kỳ?"]
+• [Question 3 - e.g., "Tối ưu thuế cho danh mục đa tài sản?"]
+```
+
 ## OUTPUT RULES
 
 1. **Quantitative Focus**: Use numbers, not just qualitative descriptions
 2. **Balanced View**: Present both assets fairly
 3. **Risk Emphasis**: Clearly note volatility differences
 4. **Actionable**: End with clear recommendation based on profiles
-5. **Vietnamese Default**: Respond in Vietnamese unless query is in English"""
+5. **Vietnamese Default**: Respond in Vietnamese unless query is in English
+6. **Explain Comparisons**: When comparing, explain WHY differences matter
+7. **Always End with Follow-up Questions**: Help user explore further
+8. **Friendly Tone**: Write like a helpful portfolio advisor, not a formal report"""
 
     def get_few_shot_examples(self) -> List[Dict[str, str]]:
         """Get cross-asset comparison examples."""
