@@ -1870,12 +1870,14 @@ Respond naturally and helpfully."""
         model_name: Optional[str] = None,
         provider_type: Optional[str] = None,
         max_turns: int = 6,
+        enable_tool_search_mode: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run agent with ALL tools available (new architecture).
 
         Key difference from run_stream():
         - Agent sees ALL tools from catalog (not pre-filtered by Router)
+
         - Agent decides which tools to call (ChatGPT-style)
         - Uses IntentResult instead of RouterDecision
 
@@ -1883,6 +1885,9 @@ Respond naturally and helpfully."""
             query: User query
             intent_result: IntentResult from IntentClassifier
             max_turns: Maximum turns for agent loop (default 6)
+            enable_tool_search_mode: If True, start with ONLY tool_search meta-tool.
+                Agent must call tool_search to discover available tools.
+                Token savings: ~85% (from ~15K to ~500 tokens)
 
         Yields:
             Stream events: reasoning, tool_calls, tool_results, content, done
@@ -1942,14 +1947,38 @@ Respond naturally and helpfully."""
                     "content": f"Starting agent loop with ALL {len(self.catalog.get_tool_names())} tools available",
                 }
 
-            # Get ALL tools from catalog + tool_search meta-tool
-            all_tool_names = self.catalog.get_tool_names()
-            tools = self.catalog.get_openai_functions(all_tool_names)
+            # ================================================================
+            # TOOL LOADING STRATEGY
+            # ================================================================
+            if enable_tool_search_mode:
+                # TOOL SEARCH MODE: Start with ONLY tool_search for token savings
+                # GPT must call tool_search to discover available tools
+                tools = [TOOL_SEARCH_DEFINITION]
+                discovered_tool_names = set()  # No tools discovered yet
 
-            # Add tool_search meta-tool for semantic tool discovery
-            tools.append(TOOL_SEARCH_DEFINITION)
+                self.logger.info(
+                    f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with only tool_search "
+                    f"(~500 tokens vs ~{len(self.catalog.get_tool_names()) * 400:,} tokens)"
+                )
 
-            self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search)")
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": "tool_search_mode",
+                        "action": "start",
+                        "content": (
+                            "Tool Search Mode enabled. Agent will discover tools dynamically "
+                            "using semantic search for maximum token efficiency."
+                        ),
+                    }
+            else:
+                # STANDARD MODE: Load ALL tools from catalog
+                all_tool_names = self.catalog.get_tool_names()
+                tools = self.catalog.get_openai_functions(all_tool_names)
+                tools.append(TOOL_SEARCH_DEFINITION)  # Also add tool_search
+                discovered_tool_names = set(all_tool_names)
+
+                self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search)")
 
             # Build messages with all tools
             messages = self._build_agent_messages_all_tools(
@@ -2049,6 +2078,29 @@ Respond naturally and helpfully."""
                 )
 
                 total_tool_calls += len(tool_calls)
+
+                # ============================================================
+                # DYNAMIC TOOL INJECTION from tool_search results
+                # ============================================================
+                for tc, result in zip(tool_calls, tool_results):
+                    if tc.name == "tool_search" and result.get("status") == "success":
+                        found_tools = result.get("data", {}).get("found_tools", [])
+                        for tool_name in found_tools:
+                            if tool_name not in discovered_tool_names:
+                                # Get full tool definition and inject
+                                tool_def = self.catalog.get_full_schema(tool_name)
+                                if tool_def:
+                                    tools.append(tool_def.to_openai_function())
+                                    discovered_tool_names.add(tool_name)
+                                    self.logger.info(
+                                        f"[{flow_id}] 🔧 INJECTED tool: {tool_name}"
+                                    )
+
+                        if found_tools:
+                            self.logger.info(
+                                f"[{flow_id}] tool_search discovered {len(found_tools)} tools, "
+                                f"total available: {len(tools)}"
+                            )
 
                 # Emit results
                 yield {

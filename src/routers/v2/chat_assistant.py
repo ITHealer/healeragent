@@ -432,6 +432,10 @@ class ChatRequest(BaseModel):
         default=False,
         description="Enable agent tree tracking for debugging"
     )
+    enable_tool_search_mode: bool = Field(
+        default=False,
+        description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search."
+    )
     stream_config: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom stream configuration"
@@ -2102,6 +2106,7 @@ async def stream_chat_v4(
                 model_name=data.model_name,
                 provider_type=data.provider_type,
                 max_turns=6,
+                enable_tool_search_mode=data.enable_tool_search_mode,  # Tool Search Mode for token savings
             ):
                 event_type = event.get("type", "unknown")
 
