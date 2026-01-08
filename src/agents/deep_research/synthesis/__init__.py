@@ -6,4 +6,10 @@ Contains components for combining worker results into final reports:
 - Templates: Report templates
 """
 
-# Synthesis will be implemented in Phase 4
+from src.agents.deep_research.synthesis.report_generator import (
+    ReportGenerator,
+)
+
+__all__ = [
+    "ReportGenerator",
+]
