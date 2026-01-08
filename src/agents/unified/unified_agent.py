@@ -1708,6 +1708,366 @@ Respond naturally and helpfully."""
             return {"role": "user", "content": query}
 
 
+    # =========================================================================
+    # NEW ARCHITECTURE: Agent sees ALL tools
+    # =========================================================================
+
+    async def run_stream_with_all_tools(
+        self,
+        query: str,
+        intent_result: Any,  # IntentResult from IntentClassifier
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        system_language: str = "en",
+        user_id: Optional[int] = None,
+        session_id: Optional[str] = None,
+        core_memory: Optional[str] = None,
+        conversation_summary: Optional[str] = None,
+        enable_reasoning: bool = True,
+        images: Optional[List[Any]] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        max_turns: int = 6,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Run agent with ALL tools available (new architecture).
+
+        Key difference from run_stream():
+        - Agent sees ALL tools from catalog (not pre-filtered by Router)
+        - Agent decides which tools to call (ChatGPT-style)
+        - Uses IntentResult instead of RouterDecision
+
+        Args:
+            query: User query
+            intent_result: IntentResult from IntentClassifier
+            max_turns: Maximum turns for agent loop (default 6)
+
+        Yields:
+            Stream events: reasoning, tool_calls, tool_results, content, done
+        """
+        flow_id = f"UA-ALL-{uuid.uuid4().hex[:8]}"
+
+        # Resolve effective model/provider
+        effective_model = model_name or self.model_name
+        effective_provider = provider_type or self.provider_type
+
+        self.logger.info("─" * 50)
+        self.logger.info(f"[{flow_id}] 🚀 AGENT WITH ALL TOOLS")
+        self.logger.info("─" * 50)
+        self.logger.info(f"  ├─ Symbols: {getattr(intent_result, 'validated_symbols', [])}")
+        self.logger.info(f"  ├─ Market: {getattr(intent_result, 'market_type', 'unknown')}")
+        self.logger.info(f"  ├─ Tools: ALL ({len(self.catalog.get_tool_names())})")
+        self.logger.info(f"  ├─ Model: {effective_model}")
+        self.logger.info(f"  └─ Max Turns: {max_turns}")
+
+        try:
+            # Check if tools are needed
+            requires_tools = getattr(intent_result, 'requires_tools', True)
+
+            if not requires_tools:
+                # Direct response without tools
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": "execution",
+                        "action": "thought",
+                        "content": "No tools needed - generating direct response",
+                    }
+
+                async for chunk in self._stream_response_without_tools(
+                    query=query,
+                    classification=None,
+                    conversation_history=conversation_history,
+                    system_language=system_language,
+                    flow_id=flow_id,
+                    core_memory=core_memory,
+                    conversation_summary=conversation_summary,
+                    images=images,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                ):
+                    yield {"type": "content", "content": chunk}
+
+                yield {"type": "done", "total_turns": 1, "total_tool_calls": 0}
+                return
+
+            # Agent loop with ALL tools
+            if enable_reasoning:
+                yield {
+                    "type": "reasoning",
+                    "phase": "agent_loop",
+                    "action": "start",
+                    "content": f"Starting agent loop with ALL {len(self.catalog.get_tool_names())} tools available",
+                }
+
+            # Get ALL tools from catalog
+            all_tool_names = self.catalog.get_tool_names()
+            tools = self.catalog.get_openai_functions(all_tool_names)
+
+            self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools")
+
+            # Build messages with all tools
+            messages = self._build_agent_messages_all_tools(
+                query=query,
+                intent_result=intent_result,
+                conversation_history=conversation_history,
+                system_language=system_language,
+                core_memory=core_memory,
+                conversation_summary=conversation_summary,
+                tools=tools,
+                user_id=user_id,
+                images=images,
+            )
+
+            total_tool_calls = 0
+
+            for turn_num in range(1, max_turns + 1):
+                yield {"type": "turn_start", "turn": turn_num}
+
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": f"turn_{turn_num}",
+                        "action": "thought",
+                        "content": f"Turn {turn_num}: Analyzing query and deciding which tools to call",
+                    }
+
+                # Call LLM with ALL tools
+                response = await self._call_llm_with_tools(
+                    messages, tools, flow_id,
+                    model_name=effective_model,
+                    provider_type=effective_provider,
+                )
+
+                tool_calls = self._parse_tool_calls(response)
+                assistant_content = response.get("content") or ""
+
+                # No tool calls - stream final response
+                if not tool_calls:
+                    if enable_reasoning:
+                        yield {
+                            "type": "reasoning",
+                            "phase": "synthesis",
+                            "action": "start",
+                            "content": "Agent decided no more tools needed - generating final response",
+                        }
+
+                    # Add assistant message to get final response
+                    messages.append({"role": "assistant", "content": assistant_content})
+
+                    async for chunk in self.llm_provider.stream_response(
+                        model_name=effective_model,
+                        messages=messages,
+                        provider_type=effective_provider,
+                        api_key=self.api_key,
+                        max_tokens=4000,
+                        temperature=0.3,
+                    ):
+                        yield {"type": "content", "content": chunk}
+
+                    yield {
+                        "type": "done",
+                        "total_turns": turn_num,
+                        "total_tool_calls": total_tool_calls,
+                    }
+                    return
+
+                # Emit tool calls
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": "tool_selection",
+                        "action": "decision",
+                        "content": f"Calling {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
+                    }
+
+                yield {
+                    "type": "tool_calls",
+                    "tools": [
+                        {"name": tc.name, "arguments": tc.arguments}
+                        for tc in tool_calls
+                    ],
+                }
+
+                # Execute tools
+                tool_results = await self._execute_tool_calls(
+                    tool_calls=tool_calls,
+                    flow_id=flow_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+
+                total_tool_calls += len(tool_calls)
+
+                # Emit results
+                yield {
+                    "type": "tool_results",
+                    "results": [
+                        {"tool": tc.name, "success": r.get("status") in ["success", "200"]}
+                        for tc, r in zip(tool_calls, tool_results)
+                    ],
+                }
+
+                # Update messages
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_content,
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments),
+                            },
+                        }
+                        for tc in tool_calls
+                    ],
+                })
+
+                for tc, result in zip(tool_calls, tool_results):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
+
+            # Max turns reached
+            yield {"type": "max_turns_reached", "turns": max_turns}
+
+            if enable_reasoning:
+                yield {
+                    "type": "reasoning",
+                    "phase": "max_turns",
+                    "action": "synthesis",
+                    "content": f"Max turns ({max_turns}) reached - synthesizing final response",
+                }
+
+            messages.append({
+                "role": "user",
+                "content": "Please provide your final response based on all the information gathered.",
+            })
+
+            async for chunk in self.llm_provider.stream_response(
+                model_name=effective_model,
+                messages=messages,
+                provider_type=effective_provider,
+                api_key=self.api_key,
+                max_tokens=4000,
+                temperature=0.3,
+            ):
+                yield {"type": "content", "content": chunk}
+
+            yield {
+                "type": "done",
+                "total_turns": max_turns,
+                "total_tool_calls": total_tool_calls,
+            }
+
+        except Exception as e:
+            self.logger.error(f"[{flow_id}] Error: {e}", exc_info=True)
+            yield {"type": "error", "error": str(e)}
+
+    def _build_agent_messages_all_tools(
+        self,
+        query: str,
+        intent_result: Any,
+        conversation_history: Optional[List[Dict[str, str]]],
+        system_language: str,
+        core_memory: Optional[str],
+        conversation_summary: Optional[str],
+        tools: List[Dict[str, Any]],
+        user_id: Optional[int],
+        images: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Build messages for agent with ALL tools.
+
+        Key difference: Agent sees ALL tools, prompt encourages smart selection.
+        """
+        current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
+
+        # Get market type and symbols from intent result
+        market_type = getattr(intent_result, 'market_type', 'stock')
+        if hasattr(market_type, 'value'):
+            market_type = market_type.value
+
+        validated_symbols = getattr(intent_result, 'validated_symbols', [])
+        intent_summary = getattr(intent_result, 'intent_summary', '')
+
+        # Select skill for domain-specific prompt
+        skill = self.skill_registry.select_skill(market_type)
+        skill_prompt = skill.get_full_prompt()
+
+        # Build context hints
+        symbols_hint = ""
+        if validated_symbols:
+            symbols_hint = f"Symbols to analyze: {', '.join(validated_symbols)}"
+
+        user_context = ""
+        if core_memory:
+            user_context += f"\n\n<USER_PROFILE>\n{core_memory}\n</USER_PROFILE>"
+        if conversation_summary:
+            user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
+
+        # Build tool list for reference
+        tool_names = [t.get("function", {}).get("name", "") for t in tools if t.get("function")]
+
+        system_prompt = f"""{skill_prompt}
+
+---
+## RUNTIME CONTEXT
+
+Current Date: {current_date}
+Response Language: {system_language.upper()}
+{symbols_hint}
+Intent: {intent_summary}
+{user_context}
+
+## TOOL EXECUTION GUIDELINES
+
+**You have access to {len(tool_names)} tools. Use your judgment to select the most relevant ones.**
+
+**IMPORTANT - ChatGPT-Style Agent Loop:**
+1. THINK: Analyze what information you need to answer the user's query
+2. ACT: Call the most relevant tools (don't call all tools - be selective)
+3. OBSERVE: Review tool results and decide if more data is needed
+4. REPEAT: Call additional tools only if necessary
+5. RESPOND: When you have enough data, generate your final response
+
+**Tool Selection Strategy:**
+- Start with essential tools (price, basic data)
+- Add technical indicators if technical analysis is requested
+- Add fundamentals only for fundamental analysis queries
+- Add news/web search only if current events are relevant
+- DON'T call tools that won't help answer the specific query
+
+**Response Quality:**
+- Use data from tools to support your analysis with specific numbers
+- Explain technical terms briefly (e.g., "RSI = 72 (overbought)")
+- End with 2-3 follow-up questions for user engagement
+- Use friendly, advisor-like tone
+"""
+
+        messages = [{"role": "system", "content": system_prompt}]
+
+        # Add conversation history
+        if conversation_history:
+            for msg in conversation_history[-5:]:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if content:
+                    messages.append({"role": role, "content": content})
+
+        # Add current query (with images if present)
+        if images:
+            user_message = self._format_user_message_with_images(query, images)
+            messages.append(user_message)
+        else:
+            messages.append({"role": "user", "content": query})
+
+        return messages
+
+
 # ============================================================================
 # SINGLETON
 # ============================================================================

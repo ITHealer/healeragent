@@ -37,6 +37,11 @@ from src.agents.classification import (
     UnifiedClassifier,
     ClassifierContext,
     get_unified_classifier,
+    # New architecture
+    IntentClassifier,
+    IntentResult,
+    IntentComplexity,
+    get_intent_classifier,
 )
 from src.agents.charts import (
     resolve_charts_from_classification,
@@ -1716,3 +1721,294 @@ async def complete_chat_v3(
     except Exception as e:
         _logger.error(f"[CHAT_V3:ERROR] {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat V3 failed: {str(e)}")
+
+
+# =============================================================================
+# V4 API: IntentClassifier + Agent with ALL Tools (Simplified Architecture)
+# =============================================================================
+
+# IntentClassifier singleton
+_intent_classifier: Optional[IntentClassifier] = None
+
+
+def _get_intent_classifier() -> IntentClassifier:
+    """Get or create IntentClassifier singleton."""
+    global _intent_classifier
+    if _intent_classifier is None:
+        _intent_classifier = get_intent_classifier()
+    return _intent_classifier
+
+
+@router.post(
+    "/chat/v4",
+    summary="Streaming Chat V4 (Intent Classifier + All Tools)",
+    description="""
+    Chat with simplified architecture:
+    - Single LLM call for classification + symbol normalization
+    - Agent sees ALL tools and decides which to call (ChatGPT-style)
+    - No separate Router - Agent has full autonomy
+
+    New Flow (2 LLM calls total):
+    1. IntentClassifier: Extract intent, normalize symbols, determine complexity
+    2. UnifiedAgent: See ALL tools, decide & execute (iterative loop)
+
+    Benefits:
+    - Simpler architecture (no Router)
+    - Agent has full tool access (no category blindness)
+    - Symbol normalization in classification (GOOGLE → GOOGL)
+    - Faster overall response (fewer LLM calls)
+    """,
+    response_class=StreamingResponse,
+)
+async def stream_chat_v4(
+    request: Request,
+    data: ChatRequest,
+    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
+):
+    """
+    Stream chat responses via SSE using IntentClassifier + Agent with ALL tools.
+
+    This is the simplified ChatGPT-style architecture:
+    - Phase 1: IntentClassifier (single LLM) → symbols, complexity, market_type
+    - Phase 2: Agent sees ALL tools → decides which to call → iterative loop
+    """
+    user_id = getattr(request.state, "user_id", None)
+    org_id = getattr(request.state, "organization_id", None)
+
+    if not user_id:
+        raise HTTPException(status_code=400, detail="User ID required")
+
+    # Validate: at least query or images must be provided
+    if not data.query and not data.images:
+        raise HTTPException(
+            status_code=400,
+            detail="Either question_input or images must be provided"
+        )
+
+    # Default query for image-only requests
+    query = data.query or "Analyze this image"
+
+    session_id = data.session_id
+    if not session_id:
+        session_id = _chat_service.create_chat_session(
+            user_id=user_id,
+            organization_id=org_id
+        )
+
+    emitter = StreamEventEmitter(session_id=session_id)
+
+    async def _generate_v4() -> AsyncGenerator[str, None]:
+        """Generate SSE events using IntentClassifier + Agent with ALL tools."""
+        start_time = datetime.now()
+
+        # Stats tracking
+        stats = {
+            "total_turns": 0,
+            "total_tool_calls": 0,
+            "charts": None,
+            "complexity": None,
+            # For LEARN phase
+            "tool_results": [],
+            "final_content": "",
+        }
+
+        try:
+            # =================================================================
+            # Phase 0: Process images (if any)
+            # =================================================================
+            processed_images: Optional[List[ProcessedImage]] = None
+            if data.images:
+                processed_images = await _process_images(data.images)
+                if processed_images:
+                    _logger.info(
+                        f"[CHAT_V4] Processed {len(processed_images)} images"
+                    )
+
+            # =================================================================
+            # Phase 1: Session Start
+            # =================================================================
+            yield emitter.emit_session_start({
+                "mode_requested": "intent_classifier",
+                "version": "v4",
+            })
+
+            # =================================================================
+            # Phase 2: Intent Classification (SINGLE LLM call)
+            # =================================================================
+            yield emitter.emit_classifying()
+
+            intent_classifier = _get_intent_classifier()
+            intent_result = await intent_classifier.classify(
+                query=query,
+                ui_context=data.ui_context.model_dump() if data.ui_context else None,
+                conversation_history=[],
+            )
+
+            # Emit classification result (using intent result)
+            yield emitter.emit_classified(
+                query_type=intent_result.query_type,
+                requires_tools=intent_result.requires_tools,
+                symbols=intent_result.validated_symbols,  # Already normalized!
+                categories=[],  # Agent sees ALL tools - no categories
+                confidence=intent_result.confidence,
+                language=intent_result.response_language,
+                reasoning=intent_result.reasoning,
+                intent_summary=intent_result.intent_summary,
+                classification_method=intent_result.classification_method,
+            )
+
+            stats["complexity"] = intent_result.complexity.value
+
+            # Emit classification reasoning
+            if intent_result.reasoning and data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="intent_classification",
+                    content=intent_result.reasoning,
+                    action="complete",
+                    metadata={
+                        "intent": intent_result.intent_summary,
+                        "symbols": intent_result.validated_symbols,
+                        "complexity": intent_result.complexity.value,
+                        "market_type": intent_result.market_type.value,
+                    },
+                )
+
+            # =================================================================
+            # Phase 3: Agent Execution with ALL Tools
+            # =================================================================
+            unified_agent = _get_unified_agent()
+
+            if data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="agent_start",
+                    content=f"Starting agent with ALL {len(unified_agent.catalog.get_tool_names())} tools available",
+                    action="start",
+                )
+
+            # Stream events from Agent with ALL tools
+            async for event in unified_agent.run_stream_with_all_tools(
+                query=query,
+                intent_result=intent_result,
+                conversation_history=[],
+                system_language=intent_result.response_language,
+                user_id=int(user_id) if user_id else None,
+                session_id=session_id,
+                enable_reasoning=data.enable_thinking,
+                images=processed_images,
+                model_name=data.model_name,
+                provider_type=data.provider_type,
+                max_turns=6,
+            ):
+                event_type = event.get("type", "unknown")
+
+                if event_type == "reasoning":
+                    yield emitter.emit_reasoning(
+                        phase=event.get("phase", "execution"),
+                        content=event.get("content", ""),
+                        action=event.get("action", "thought"),
+                        metadata=event.get("metadata"),
+                    )
+
+                elif event_type == "turn_start":
+                    turn = event.get("turn", 1)
+                    stats["total_turns"] = turn
+                    yield emitter.emit_turn_start(
+                        turn_number=turn,
+                        max_turns=6,
+                    )
+
+                elif event_type == "tool_calls":
+                    tools = event.get("tools", [])
+                    stats["total_tool_calls"] += len(tools)
+                    yield emitter.emit_tool_calls(tools)
+
+                elif event_type == "tool_results":
+                    results = event.get("results", [])
+                    stats["tool_results"].extend(results)
+                    yield emitter.emit_tool_results(results)
+
+                elif event_type == "content":
+                    content = event.get("content", "")
+                    if content:
+                        stats["final_content"] += content
+                        yield emitter.emit_content(content)
+
+                elif event_type == "max_turns_reached":
+                    yield emitter.emit_progress(
+                        phase="max_turns",
+                        progress_percent=90,
+                        message=f"Max turns ({event.get('turns', 0)}) reached",
+                    )
+
+                elif event_type == "done":
+                    stats["total_turns"] = event.get("total_turns", stats["total_turns"])
+                    stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
+
+                elif event_type == "error":
+                    yield emitter.emit_error(
+                        error_message=event.get("error", "Unknown error"),
+                        error_code="AGENT_ERROR",
+                    )
+
+            # =================================================================
+            # Phase 4: Done
+            # =================================================================
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+            # Final reasoning summary
+            if data.enable_thinking:
+                yield emitter.emit_reasoning(
+                    phase="synthesis",
+                    content=(
+                        f"Complete: {stats['total_turns']} turns, "
+                        f"{stats['total_tool_calls']} tool calls, "
+                        f"complexity={stats['complexity']}"
+                    ),
+                    action="complete",
+                    progress=1.0,
+                    metadata={
+                        "turns": stats["total_turns"],
+                        "tool_calls": stats["total_tool_calls"],
+                        "complexity": stats["complexity"],
+                        "symbols": intent_result.validated_symbols,
+                        "duration_ms": round(elapsed_ms, 0),
+                    },
+                )
+
+            # =================================================================
+            # LEARN Phase: Update memory after successful execution
+            # =================================================================
+            try:
+                learn_hook = LearnHook()
+                await learn_hook.on_execution_complete(
+                    query=query,
+                    classification=intent_result,  # IntentResult has compatible interface
+                    tool_results=stats["tool_results"],
+                    response=stats["final_content"],
+                    user_id=int(user_id) if user_id else None,
+                )
+            except Exception as learn_err:
+                _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
+
+            yield emitter.emit_done(
+                total_turns=stats["total_turns"],
+                total_tool_calls=stats["total_tool_calls"],
+                total_time_ms=elapsed_ms,
+                charts=stats.get("charts"),
+            )
+            yield format_done_marker()
+
+        except Exception as e:
+            _logger.error(f"[CHAT_V4] Error: {e}", exc_info=True)
+            yield emitter.emit_error(str(e), "CHAT_V4_ERROR")
+            yield format_done_marker()
+
+    return StreamingResponse(
+        _generate_v4(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -48,6 +48,17 @@ from .unified_classifier import (
     clear_classification_cache_sync,
 )
 
+# New: IntentClassifier for simplified architecture
+from .intent_classifier import (
+    IntentClassifier,
+    IntentResult,
+    IntentComplexity,
+    IntentMarketType,
+    get_intent_classifier,
+    reset_intent_classifier,
+    clear_intent_cache,
+)
+
 __all__ = [
     # Models
     "UnifiedClassificationResult",
@@ -55,10 +66,18 @@ __all__ = [
     "QueryType",
     "MarketType",
     "VALID_CATEGORIES",
-    # Classifier
+    # Classifier (Legacy)
     "UnifiedClassifier",
     "get_unified_classifier",
     "reset_classifier",
     "clear_classification_cache",  # async - clears Redis + local
     "clear_classification_cache_sync",  # sync - clears local only
+    # Intent Classifier (New - simplified architecture)
+    "IntentClassifier",
+    "IntentResult",
+    "IntentComplexity",
+    "IntentMarketType",
+    "get_intent_classifier",
+    "reset_intent_classifier",
+    "clear_intent_cache",
 ]

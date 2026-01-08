@@ -273,3 +273,113 @@ Phase 3: Unified Router (Optional)
 | LLM calls before agent | 3 | 1-2 |
 | Symbol resolution accuracy | ~70% | ~95% |
 | Tool selection accuracy | Unknown | Track |
+
+---
+
+## 8. V4 Implementation (✅ Complete)
+
+### 8.1 New Architecture Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                    V4 ARCHITECTURE (Simplified)                           │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
+│  User Query: "Phân tích Google và Amazon"                                 │
+│       │                                                                   │
+│       ▼                                                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │ LLM CALL #1: INTENT CLASSIFIER (gpt-4.1-mini, ~2-3s)               │  │
+│  │                                                                     │  │
+│  │ Input:  Query + UI Context                                         │  │
+│  │ Output:                                                             │  │
+│  │   - validated_symbols: ["GOOGL", "AMZN"]  ← Already normalized!    │  │
+│  │   - complexity: "agent_loop"                                        │  │
+│  │   - market_type: "stock"                                            │  │
+│  │   - requires_tools: true                                            │  │
+│  │                                                                     │  │
+│  │ ✅ Symbol normalization IN the prompt (no separate call)            │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│       │                                                                   │
+│       ▼                                                                   │
+│  ┌────────────────────────────────────────────────────────────────────┐  │
+│  │ UNIFIED AGENT WITH ALL TOOLS (ChatGPT-Style Agent Loop)            │  │
+│  │                                                                     │  │
+│  │ Agent sees ALL 38+ tools (not pre-filtered by Router)              │  │
+│  │                                                                     │  │
+│  │ Loop: THINK → ACT → OBSERVE → REPEAT                               │  │
+│  │   Turn 1: Agent decides: getStockPrice(GOOGL), getStockPrice(AMZN) │  │
+│  │   Turn 2: Agent decides: getTechnicalIndicators(GOOGL, AMZN)       │  │
+│  │   Turn 3: Agent decides: No more tools needed → Generate response  │  │
+│  │                                                                     │  │
+│  │ ✅ Full autonomy - Agent chooses relevant tools                     │  │
+│  └────────────────────────────────────────────────────────────────────┘  │
+│       │                                                                   │
+│       ▼                                                                   │
+│   Final Response (with data from tools)                                   │
+│                                                                           │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Total LLM Calls: 2 (Classifier + Agent Loop)                             │
+│  vs V3: 3 calls (Classifier + Symbol Resolver + Router + Agent)          │
+│  Latency Reduction: ~40-50%                                               │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+### 8.2 New Components
+
+| Component | File | Purpose |
+|-----------|------|---------|
+| IntentClassifier | `src/agents/classification/intent_classifier.py` | Single LLM call: intent + symbol normalization |
+| IntentResult | `src/agents/classification/intent_classifier.py` | Result dataclass with validated_symbols |
+| run_stream_with_all_tools | `src/agents/unified/unified_agent.py` | Agent loop with ALL tools |
+| /chat/v4 | `src/routers/v2/chat_assistant.py` | New API endpoint |
+
+### 8.3 Key Improvements
+
+1. **Symbol Normalization in Prompt**
+   - Old: Separate SymbolResolver LLM call
+   - New: LLM normalizes symbols directly in classification prompt
+   - Examples in prompt: "Google" → "GOOGL", "Amazon" → "AMZN"
+
+2. **No Router Needed**
+   - Old: LLMToolRouter pre-filters tools → Agent sees limited tools
+   - New: Agent sees ALL tools → Agent decides which to call
+   - Eliminates "category blindness" completely
+
+3. **Simpler Flow**
+   ```
+   Old V3: Query → Classifier → SymbolResolver → Router → Agent(limited tools)
+   New V4: Query → IntentClassifier → Agent(ALL tools)
+   ```
+
+4. **ChatGPT-Style Agent Loop**
+   - Agent has full autonomy like ChatGPT
+   - THINK → ACT → OBSERVE → REPEAT pattern
+   - Agent decides when to stop (no forced tool calls)
+
+### 8.4 API Comparison
+
+| Endpoint | Architecture | LLM Calls | Symbol Handling |
+|----------|-------------|-----------|-----------------|
+| /chat | Legacy Classifier + Mode Router | 2-3 | Separate resolution |
+| /chat/v3 | Classifier + LLMRouter + Agent | 3 | Separate resolution |
+| /chat/v4 | IntentClassifier + Agent(ALL) | 2 | In-prompt normalization |
+
+### 8.5 Usage
+
+```bash
+# V4 API (recommended for new integrations)
+curl -X POST /chat-assistant/chat/v4 \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -d '{
+    "question_input": "Phân tích Google và Amazon",
+    "ui_context": {"active_tab": "stock"}
+  }'
+
+# Response includes:
+# - validated_symbols: ["GOOGL", "AMZN"] (already normalized!)
+# - Agent reasoning events
+# - Tool calls/results
+# - Final response
+```
