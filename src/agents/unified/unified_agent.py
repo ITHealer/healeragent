@@ -848,15 +848,20 @@ class UnifiedAgent(LoggerMixin):
                         "type": "reasoning",
                         "phase": "synthesis",
                         "action": "start",
-                        "content": "All data gathered - generating response",
+                        "content": "All data gathered - generating comprehensive response",
                     }
+
+                # Adaptive max_tokens based on number of symbols
+                num_symbols = len(classification.symbols) if classification else 1
+                adaptive_max_tokens = 4000 + (num_symbols * 800)
+                adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
                 async for chunk in self.llm_provider.stream_response(
                     model_name=effective_model,
                     messages=messages,
                     provider_type=effective_provider,
                     api_key=self.api_key,
-                    max_tokens=4000,
+                    max_tokens=adaptive_max_tokens,
                     temperature=0.3,
                 ):
                     yield {"type": "content", "content": chunk}
@@ -941,15 +946,27 @@ class UnifiedAgent(LoggerMixin):
 
         messages.append({
             "role": "user",
-            "content": "Please provide your final response based on all the information gathered.",
+            "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
+
+IMPORTANT:
+- Include ALL important data points and numbers from tool results
+- For each symbol, provide: price, technical signals (RSI, MACD), fundamental metrics (P/E, ROE)
+- Give clear insights and actionable recommendations
+- Don't truncate or summarize - be as detailed as needed for a thorough analysis
+- End with 2-3 follow-up questions""",
         })
+
+        # Adaptive max_tokens based on complexity
+        num_symbols = len(classification.symbols) if classification else 1
+        adaptive_max_tokens = 4000 + (num_symbols * 800)
+        adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
         async for chunk in self.llm_provider.stream_response(
             model_name=effective_model,
             messages=messages,
             provider_type=effective_provider,
             api_key=self.api_key,
-            max_tokens=4000,
+            max_tokens=adaptive_max_tokens,
             temperature=0.3,
         ):
             yield {"type": "content", "content": chunk}
@@ -1518,10 +1535,33 @@ Response Language: {system_language.upper()}
 
 {execution_guidelines}
 
-**Response Quality:**
-- Explain technical terms briefly (e.g., "RSI = 72 (quá mua)")
-- End with 2-3 follow-up questions for user engagement
+## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
+
+**1. COMPREHENSIVE DATA SYNTHESIS:**
+- Include **ALL important numbers** from tool results (prices, percentages, ratios)
+- For each symbol, provide: current price, key technical levels, trend assessment
+- **DON'T skip or summarize data** - users want specific numbers and detailed analysis!
+- If tools returned financial ratios, include P/E, PEG, ROE, debt ratios with interpretation
+
+**2. ADAPTIVE RESPONSE LENGTH:**
+- Simple query (1 symbol, basic info) → Medium response (300-500 words)
+- Complex query (multiple symbols, technical + fundamental) → Detailed response (800-1500 words)
+- Comparison queries → Include structured comparison table + detailed analysis
+- **NEVER truncate just to be brief** - be as detailed as the data requires
+
+**3. STRUCTURED FORMAT:**
+For each symbol analyzed, include where applicable:
+- Price & Position: Current price, 52-week range position, support/resistance
+- Technical Signals: RSI (overbought/oversold?), MACD (bullish/bearish?), moving averages
+- Fundamental Health: P/E, PEG, ROE, debt levels with meaning
+- Key Insight: What does this data tell us? Buy/sell/hold signal?
+- Risk Factors: What could go wrong?
+
+**4. ENGAGEMENT STYLE:**
+- Explain technical terms briefly (e.g., "RSI = 72 (overbought - có thể điều chỉnh)")
 - Use friendly, advisor-like tone
+- Highlight actionable insights and recommendations
+- End with 2-3 relevant follow-up questions
 """
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -1595,6 +1635,9 @@ When using information from webSearch results:
   - [Article Title 2](https://example.com/article2)
 """
 
+        # Count symbols for adaptive response length guidance
+        num_symbols = sum(1 for r in tool_results if r.get("status") in ["success", "200"])
+
         system_prompt = f"""You are a {skill.config.description}.
 
 Current Date: {current_date}
@@ -1611,20 +1654,37 @@ Response Language: {system_language.upper()}
 
 ## YOUR TASK
 
-Synthesize the above tool results into a comprehensive, user-friendly response:
+Synthesize the above tool results into a **COMPREHENSIVE, DETAILED** response:
 
-**Content Requirements:**
-- Use the data from tools to support your analysis with specific numbers
-- Follow the structured format from your expertise framework
-- Highlight key insights and actionable recommendations
+**DATA SYNTHESIS REQUIREMENTS (CRITICAL):**
+- Include **ALL important numbers** from tool results (prices, percentages, ratios, indicators)
+- For EACH symbol, provide: current price, 52-week position, technical signals, fundamental metrics
+- **DON'T skip or summarize data** - users want specific numbers and detailed analysis!
+- If P/E, ROE, debt ratios are available, explain what they mean for the stock
 
-**Engagement Requirements:**
-- Write in a friendly, conversational tone (like a helpful advisor, not a formal report)
-- Explain technical terms briefly for beginners (e.g., "RSI = 72 (quá mua, có thể điều chỉnh)")
-- End with 2-3 follow-up questions to help user explore further
+**ADAPTIVE RESPONSE LENGTH:**
+- You have data for approximately {num_symbols} data sources
+- Simple query (1 symbol) → Medium response (300-500 words)
+- Complex query (3+ symbols) → Detailed response (800-1500 words)
+- Comparison queries → Include comparison table + detailed per-symbol analysis
+- **NEVER truncate just to be brief** - be as detailed as the data requires
 
-**Language:**
-- Default to Vietnamese for Vietnamese queries
+**STRUCTURED FORMAT:**
+For each symbol analyzed, include:
+1. Price & Position: Current price, 52-week high/low, support/resistance levels
+2. Technical Signals: RSI, MACD, moving averages with interpretation
+3. Fundamental Health: P/E, PEG, ROE, debt ratios with meaning
+4. Key Insight: Overall assessment - bullish/bearish/neutral? Why?
+5. Risk Factors: What could go wrong?
+
+**ENGAGEMENT STYLE:**
+- Write like a knowledgeable friend/advisor, not a formal report
+- Explain technical terms briefly (e.g., "RSI = 72 (overbought - có thể điều chỉnh)")
+- Highlight actionable insights and recommendations
+- End with 2-3 relevant follow-up questions
+
+**LANGUAGE:**
+- Respond in {system_language.upper()}
 - Be natural and engaging, avoid robotic/template language
 {"- Include source citations at the end if web search was used" if has_web_search else ""}
 """
@@ -1854,12 +1914,18 @@ Respond naturally and helpfully."""
                     # Add assistant message to get final response
                     messages.append({"role": "assistant", "content": assistant_content})
 
+                    # Calculate max_tokens based on query complexity
+                    # More symbols = longer response needed
+                    num_symbols = len(getattr(intent_result, 'validated_symbols', []))
+                    adaptive_max_tokens = 4000 + (num_symbols * 800)  # ~800 tokens per symbol
+                    adaptive_max_tokens = min(adaptive_max_tokens, 8000)  # Cap at 8000
+
                     async for chunk in self.llm_provider.stream_response(
                         model_name=effective_model,
                         messages=messages,
                         provider_type=effective_provider,
                         api_key=self.api_key,
-                        max_tokens=4000,
+                        max_tokens=adaptive_max_tokens,
                         temperature=0.3,
                     ):
                         yield {"type": "content", "content": chunk}
@@ -1944,15 +2010,27 @@ Respond naturally and helpfully."""
 
             messages.append({
                 "role": "user",
-                "content": "Please provide your final response based on all the information gathered.",
+                "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
+
+IMPORTANT:
+- Include ALL important data points and numbers from tool results
+- For each symbol, provide: price, technical signals (RSI, MACD), fundamental metrics (P/E, ROE)
+- Give clear insights and actionable recommendations
+- Don't truncate or summarize - be as detailed as needed for a thorough analysis
+- End with 2-3 follow-up questions""",
             })
+
+            # Adaptive max_tokens based on complexity
+            num_symbols = len(getattr(intent_result, 'validated_symbols', []))
+            adaptive_max_tokens = 4000 + (num_symbols * 800)
+            adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
                 messages=messages,
                 provider_type=effective_provider,
                 api_key=self.api_key,
-                max_tokens=4000,
+                max_tokens=adaptive_max_tokens,
                 temperature=0.3,
             ):
                 yield {"type": "content", "content": chunk}
@@ -2041,11 +2119,38 @@ Intent: {intent_summary}
 - Add news/web search only if current events are relevant
 - DON'T call tools that won't help answer the specific query
 
-**Response Quality:**
-- Use data from tools to support your analysis with specific numbers
-- Explain technical terms briefly (e.g., "RSI = 72 (overbought)")
-- End with 2-3 follow-up questions for user engagement
+## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
+
+**1. COMPREHENSIVE DATA SYNTHESIS:**
+- Include ALL important numbers from tool results (prices, percentages, ratios)
+- For each symbol analyzed, provide: current price, key technical levels, trend assessment
+- Don't skip or summarize important data points - users want the specifics!
+- If tools returned financial ratios, include P/E, PEG, ROE, debt ratios with interpretation
+
+**2. ADAPTIVE RESPONSE LENGTH:**
+- Simple query (1 symbol, basic info) → Medium response (300-500 words)
+- Complex query (multiple symbols, technical + fundamental) → Detailed response (800-1500 words)
+- Comparison queries → Include structured comparison table + detailed analysis
+- NEVER truncate analysis just to keep response short - be as detailed as needed
+
+**3. STRUCTURED ANALYSIS FORMAT:**
+For each symbol, include where applicable:
+- Price & Position: Current price, 52-week range position, key support/resistance
+- Technical Signals: RSI (overbought/oversold?), MACD (bullish/bearish?), moving averages
+- Fundamental Health: P/E, PEG, ROE, debt levels with interpretation
+- Key Insight: What does this data tell us? Buy/sell/hold signal?
+- Risk Factors: What could go wrong?
+
+**4. ENGAGEMENT STYLE:**
+- Explain technical terms briefly for beginners (e.g., "RSI = 72 (overbought - may correct)")
 - Use friendly, advisor-like tone
+- Highlight actionable insights and recommendations
+- End with 2-3 relevant follow-up questions
+
+**5. DATA INTEGRITY:**
+- NEVER make up numbers - only use data from tool results
+- If a tool failed or data is missing, acknowledge it
+- Be honest about uncertainty or conflicting signals
 """
 
         messages = [{"role": "system", "content": system_prompt}]
