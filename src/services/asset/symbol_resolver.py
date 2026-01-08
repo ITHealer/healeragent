@@ -50,57 +50,6 @@ RESOLUTION_CACHE_PREFIX = "symbol_resolution:"
 RESOLUTION_CACHE_TTL = 300  # 5 minutes
 
 
-# Common company name to ticker mapping
-# These are well-known company names that users might type instead of tickers
-COMMON_NAME_TO_TICKER = {
-    # FAANG+ and major tech
-    "google": "GOOGL",
-    "alphabet": "GOOGL",
-    "amazon": "AMZN",
-    "netflix": "NFLX",
-    "facebook": "META",
-    "apple": "AAPL",
-    "microsoft": "MSFT",
-    "nvidia": "NVDA",
-    "tesla": "TSLA",
-    "meta": "META",
-
-    # Other major companies
-    "berkshire": "BRK-B",
-    "salesforce": "CRM",
-    "oracle": "ORCL",
-    "intel": "INTC",
-    "amd": "AMD",
-    "paypal": "PYPL",
-    "adobe": "ADBE",
-    "cisco": "CSCO",
-    "pepsi": "PEP",
-    "cocacola": "KO",
-    "coca-cola": "KO",
-    "mcdonalds": "MCD",
-    "walmart": "WMT",
-    "disney": "DIS",
-    "boeing": "BA",
-    "jpmorgan": "JPM",
-    "goldmansachs": "GS",
-    "visa": "V",
-    "mastercard": "MA",
-
-    # Vietnamese aliases
-    "táo": "AAPL",
-    "苹果": "AAPL",
-    "特斯拉": "TSLA",
-    "谷歌": "GOOGL",
-    "亚马逊": "AMZN",
-
-    # Crypto common names
-    "bitcoin": "BTC",
-    "ethereum": "ETH",
-    "比特币": "BTC",
-    "以太坊": "ETH",
-}
-
-
 class SymbolResolver(LoggerMixin):
     """
     Multi-layer symbol resolution service.
@@ -245,23 +194,13 @@ class SymbolResolver(LoggerMixin):
         Resolve a single symbol through multiple layers.
 
         Resolution order:
-        0. Common name normalization (GOOGLE → GOOGL)
         1. Pattern detection (exchange suffix, crypto pair)
         2. Symbol cache lookup
         3. UI context + ambiguity resolution
-        4. LLM semantic (if needed)
+        4. LLM semantic (for unknown symbols or company names)
+        5. Default rules (based on UI context)
         """
         symbol = raw_symbol.upper().strip()
-
-        # Layer 0: Common Name Normalization
-        # Check if this is a well-known company name that should be mapped to ticker
-        symbol_lower = raw_symbol.lower().strip()
-        if symbol_lower in COMMON_NAME_TO_TICKER:
-            normalized_symbol = COMMON_NAME_TO_TICKER[symbol_lower]
-            self.logger.debug(
-                f"[SYMBOL_RESOLVER] Normalized: {raw_symbol} → {normalized_symbol}"
-            )
-            symbol = normalized_symbol
 
         # Layer 1: Pattern Detection
         pattern_result = self._resolve_by_pattern(symbol)
@@ -301,12 +240,16 @@ class SymbolResolver(LoggerMixin):
                 original_text=raw_symbol,
             )
 
-        # Layer 4: Not in cache - might be company name (try LLM)
-        if self._looks_like_company_name(raw_symbol):
+        # Layer 4: Not in cache - use LLM to resolve
+        # This handles both company names (Tesla, Google) and misspelled tickers
+        if info is None:
             llm_result = await self._resolve_by_llm(
                 raw_symbol, query, ui_context
             )
             if llm_result:
+                self.logger.debug(
+                    f"[SYMBOL_RESOLVER] LLM resolved: {raw_symbol} → {llm_result.symbol}"
+                )
                 return llm_result
 
         # Layer 5: Apply default rules based on UI context
@@ -493,14 +436,11 @@ class SymbolResolver(LoggerMixin):
         """
         Use LLM for semantic understanding of company/asset names.
 
-        Handles multilingual inputs:
-        - "腾讯" → TCEHY or 0700.HK
-        - "特斯拉" → TSLA
-        - "Bitcoin" → BTC
+        Handles:
+        - Company names: GOOGLE → GOOGL, AMAZON → AMZN
+        - Multilingual: "腾讯" → 0700.HK, "特斯拉" → TSLA
+        - Crypto: "Bitcoin" → BTC
         """
-        if self._llm is None:
-            return None
-
         try:
             from src.helpers.llm_helper import LLMGeneratorProvider
             from src.providers.provider_factory import ProviderType
@@ -511,24 +451,30 @@ class SymbolResolver(LoggerMixin):
             elif ui_context.active_tab == ActiveTab.CRYPTO:
                 tab_context = "User is viewing crypto. Prefer cryptocurrency interpretation."
 
-            prompt = f"""Given the following text, identify the financial asset symbol.
+            prompt = f"""Given the following text, identify the correct stock ticker or crypto symbol.
 
 Text: "{raw_text}"
 Full query: "{query}"
 Context: {tab_context}
 
-If this is a company name (in any language), return the stock ticker.
-If this is a cryptocurrency name, return the crypto symbol.
-If unclear, return null.
+IMPORTANT RULES:
+1. If text is a company NAME (not ticker), convert to official stock ticker
+2. If text is a cryptocurrency name, return the crypto symbol
+3. Company names may be uppercase (GOOGLE, AMAZON) - still convert to ticker
+4. Return null only if you cannot identify the asset
 
 Respond ONLY with JSON:
-{{"symbol": "SYMBOL_OR_NULL", "name": "FULL_NAME", "asset_type": "stock|crypto", "confidence": 0.0-1.0}}
+{{"symbol": "TICKER", "name": "FULL_NAME", "asset_type": "stock|crypto", "confidence": 0.0-1.0}}
 
 Examples:
-- "腾讯" → {{"symbol": "0700.HK", "name": "Tencent Holdings", "asset_type": "stock", "confidence": 0.9}}
+- "GOOGLE" → {{"symbol": "GOOGL", "name": "Alphabet Inc", "asset_type": "stock", "confidence": 0.95}}
+- "AMAZON" → {{"symbol": "AMZN", "name": "Amazon.com Inc", "asset_type": "stock", "confidence": 0.95}}
+- "NETFLIX" → {{"symbol": "NFLX", "name": "Netflix Inc", "asset_type": "stock", "confidence": 0.95}}
+- "FACEBOOK" → {{"symbol": "META", "name": "Meta Platforms Inc", "asset_type": "stock", "confidence": 0.95}}
 - "Bitcoin" → {{"symbol": "BTC", "name": "Bitcoin", "asset_type": "crypto", "confidence": 0.95}}
-- "特斯拉" → {{"symbol": "TSLA", "name": "Tesla Inc", "asset_type": "stock", "confidence": 0.95}}
-- "random123" → {{"symbol": null, "name": null, "asset_type": null, "confidence": 0.0}}
+- "腾讯" → {{"symbol": "0700.HK", "name": "Tencent Holdings", "asset_type": "stock", "confidence": 0.9}}
+- "TSLA" → {{"symbol": "TSLA", "name": "Tesla Inc", "asset_type": "stock", "confidence": 0.99}}
+- "random123xyz" → {{"symbol": null, "name": null, "asset_type": null, "confidence": 0.0}}
 """
 
             llm = LLMGeneratorProvider()
