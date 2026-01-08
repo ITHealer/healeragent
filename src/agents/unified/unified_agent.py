@@ -1346,6 +1346,28 @@ IMPORTANT:
 
         return processed
 
+    # =========================================================================
+    # OBSERVE PHASE: Decision Matrix
+    # =========================================================================
+    # TOOL ALTERNATIVES MAPPING: When a tool fails, try these alternatives
+    TOOL_ALTERNATIVES = {
+        "getIncomeStatement": ["getKeyMetrics", "getFinancialRatios"],
+        "getBalanceSheet": ["getKeyMetrics", "getFinancialRatios"],
+        "getCashFlow": ["getKeyMetrics", "getFinancialRatios"],
+        "getTechnicalIndicators": ["detectChartPatterns", "getSupportResistance"],
+        "getStockPrice": ["getQuote", "getHistoricalPrice"],
+        "getStockNews": ["webSearch"],
+        "getSectorPerformance": ["getMarketOverview"],
+    }
+
+    # DATA CATEGORIES: Map tool names to data categories
+    TOOL_CATEGORIES = {
+        "price": ["getstockprice", "getquote", "gethistoricalprice", "getcryptoprice"],
+        "technical": ["gettechnicalindicators", "detectchartpatterns", "getsupportresistance", "getrelativestrength"],
+        "fundamental": ["getincomestatement", "getbalancesheet", "getcashflow", "getfinancialratios", "getkeymetrics"],
+        "news": ["getstocknews", "websearch", "getmarketsentiment"],
+    }
+
     def _observe_and_evaluate_results(
         self,
         tool_calls: List[ToolCall],
@@ -1353,11 +1375,19 @@ IMPORTANT:
         query: str,
         validated_symbols: List[str],
         flow_id: str,
+        retry_tracker: Optional[Dict[str, int]] = None,
+        turn_number: int = 1,
+        max_retries: int = 2,
     ) -> Dict[str, Any]:
         """
-        OBSERVE Phase: Evaluate tool results and determine if data is sufficient.
+        OBSERVE Phase: Evaluate tool results and make intelligent decisions.
 
-        This implements the "Check Results Enough?" logic from the Agent Loop diagram.
+        Implements the Agent Loop decision matrix:
+        - RESPOND: Data sufficient, generate final response
+        - CONTINUE: Need more data, call additional tools
+        - RETRY: Tool failed, retry same tool
+        - ALTERNATIVE: Tool failed repeatedly, try alternative tool
+        - TERMINATE: Cannot proceed, explain limitation
 
         Args:
             tool_calls: List of tool calls that were made
@@ -1365,108 +1395,242 @@ IMPORTANT:
             query: Original user query
             validated_symbols: Symbols being analyzed
             flow_id: Flow ID for logging
+            retry_tracker: Dict tracking retry counts per tool
+            turn_number: Current turn number
+            max_retries: Maximum retries per tool (default 2)
 
         Returns:
-            Dict with:
-                - success_count: Number of successful tool calls
-                - failed_count: Number of failed tool calls
-                - has_price_data: Whether price data was retrieved
-                - has_technical_data: Whether technical indicators were retrieved
-                - has_fundamental_data: Whether fundamental data was retrieved
-                - coverage_score: 0-100 score of data coverage
-                - missing_data: List of potentially missing data types
-                - observation_summary: Human-readable summary
+            Dict with decision, confidence, and action details
         """
-        # Count successes and failures
+        if retry_tracker is None:
+            retry_tracker = {}
+
+        # ================================================================
+        # 1. ANALYZE RESULTS
+        # ================================================================
         success_count = 0
         failed_count = 0
         failed_tools = []
+        timeout_tools = []
 
-        # Track what data types we have
-        has_price_data = False
-        has_technical_data = False
-        has_fundamental_data = False
-        has_news_data = False
+        # Track data categories
+        categories_found = {
+            "price": False,
+            "technical": False,
+            "fundamental": False,
+            "news": False,
+        }
         symbols_with_data = set()
 
         for tc, result in zip(tool_calls, tool_results):
             status = result.get("status", "")
             is_success = status in ["success", "200"]
+            is_timeout = status == "timeout"
+
+            tool_name_lower = tc.name.lower()
 
             if is_success:
                 success_count += 1
 
-                # Categorize data by tool type
-                tool_name = tc.name.lower()
-                if "price" in tool_name:
-                    has_price_data = True
-                elif any(t in tool_name for t in ["technical", "indicator", "rsi", "macd", "pattern"]):
-                    has_technical_data = True
-                elif any(t in tool_name for t in ["fundamental", "ratio", "income", "balance", "cash"]):
-                    has_fundamental_data = True
-                elif any(t in tool_name for t in ["news", "search", "sentiment"]):
-                    has_news_data = True
+                # Identify data category
+                for category, tools in self.TOOL_CATEGORIES.items():
+                    if any(t in tool_name_lower for t in tools):
+                        categories_found[category] = True
+                        break
 
-                # Track symbols with data
+                # Track symbols
                 if tc.arguments.get("symbol"):
                     symbols_with_data.add(tc.arguments.get("symbol"))
             else:
                 failed_count += 1
                 failed_tools.append(tc.name)
+                if is_timeout:
+                    timeout_tools.append(tc.name)
 
-        # Calculate coverage score
+                # Track retries
+                retry_tracker[tc.name] = retry_tracker.get(tc.name, 0) + 1
+
+        # ================================================================
+        # 2. DETERMINE REQUIRED DATA CATEGORIES
+        # ================================================================
+        query_lower = query.lower()
+        required_categories = {"price"}  # Price is always required if symbols exist
+
+        # Detect required categories from query
+        technical_keywords = ["kỹ thuật", "technical", "rsi", "macd", "pattern", "chart", "xu hướng", "trend"]
+        fundamental_keywords = ["cơ bản", "fundamental", "p/e", "eps", "revenue", "doanh thu", "lợi nhuận", "valuation"]
+        news_keywords = ["tin tức", "news", "sentiment", "thị trường", "market"]
+
+        if any(kw in query_lower for kw in technical_keywords):
+            required_categories.add("technical")
+        if any(kw in query_lower for kw in fundamental_keywords):
+            required_categories.add("fundamental")
+        if any(kw in query_lower for kw in news_keywords):
+            required_categories.add("news")
+
+        # ================================================================
+        # 3. CALCULATE CONFIDENCE SCORE
+        # ================================================================
+        # Base: success rate
         total_calls = len(tool_calls)
         success_rate = (success_count / total_calls * 100) if total_calls > 0 else 0
 
-        # Check symbol coverage
+        # Category coverage
+        required_count = len(required_categories)
+        covered_count = sum(1 for cat in required_categories if categories_found.get(cat, False))
+        category_coverage = (covered_count / required_count * 100) if required_count > 0 else 100
+
+        # Symbol coverage
         symbol_coverage = (
             len(symbols_with_data) / len(validated_symbols) * 100
             if validated_symbols else 100
         )
 
-        # Overall coverage score
-        coverage_score = int((success_rate + symbol_coverage) / 2)
+        # Weighted confidence
+        confidence = int(
+            success_rate * 0.3 +
+            category_coverage * 0.5 +
+            symbol_coverage * 0.2
+        )
 
-        # Identify missing data
-        missing_data = []
-        if not has_price_data and validated_symbols:
-            missing_data.append("price data")
-        if not has_technical_data and "technical" in query.lower():
-            missing_data.append("technical indicators")
-        if not has_fundamental_data and any(w in query.lower() for w in ["fundamental", "p/e", "valuation"]):
-            missing_data.append("fundamental data")
+        # ================================================================
+        # 4. MAKE DECISION
+        # ================================================================
+        decision = "RESPOND"
+        reason = ""
+        suggested_action = None
+        alternative_tools = []
 
-        # Build observation summary
-        observation_parts = []
-        observation_parts.append(f"Received {success_count}/{total_calls} successful results")
+        # Check for failed critical tools
+        critical_failures = []
+        for tool_name in failed_tools:
+            tool_lower = tool_name.lower()
+            for category in required_categories:
+                if any(t in tool_lower for t in self.TOOL_CATEGORIES.get(category, [])):
+                    critical_failures.append((tool_name, category))
+                    break
+
+        # Decision matrix
+        if confidence >= 80 and not critical_failures:
+            # RESPOND: High confidence, all critical data available
+            decision = "RESPOND"
+            reason = "All required data gathered successfully"
+
+        elif confidence >= 60 and not critical_failures:
+            # RESPOND with caveat: Acceptable confidence
+            decision = "RESPOND"
+            reason = "Sufficient data available for analysis"
+
+        elif critical_failures:
+            # Check retry count for failed tools
+            for tool_name, category in critical_failures:
+                retries = retry_tracker.get(tool_name, 0)
+
+                if retries < max_retries:
+                    # RETRY: Still have retries left
+                    decision = "RETRY"
+                    reason = f"{tool_name} failed, retry attempt {retries + 1}/{max_retries}"
+                    suggested_action = {
+                        "type": "retry",
+                        "tool": tool_name,
+                        "retry_count": retries + 1,
+                    }
+                    break
+                else:
+                    # ALTERNATIVE: Exhausted retries, try alternative
+                    alternatives = self.TOOL_ALTERNATIVES.get(tool_name, [])
+                    unused_alternatives = [
+                        alt for alt in alternatives
+                        if retry_tracker.get(alt, 0) == 0
+                    ]
+
+                    if unused_alternatives:
+                        decision = "ALTERNATIVE"
+                        reason = f"{tool_name} failed {retries} times, trying {unused_alternatives[0]}"
+                        alternative_tools = unused_alternatives
+                        suggested_action = {
+                            "type": "alternative",
+                            "failed_tool": tool_name,
+                            "alternative": unused_alternatives[0],
+                        }
+                        break
+                    else:
+                        # TERMINATE or RESPOND with limitation
+                        if confidence >= 40:
+                            decision = "RESPOND"
+                            reason = f"Cannot retrieve {category} data, responding with available data"
+                        else:
+                            decision = "TERMINATE"
+                            reason = f"Critical data ({category}) unavailable after all attempts"
+
+        elif confidence < 60 and turn_number < 4:
+            # CONTINUE: Low confidence but more turns available
+            decision = "CONTINUE"
+            missing_cats = [cat for cat in required_categories if not categories_found.get(cat, False)]
+            reason = f"Missing data: {', '.join(missing_cats)}"
+
+        # ================================================================
+        # 5. BUILD OBSERVATION SUMMARY
+        # ================================================================
+        summary_parts = [
+            f"Turn {turn_number}",
+            f"Confidence: {confidence}%",
+            f"Success: {success_count}/{total_calls}",
+        ]
 
         if failed_tools:
-            observation_parts.append(f"Failed: {', '.join(failed_tools[:3])}")
+            summary_parts.append(f"Failed: {', '.join(failed_tools[:2])}")
 
-        if symbols_with_data:
-            observation_parts.append(f"Data for: {', '.join(list(symbols_with_data)[:5])}")
+        summary_parts.append(f"Decision: {decision}")
+        if reason:
+            summary_parts.append(reason)
 
-        if missing_data:
-            observation_parts.append(f"Missing: {', '.join(missing_data)}")
-        else:
-            observation_parts.append("Core data gathered successfully")
+        observation_summary = " | ".join(summary_parts)
 
-        observation_summary = " | ".join(observation_parts)
-
-        self.logger.info(f"[{flow_id}] 👁️ OBSERVE: {observation_summary}")
+        # Log with appropriate emoji based on decision
+        decision_emoji = {
+            "RESPOND": "✅",
+            "CONTINUE": "🔄",
+            "RETRY": "🔁",
+            "ALTERNATIVE": "🔀",
+            "TERMINATE": "⛔",
+        }
+        self.logger.info(
+            f"[{flow_id}] 👁️ OBSERVE {decision_emoji.get(decision, '❓')}: {observation_summary}"
+        )
 
         return {
+            # Basic stats
             "success_count": success_count,
             "failed_count": failed_count,
             "failed_tools": failed_tools,
-            "has_price_data": has_price_data,
-            "has_technical_data": has_technical_data,
-            "has_fundamental_data": has_fundamental_data,
-            "has_news_data": has_news_data,
+            "timeout_tools": timeout_tools,
+
+            # Data coverage
+            "categories_found": categories_found,
+            "required_categories": list(required_categories),
             "symbols_with_data": list(symbols_with_data),
-            "coverage_score": coverage_score,
-            "missing_data": missing_data,
+
+            # Decision
+            "decision": decision,
+            "reason": reason,
+            "confidence": confidence,
+            "suggested_action": suggested_action,
+            "alternative_tools": alternative_tools,
+
+            # Tracking
+            "retry_tracker": retry_tracker,
+            "turn_number": turn_number,
+
+            # Summary
             "observation_summary": observation_summary,
+
+            # Legacy fields for compatibility
+            "coverage_score": confidence,
+            "missing_data": [
+                cat for cat in required_categories
+                if not categories_found.get(cat, False)
+            ],
         }
 
     async def _execute_tool_search(
@@ -2031,8 +2195,16 @@ Respond naturally and helpfully."""
         self.logger.info(f"  └─ Max Turns: {max_turns}")
 
         try:
-            # Check if tools are needed
+            # ================================================================
+            # EXTRACT INTENT DATA
+            # ================================================================
             requires_tools = getattr(intent_result, 'requires_tools', True)
+            validated_symbols = getattr(intent_result, 'validated_symbols', [])
+            market_type = getattr(intent_result, 'market_type', 'stock')
+            if hasattr(market_type, 'value'):
+                market_type = market_type.value
+
+            # Check if tools are needed
 
             if not requires_tools:
                 # Direct response without tools
@@ -2117,6 +2289,7 @@ Respond naturally and helpfully."""
             )
 
             total_tool_calls = 0
+            retry_tracker = {}  # Track retry counts per tool for OBSERVE decisions
 
             for turn_num in range(1, max_turns + 1):
                 yield {"type": "turn_start", "turn": turn_num}
@@ -2216,7 +2389,7 @@ Respond naturally and helpfully."""
                 total_tool_calls += len(tool_calls)
 
                 # ============================================================
-                # OBSERVE Phase: Evaluate results and check if enough
+                # OBSERVE Phase: Evaluate results and make decision
                 # ============================================================
                 observation = self._observe_and_evaluate_results(
                     tool_calls=tool_calls,
@@ -2224,7 +2397,12 @@ Respond naturally and helpfully."""
                     query=query,
                     validated_symbols=validated_symbols,
                     flow_id=flow_id,
+                    retry_tracker=retry_tracker,
+                    turn_number=turn_num,
                 )
+
+                # Update retry_tracker with observation results
+                retry_tracker = observation.get("retry_tracker", retry_tracker)
 
                 if enable_reasoning:
                     yield {
@@ -2233,9 +2411,11 @@ Respond naturally and helpfully."""
                         "action": "evaluate",
                         "content": observation["observation_summary"],
                         "metadata": {
-                            "coverage_score": observation["coverage_score"],
+                            "decision": observation["decision"],
+                            "confidence": observation["confidence"],
                             "success_rate": f"{observation['success_count']}/{len(tool_calls)}",
                             "missing_data": observation["missing_data"],
+                            "suggested_action": observation.get("suggested_action"),
                         },
                     }
 
@@ -2296,36 +2476,86 @@ Respond naturally and helpfully."""
                     })
 
                 # ============================================================
-                # LOOP Decision: More data needed? → Back to THINK
+                # LOOP Decision: Based on OBSERVE decision matrix
                 # ============================================================
-                if turn_num < max_turns:
-                    self.logger.info(
-                        f"[{flow_id}] 🔄 LOOP: Coverage {observation['coverage_score']}% - "
-                        f"returning to THINK (turn {turn_num + 1})"
-                    )
+                decision = observation["decision"]
 
+                if decision == "RESPOND":
+                    # Enough data - exit loop and generate response
+                    self.logger.info(
+                        f"[{flow_id}] ✅ LOOP→RESPOND: Confidence {observation['confidence']}% - "
+                        f"{observation['reason']}"
+                    )
                     if enable_reasoning:
                         yield {
                             "type": "reasoning",
                             "phase": "loop",
-                            "action": "continue",
-                            "content": f"LOOP: Coverage {observation['coverage_score']}% - continuing to gather more data",
+                            "action": "respond",
+                            "content": f"LOOP→RESPOND: {observation['reason']}",
                             "metadata": {
-                                "next_turn": turn_num + 1,
-                                "coverage_score": observation["coverage_score"],
+                                "confidence": observation["confidence"],
+                                "decision": decision,
                             },
                         }
+                    break  # Exit loop to generate final response
 
-            # Max turns reached
-            yield {"type": "max_turns_reached", "turns": max_turns}
+                elif decision == "TERMINATE":
+                    # Cannot proceed - generate partial response with limitation
+                    self.logger.warning(
+                        f"[{flow_id}] ⛔ LOOP→TERMINATE: {observation['reason']}"
+                    )
+                    if enable_reasoning:
+                        yield {
+                            "type": "reasoning",
+                            "phase": "loop",
+                            "action": "terminate",
+                            "content": f"LOOP→TERMINATE: {observation['reason']}",
+                        }
+                    break  # Exit loop
 
-            if enable_reasoning:
-                yield {
-                    "type": "reasoning",
-                    "phase": "max_turns",
-                    "action": "synthesis",
-                    "content": f"Max turns ({max_turns}) reached - synthesizing final response",
-                }
+                elif decision in ["CONTINUE", "RETRY", "ALTERNATIVE"]:
+                    # Need more data - continue to next turn
+                    if turn_num < max_turns:
+                        action_desc = {
+                            "CONTINUE": "gathering more data",
+                            "RETRY": f"retrying {observation.get('suggested_action', {}).get('tool', 'failed tool')}",
+                            "ALTERNATIVE": f"trying {observation.get('suggested_action', {}).get('alternative', 'alternative tool')}",
+                        }
+                        self.logger.info(
+                            f"[{flow_id}] 🔄 LOOP→{decision}: Confidence {observation['confidence']}% - "
+                            f"{action_desc.get(decision, 'continuing')}"
+                        )
+
+                        if enable_reasoning:
+                            yield {
+                                "type": "reasoning",
+                                "phase": "loop",
+                                "action": decision.lower(),
+                                "content": f"LOOP→{decision}: {observation['reason']}",
+                                "metadata": {
+                                    "next_turn": turn_num + 1,
+                                    "confidence": observation["confidence"],
+                                    "suggested_action": observation.get("suggested_action"),
+                                },
+                            }
+                    # Continue to next iteration
+                    continue
+            else:
+                # Loop completed without break - max turns reached
+                yield {"type": "max_turns_reached", "turns": max_turns}
+
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": "max_turns",
+                        "action": "synthesis",
+                        "content": f"Max turns ({max_turns}) reached - synthesizing final response",
+                    }
+
+            # ============================================================
+            # RESPOND Phase: Generate final comprehensive response
+            # ============================================================
+            self.logger.info(f"[{flow_id}] 💬 RESPOND: Generating final response")
 
             messages.append({
                 "role": "user",
@@ -2340,7 +2570,7 @@ IMPORTANT:
             })
 
             # Adaptive max_tokens based on complexity
-            num_symbols = len(getattr(intent_result, 'validated_symbols', []))
+            num_symbols = len(validated_symbols)
             adaptive_max_tokens = 4000 + (num_symbols * 800)
             adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
@@ -2356,7 +2586,7 @@ IMPORTANT:
 
             yield {
                 "type": "done",
-                "total_turns": max_turns,
+                "total_turns": turn_num,
                 "total_tool_calls": total_tool_calls,
             }
 
