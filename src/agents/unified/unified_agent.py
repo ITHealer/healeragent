@@ -53,6 +53,13 @@ from src.agents.classification.models import UnifiedClassificationResult
 from src.agents.skills.skill_registry import SkillRegistry, get_skill_registry
 from src.agents.skills.skill_base import SkillContext
 
+# Tool Search Service for semantic tool discovery
+from src.services.tool_search_service import (
+    get_tool_search_service,
+    ToolSearchService,
+    TOOL_SEARCH_DEFINITION,
+)
+
 
 # ============================================================================
 # DATA MODELS
@@ -801,8 +808,9 @@ class UnifiedAgent(LoggerMixin):
                 "content": f"Starting iterative agent loop (max {max_turns} turns)",
             }
 
-        # Get tools
+        # Get tools + tool_search meta-tool
         tools = self.catalog.get_openai_functions(router_decision.selected_tools)
+        tools.append(TOOL_SEARCH_DEFINITION)  # Enable semantic tool discovery
 
         # Build messages
         messages = self._build_agent_messages(
@@ -1282,6 +1290,15 @@ IMPORTANT:
 
         async def execute_single(tc: ToolCall) -> Dict[str, Any]:
             try:
+                # ============================================================
+                # SPECIAL HANDLING: tool_search meta-tool
+                # ============================================================
+                if tc.name == "tool_search":
+                    return await self._execute_tool_search(tc, flow_id)
+
+                # ============================================================
+                # REGULAR TOOL EXECUTION
+                # ============================================================
                 result = await asyncio.wait_for(
                     self.registry.execute_tool(tool_name=tc.name, params=tc.arguments),
                     timeout=self.DEFAULT_TOOL_TIMEOUT,
@@ -1328,6 +1345,72 @@ IMPORTANT:
                 processed.append(result)
 
         return processed
+
+    async def _execute_tool_search(
+        self,
+        tc: ToolCall,
+        flow_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Execute tool_search meta-tool for semantic tool discovery.
+
+        When GPT calls tool_search, we:
+        1. Search for relevant tools using embeddings
+        2. Return the search results as formatted text
+        3. GPT can then understand what tools are available
+
+        Args:
+            tc: ToolCall with query and optional top_k
+            flow_id: Flow ID for logging
+
+        Returns:
+            Dict with tool_name, status, and search results
+        """
+        try:
+            query = tc.arguments.get("query", "")
+            top_k = tc.arguments.get("top_k", 5)
+
+            if not query:
+                return {
+                    "tool_name": "tool_search",
+                    "status": "error",
+                    "error": "Missing required parameter: query",
+                }
+
+            self.logger.info(
+                f"[{flow_id}] tool_search called: '{query[:50]}...' top_k={top_k}"
+            )
+
+            # Use ToolSearchService for semantic search
+            search_service = get_tool_search_service()
+            response = await search_service.search(query, top_k=top_k)
+
+            # Format results for LLM
+            formatted_result = response.format_for_llm()
+
+            self.logger.info(
+                f"[{flow_id}] tool_search found {len(response.results)} tools: "
+                f"{response.tool_names[:3]}{'...' if len(response.results) > 3 else ''}"
+            )
+
+            return {
+                "tool_name": "tool_search",
+                "status": "success",
+                "data": {
+                    "found_tools": response.tool_names,
+                    "search_time_ms": response.search_time_ms,
+                    "formatted_result": formatted_result,
+                },
+                "formatted_context": formatted_result,
+            }
+
+        except Exception as e:
+            self.logger.error(f"[{flow_id}] tool_search error: {e}")
+            return {
+                "tool_name": "tool_search",
+                "status": "error",
+                "error": str(e),
+            }
 
     def _infer_tool_arguments(
         self,
@@ -1859,11 +1942,14 @@ Respond naturally and helpfully."""
                     "content": f"Starting agent loop with ALL {len(self.catalog.get_tool_names())} tools available",
                 }
 
-            # Get ALL tools from catalog
+            # Get ALL tools from catalog + tool_search meta-tool
             all_tool_names = self.catalog.get_tool_names()
             tools = self.catalog.get_openai_functions(all_tool_names)
 
-            self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools")
+            # Add tool_search meta-tool for semantic tool discovery
+            tools.append(TOOL_SEARCH_DEFINITION)
+
+            self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search)")
 
             # Build messages with all tools
             messages = self._build_agent_messages_all_tools(
