@@ -1346,6 +1346,129 @@ IMPORTANT:
 
         return processed
 
+    def _observe_and_evaluate_results(
+        self,
+        tool_calls: List[ToolCall],
+        tool_results: List[Dict[str, Any]],
+        query: str,
+        validated_symbols: List[str],
+        flow_id: str,
+    ) -> Dict[str, Any]:
+        """
+        OBSERVE Phase: Evaluate tool results and determine if data is sufficient.
+
+        This implements the "Check Results Enough?" logic from the Agent Loop diagram.
+
+        Args:
+            tool_calls: List of tool calls that were made
+            tool_results: Results from tool execution
+            query: Original user query
+            validated_symbols: Symbols being analyzed
+            flow_id: Flow ID for logging
+
+        Returns:
+            Dict with:
+                - success_count: Number of successful tool calls
+                - failed_count: Number of failed tool calls
+                - has_price_data: Whether price data was retrieved
+                - has_technical_data: Whether technical indicators were retrieved
+                - has_fundamental_data: Whether fundamental data was retrieved
+                - coverage_score: 0-100 score of data coverage
+                - missing_data: List of potentially missing data types
+                - observation_summary: Human-readable summary
+        """
+        # Count successes and failures
+        success_count = 0
+        failed_count = 0
+        failed_tools = []
+
+        # Track what data types we have
+        has_price_data = False
+        has_technical_data = False
+        has_fundamental_data = False
+        has_news_data = False
+        symbols_with_data = set()
+
+        for tc, result in zip(tool_calls, tool_results):
+            status = result.get("status", "")
+            is_success = status in ["success", "200"]
+
+            if is_success:
+                success_count += 1
+
+                # Categorize data by tool type
+                tool_name = tc.name.lower()
+                if "price" in tool_name:
+                    has_price_data = True
+                elif any(t in tool_name for t in ["technical", "indicator", "rsi", "macd", "pattern"]):
+                    has_technical_data = True
+                elif any(t in tool_name for t in ["fundamental", "ratio", "income", "balance", "cash"]):
+                    has_fundamental_data = True
+                elif any(t in tool_name for t in ["news", "search", "sentiment"]):
+                    has_news_data = True
+
+                # Track symbols with data
+                if tc.arguments.get("symbol"):
+                    symbols_with_data.add(tc.arguments.get("symbol"))
+            else:
+                failed_count += 1
+                failed_tools.append(tc.name)
+
+        # Calculate coverage score
+        total_calls = len(tool_calls)
+        success_rate = (success_count / total_calls * 100) if total_calls > 0 else 0
+
+        # Check symbol coverage
+        symbol_coverage = (
+            len(symbols_with_data) / len(validated_symbols) * 100
+            if validated_symbols else 100
+        )
+
+        # Overall coverage score
+        coverage_score = int((success_rate + symbol_coverage) / 2)
+
+        # Identify missing data
+        missing_data = []
+        if not has_price_data and validated_symbols:
+            missing_data.append("price data")
+        if not has_technical_data and "technical" in query.lower():
+            missing_data.append("technical indicators")
+        if not has_fundamental_data and any(w in query.lower() for w in ["fundamental", "p/e", "valuation"]):
+            missing_data.append("fundamental data")
+
+        # Build observation summary
+        observation_parts = []
+        observation_parts.append(f"Received {success_count}/{total_calls} successful results")
+
+        if failed_tools:
+            observation_parts.append(f"Failed: {', '.join(failed_tools[:3])}")
+
+        if symbols_with_data:
+            observation_parts.append(f"Data for: {', '.join(list(symbols_with_data)[:5])}")
+
+        if missing_data:
+            observation_parts.append(f"Missing: {', '.join(missing_data)}")
+        else:
+            observation_parts.append("Core data gathered successfully")
+
+        observation_summary = " | ".join(observation_parts)
+
+        self.logger.info(f"[{flow_id}] 👁️ OBSERVE: {observation_summary}")
+
+        return {
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "failed_tools": failed_tools,
+            "has_price_data": has_price_data,
+            "has_technical_data": has_technical_data,
+            "has_fundamental_data": has_fundamental_data,
+            "has_news_data": has_news_data,
+            "symbols_with_data": list(symbols_with_data),
+            "coverage_score": coverage_score,
+            "missing_data": missing_data,
+            "observation_summary": observation_summary,
+        }
+
     async def _execute_tool_search(
         self,
         tc: ToolCall,
@@ -1998,13 +2121,18 @@ Respond naturally and helpfully."""
             for turn_num in range(1, max_turns + 1):
                 yield {"type": "turn_start", "turn": turn_num}
 
+                # ============================================================
+                # THINK Phase: Analyze query and select tools
+                # ============================================================
                 if enable_reasoning:
                     yield {
                         "type": "reasoning",
-                        "phase": f"turn_{turn_num}",
-                        "action": "thought",
-                        "content": f"Turn {turn_num}: Analyzing query and deciding which tools to call",
+                        "phase": "think",
+                        "action": "analyze",
+                        "content": f"Turn {turn_num}: THINK - Analyzing query and selecting tools",
                     }
+
+                self.logger.info(f"[{flow_id}] 🧠 THINK: Turn {turn_num} - LLM analyzing query")
 
                 # Call LLM with ALL tools
                 response = await self._call_llm_with_tools(
@@ -2016,14 +2144,19 @@ Respond naturally and helpfully."""
                 tool_calls = self._parse_tool_calls(response)
                 assistant_content = response.get("content") or ""
 
-                # No tool calls - stream final response
+                # No tool calls - RESPOND Phase
                 if not tool_calls:
+                    # ============================================================
+                    # RESPOND Phase: Generate final response (OBSERVE said "enough")
+                    # ============================================================
+                    self.logger.info(f"[{flow_id}] 💬 RESPOND: No more tools needed, generating final response")
+
                     if enable_reasoning:
                         yield {
                             "type": "reasoning",
-                            "phase": "synthesis",
-                            "action": "start",
-                            "content": "Agent decided no more tools needed - generating final response",
+                            "phase": "respond",
+                            "action": "synthesis",
+                            "content": "RESPOND: Data sufficient - generating comprehensive final response",
                         }
 
                     # Add assistant message to get final response
@@ -2052,13 +2185,13 @@ Respond naturally and helpfully."""
                     }
                     return
 
-                # Emit tool calls
+                # Emit tool calls (THINK result)
                 if enable_reasoning:
                     yield {
                         "type": "reasoning",
-                        "phase": "tool_selection",
+                        "phase": "think",
                         "action": "decision",
-                        "content": f"Calling {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
+                        "content": f"THINK result: Selected {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
                     }
 
                 yield {
@@ -2069,7 +2202,10 @@ Respond naturally and helpfully."""
                     ],
                 }
 
-                # Execute tools
+                # ============================================================
+                # ACT Phase: Execute selected tools
+                # ============================================================
+                self.logger.info(f"[{flow_id}] ⚡ ACT: Executing {len(tool_calls)} tools")
                 tool_results = await self._execute_tool_calls(
                     tool_calls=tool_calls,
                     flow_id=flow_id,
@@ -2078,6 +2214,30 @@ Respond naturally and helpfully."""
                 )
 
                 total_tool_calls += len(tool_calls)
+
+                # ============================================================
+                # OBSERVE Phase: Evaluate results and check if enough
+                # ============================================================
+                observation = self._observe_and_evaluate_results(
+                    tool_calls=tool_calls,
+                    tool_results=tool_results,
+                    query=query,
+                    validated_symbols=validated_symbols,
+                    flow_id=flow_id,
+                )
+
+                if enable_reasoning:
+                    yield {
+                        "type": "reasoning",
+                        "phase": "observe",
+                        "action": "evaluate",
+                        "content": observation["observation_summary"],
+                        "metadata": {
+                            "coverage_score": observation["coverage_score"],
+                            "success_rate": f"{observation['success_count']}/{len(tool_calls)}",
+                            "missing_data": observation["missing_data"],
+                        },
+                    }
 
                 # ============================================================
                 # DYNAMIC TOOL INJECTION from tool_search results
@@ -2134,6 +2294,27 @@ Respond naturally and helpfully."""
                         "tool_call_id": tc.id,
                         "content": json.dumps(result, ensure_ascii=False),
                     })
+
+                # ============================================================
+                # LOOP Decision: More data needed? → Back to THINK
+                # ============================================================
+                if turn_num < max_turns:
+                    self.logger.info(
+                        f"[{flow_id}] 🔄 LOOP: Coverage {observation['coverage_score']}% - "
+                        f"returning to THINK (turn {turn_num + 1})"
+                    )
+
+                    if enable_reasoning:
+                        yield {
+                            "type": "reasoning",
+                            "phase": "loop",
+                            "action": "continue",
+                            "content": f"LOOP: Coverage {observation['coverage_score']}% - continuing to gather more data",
+                            "metadata": {
+                                "next_turn": turn_num + 1,
+                                "coverage_score": observation["coverage_score"],
+                            },
+                        }
 
             # Max turns reached
             yield {"type": "max_turns_reached", "turns": max_turns}
