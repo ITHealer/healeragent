@@ -9,6 +9,7 @@ The LearnHook is called after successful query execution to:
 2. Store analysis summaries for future reference
 3. Learn user preferences implicitly from query patterns
 4. Track successful tool combinations for optimization
+5. Update Core Memory with extracted user information
 
 This creates a feedback loop that improves future responses.
 """
@@ -18,6 +19,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.utils.logger.custom_logging import LoggerMixin
+from src.agents.memory.memory_update_agent import get_memory_update_agent
 
 
 class LearnHook(LoggerMixin):
@@ -45,6 +47,13 @@ class LearnHook(LoggerMixin):
         """Initialize LearnHook."""
         super().__init__()
         self.logger = logging.getLogger("hook.learn")
+        self._memory_update_agent = None
+
+    def _get_memory_update_agent(self):
+        """Lazy-load memory update agent to avoid circular imports."""
+        if self._memory_update_agent is None:
+            self._memory_update_agent = get_memory_update_agent(use_consolidation=True)
+        return self._memory_update_agent
 
     async def on_execution_complete(
         self,
@@ -126,6 +135,16 @@ class LearnHook(LoggerMixin):
                     market_type=getattr(classification, "market_type", None),
                     categories=getattr(classification, "tool_categories", []),
                     language=getattr(classification, "response_language", "vi"),
+                )
+                learn_results["updates"].append(update)
+
+            # 5. Update Core Memory with extracted user information (NEW!)
+            if user_id and response:
+                update = await self._update_core_memory(
+                    user_id=user_id,
+                    query=query,
+                    response=response,
+                    tool_results=tool_results,
                 )
                 learn_results["updates"].append(update)
 
@@ -282,9 +301,6 @@ class LearnHook(LoggerMixin):
 
         Tracks which types of analysis and markets the user
         queries most frequently for personalization.
-
-        Note: Currently logs preferences for future integration with
-        CoreMemory when it supports preference tracking.
         """
         try:
             # Build preferences dict
@@ -296,29 +312,87 @@ class LearnHook(LoggerMixin):
                 "last_active": datetime.now().isoformat(),
             }
 
-            # Log for now - actual CoreMemory integration will be added
-            # when it supports update_preferences method
             self.logger.debug(
                 f"[LEARN] User preferences: user={user_id} | "
                 f"market={market_type} | lang={language}"
             )
-
-            # TODO: Integrate with CoreMemory when it supports preferences
-            # from src.agents.memory.core_memory import get_core_memory
-            # core_memory = get_core_memory()
-            # await core_memory.append_to_human(user_id, f"Preferences: {preferences}")
 
             return {
                 "type": "user_preferences",
                 "user_id": user_id,
                 "market_type": market_type,
                 "success": True,
-                "note": "logged_for_future_integration",
             }
 
         except Exception as e:
             self.logger.warning(f"[LEARN] Failed to update user preferences: {e}")
             return {"type": "user_preferences", "success": False, "error": str(e)}
+
+    async def _update_core_memory(
+        self,
+        user_id: int,
+        query: str,
+        response: str,
+        tool_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """
+        Update Core Memory with extracted user information.
+
+        Uses MemoryUpdateAgent to:
+        1. Extract profile info from conversation
+        2. Consolidate with existing memory
+        3. Save to YAML file
+
+        Args:
+            user_id: User ID
+            query: User's query
+            response: Assistant's response
+            tool_results: Tool execution results
+
+        Returns:
+            Dict with update status
+        """
+        try:
+            # Format tool results for extraction
+            tool_data = {}
+            for result in tool_results:
+                tool_name = result.get("tool_name", "")
+                if tool_name:
+                    tool_data[tool_name] = result.get("data", {})
+
+            # Get memory update agent
+            agent = self._get_memory_update_agent()
+
+            # Analyze for updates
+            result = await agent.analyze_for_updates(
+                user_id=str(user_id),
+                user_message=query,
+                assistant_message=response[:1000],  # Limit size
+                tool_results=tool_data,
+                working_memory_context=None,  # Could add WM context here
+            )
+
+            if result.get("updated", False):
+                self.logger.info(
+                    f"[LEARN] Core Memory updated for user {user_id}: "
+                    f"action={result.get('action')}, categories={result.get('categories')}"
+                )
+            else:
+                self.logger.debug(
+                    f"[LEARN] Core Memory: no update needed - {result.get('reason', result.get('action', 'NOOP'))}"
+                )
+
+            return {
+                "type": "core_memory",
+                "user_id": user_id,
+                "success": result.get("updated", False),
+                "action": result.get("action", "NOOP"),
+                "categories": result.get("categories", []),
+            }
+
+        except Exception as e:
+            self.logger.warning(f"[LEARN] Core Memory update failed: {e}")
+            return {"type": "core_memory", "success": False, "error": str(e)}
 
 
 # ============================================================================

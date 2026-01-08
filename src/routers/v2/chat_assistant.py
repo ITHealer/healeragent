@@ -1475,6 +1475,13 @@ async def stream_chat_v3(
             )
             _logger.debug(f"[CHAT_V3] WorkingMemory initialized: {flow_id}")
 
+            # Get Working Memory symbols from previous turns (CRITICAL FOR CONTEXT)
+            wm_symbols = wm_integration.get_current_symbols()
+            wm_summary = ""
+            if wm_symbols:
+                wm_summary = f"SYMBOLS FROM RECENT TURNS: {', '.join(wm_symbols)}\nWhen user refers to 'nó', 'this stock', 'công ty này', 'symbol đó' etc., they likely refer to these symbols."
+                _logger.info(f"[CHAT_V3] Working Memory symbols from previous turns: {wm_symbols}")
+
             # =================================================================
             # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
             # =================================================================
@@ -1522,6 +1529,7 @@ async def stream_chat_v3(
                 conversation_history=conversation_history,  # NOW WITH HISTORY!
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
                 images=processed_images,
+                working_memory_summary=wm_summary,  # Symbols from previous turns!
             )
             classification = await classifier.classify(classification_context)
 
@@ -1993,6 +2001,24 @@ async def stream_chat_v4(
             )
             _logger.debug(f"[CHAT_V4] WorkingMemory initialized: {flow_id}")
 
+            # Get Working Memory symbols from previous turns (CRITICAL FOR CONTEXT)
+            wm_symbols = wm_integration.get_current_symbols()
+            if wm_symbols:
+                _logger.info(f"[CHAT_V4] Working Memory symbols from previous turns: {wm_symbols}")
+
+            # Load Core Memory for user profile context (portfolio, preferences)
+            core_memory_context: Optional[str] = None
+            try:
+                from src.agents.memory.core_memory import get_core_memory
+                core_memory = get_core_memory()
+                cm_data = await core_memory.load_core_memory(str(user_id))
+                human_block = cm_data.get("human", "")
+                if human_block and len(human_block) > 50:  # Only if meaningful content
+                    core_memory_context = human_block
+                    _logger.debug(f"[CHAT_V4] Loaded Core Memory context: {len(human_block)} chars")
+            except Exception as cm_err:
+                _logger.warning(f"[CHAT_V4] Core Memory load failed (non-fatal): {cm_err}")
+
             # =================================================================
             # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
             # This was missing in V4 - V3 has it via NormalModeChatHandler._load_context()
@@ -2040,6 +2066,8 @@ async def stream_chat_v4(
                 query=query,
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
                 conversation_history=conversation_history,  # Pass history for better context!
+                working_memory_symbols=wm_symbols,  # Symbols from previous turns!
+                core_memory_context=core_memory_context,  # User profile context!
             )
 
             # Emit classification result (using intent result)

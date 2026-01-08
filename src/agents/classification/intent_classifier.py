@@ -332,6 +332,8 @@ class IntentClassifier(LoggerMixin):
         ui_context: Optional[Dict[str, Any]] = None,
         conversation_history: Optional[List[Dict[str, str]]] = None,
         use_cache: bool = True,
+        working_memory_symbols: Optional[List[str]] = None,
+        core_memory_context: Optional[str] = None,
     ) -> IntentResult:
         """
         Classify query and extract normalized symbols in a single LLM call.
@@ -341,6 +343,8 @@ class IntentClassifier(LoggerMixin):
             ui_context: UI context (active_tab, recent_symbols)
             conversation_history: Previous messages for context
             use_cache: Whether to use caching
+            working_memory_symbols: Symbols from previous turns (Working Memory)
+            core_memory_context: User profile from Core Memory (portfolio, preferences)
 
         Returns:
             IntentResult with validated_symbols already normalized
@@ -357,7 +361,10 @@ class IntentClassifier(LoggerMixin):
 
         try:
             # Build prompt with symbol normalization instructions
-            prompt = self._build_prompt(query, ui_context, conversation_history)
+            prompt = self._build_prompt(
+                query, ui_context, conversation_history,
+                working_memory_symbols, core_memory_context
+            )
 
             # Call LLM
             result_data = await self._call_llm(prompt)
@@ -384,8 +391,10 @@ class IntentClassifier(LoggerMixin):
         query: str,
         ui_context: Optional[Dict[str, Any]],
         conversation_history: Optional[List[Dict[str, str]]],
+        working_memory_symbols: Optional[List[str]] = None,
+        core_memory_context: Optional[str] = None,
     ) -> str:
-        """Build classification prompt with symbol normalization."""
+        """Build classification prompt with symbol normalization and memory context."""
 
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -393,22 +402,45 @@ class IntentClassifier(LoggerMixin):
         ui_hint = ""
         if ui_context:
             active_tab = ui_context.get("active_tab", "none")
-            if active_tab != "none":
+            recent_ui_symbols = ui_context.get("recent_symbols", [])
+            if active_tab != "none" or recent_ui_symbols:
                 ui_hint = f"""
 <ui_context>
 Active Tab: {active_tab}
+Recent UI Symbols: {recent_ui_symbols if recent_ui_symbols else 'None'}
 IMPORTANT: When Active Tab is "{active_tab}", interpret ambiguous symbols accordingly:
 - If "stock": BTC = Grayscale Bitcoin Trust (stock), SOL = stock symbol
 - If "crypto": BTC = Bitcoin cryptocurrency, SOL = Solana cryptocurrency
 </ui_context>
 """
 
-        # History context
+        # Working Memory Symbols (CRITICAL for cross-turn context)
+        wm_hint = ""
+        if working_memory_symbols and len(working_memory_symbols) > 0:
+            wm_hint = f"""
+<working_memory>
+SYMBOLS FROM RECENT TURNS: {', '.join(working_memory_symbols)}
+CRITICAL: When user refers to "nó", "this stock", "công ty này", "symbol đó", "these stocks", etc.
+without explicit names, they likely refer to these symbols from recent conversation.
+Use these symbols to resolve ambiguous references!
+</working_memory>
+"""
+
+        # Core Memory context (user profile)
+        cm_hint = ""
+        if core_memory_context:
+            cm_hint = f"""
+<user_profile>
+{core_memory_context[:500]}
+</user_profile>
+"""
+
+        # History context - INCREASED from 100 to 500 chars per message
         history_hint = ""
         if conversation_history and len(conversation_history) > 0:
-            recent = conversation_history[-3:]  # Last 3 messages
+            recent = conversation_history[-5:]  # Last 5 messages (increased from 3)
             history_text = "\n".join([
-                f"- {msg.get('role', 'user')}: {msg.get('content', '')[:100]}"
+                f"- {msg.get('role', 'user')}: {msg.get('content', '')[:500]}"
                 for msg in recent
             ])
             history_hint = f"""
@@ -427,6 +459,8 @@ You are a financial intent classifier. Analyze the user query and provide a stru
 <query>{query}</query>
 
 {ui_hint}
+{wm_hint}
+{cm_hint}
 {history_hint}
 
 <instructions>
