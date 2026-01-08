@@ -1346,103 +1346,6 @@ IMPORTANT:
 
         return processed
 
-    # =========================================================================
-    # LOG PHASE: Metrics Tracking Only (NO Decision-Making)
-    # =========================================================================
-    # Architecture: LLM-Implicit OBSERVE (like Claude AI / ChatGPT)
-    #
-    # Key principle: LLM decides when to call tools vs respond
-    # - If LLM returns tool_calls → needs more data → ACT
-    # - If LLM returns NO tool_calls → has enough data → RESPOND
-    #
-    # This function is for LOGGING/DEBUGGING only, not decision-making.
-    # =========================================================================
-
-    # Safety limit to prevent infinite loops
-    DEFAULT_MAX_STEPS = 10
-
-    def _log_tool_results(
-        self,
-        tool_calls: List[ToolCall],
-        tool_results: List[Dict[str, Any]],
-        flow_id: str,
-        step: int,
-    ) -> Dict[str, Any]:
-        """
-        LOG Phase: Track metrics for debugging/monitoring.
-
-        This is NOT decision-making. LLM decides in THINK phase by:
-        - Seeing tool results in message history (memory)
-        - Deciding: call more tools OR respond
-
-        Args:
-            tool_calls: List of tool calls made
-            tool_results: Results from tool execution
-            flow_id: Flow ID for logging
-            step: Current step number
-
-        Returns:
-            Dict with metrics for debugging/monitoring
-        """
-        success_count = 0
-        failed_count = 0
-        successful_tools = []
-        failed_tools = []
-
-        for tc, result in zip(tool_calls, tool_results):
-            status = result.get("status", "")
-            is_success = status in ["success", "200"]
-
-            if is_success:
-                success_count += 1
-                successful_tools.append(tc.name)
-            else:
-                failed_count += 1
-                failed_tools.append({
-                    "name": tc.name,
-                    "error": result.get("error", result.get("message", "Unknown")),
-                    "status": status,
-                })
-
-        total = len(tool_calls)
-        success_rate = (success_count / total * 100) if total > 0 else 0
-
-        # Build summary string for logging
-        summary_parts = [f"Step {step}", f"Success: {success_count}/{total} ({success_rate:.0f}%)"]
-
-        if successful_tools:
-            tools_str = ", ".join(successful_tools[:3])
-            if len(successful_tools) > 3:
-                tools_str += f"... (+{len(successful_tools) - 3})"
-            summary_parts.append(f"OK: {tools_str}")
-
-        if failed_tools:
-            failed_str = ", ".join(f["name"] for f in failed_tools[:2])
-            summary_parts.append(f"Failed: {failed_str}")
-
-        summary = " | ".join(summary_parts)
-
-        # Log with emoji based on result
-        if failed_count == 0:
-            emoji = "✅"
-        elif success_count > 0:
-            emoji = "⚠️"
-        else:
-            emoji = "❌"
-
-        self.logger.info(f"[{flow_id}] 📝 LOG {emoji}: {summary}")
-
-        return {
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "total": total,
-            "success_rate": success_rate,
-            "successful_tools": successful_tools,
-            "failed_tools": failed_tools,
-            "summary": summary,
-            "step": step,
-        }
-
     async def _execute_tool_search(
         self,
         tc: ToolCall,
@@ -1466,15 +1369,6 @@ IMPORTANT:
         try:
             query = tc.arguments.get("query", "")
             top_k = tc.arguments.get("top_k", 5)
-
-            # Enforce minimum top_k of 3 to ensure sufficient tool discovery
-            # LLM sometimes requests top_k=1 which is too restrictive
-            MIN_TOP_K = 3
-            if top_k < MIN_TOP_K:
-                self.logger.warning(
-                    f"[{flow_id}] top_k={top_k} is too low, enforcing minimum top_k={MIN_TOP_K}"
-                )
-                top_k = MIN_TOP_K
 
             if not query:
                 return {
@@ -2014,16 +1908,8 @@ Respond naturally and helpfully."""
         self.logger.info(f"  └─ Max Turns: {max_turns}")
 
         try:
-            # ================================================================
-            # EXTRACT INTENT DATA
-            # ================================================================
-            requires_tools = getattr(intent_result, 'requires_tools', True)
-            validated_symbols = getattr(intent_result, 'validated_symbols', [])
-            market_type = getattr(intent_result, 'market_type', 'stock')
-            if hasattr(market_type, 'value'):
-                market_type = market_type.value
-
             # Check if tools are needed
+            requires_tools = getattr(intent_result, 'requires_tools', True)
 
             if not requires_tools:
                 # Direct response without tools
@@ -2109,36 +1995,18 @@ Respond naturally and helpfully."""
 
             total_tool_calls = 0
 
-            # ================================================================
-            # AGENT LOOP: THINK → ACT → LOG → MEMORY → LOOP
-            # ================================================================
-            # Architecture: LLM-Implicit OBSERVE (like Claude AI / ChatGPT)
-            #
-            # Key principle: LLM decides when to call tools vs respond
-            # - If LLM returns tool_calls → ACT → LOG → MEMORY → LOOP
-            # - If LLM returns NO tool_calls → RESPOND (exit loop)
-            # ================================================================
-
-            for step in range(1, max_turns + 1):
-                yield {"type": "turn_start", "turn": step, "max_turns": max_turns}
-
-                # ============================================================
-                # 🧠 THINK Phase: LLM analyzes query + data → decides action
-                # ============================================================
-                self.logger.info(f"[{flow_id}] 🧠 THINK: Step {step}/{max_turns} - LLM deciding")
+            for turn_num in range(1, max_turns + 1):
+                yield {"type": "turn_start", "turn": turn_num}
 
                 if enable_reasoning:
                     yield {
                         "type": "reasoning",
-                        "phase": "think",
-                        "action": "analyze",
-                        "content": f"Step {step}: LLM analyzing query and evaluating data sufficiency",
+                        "phase": f"turn_{turn_num}",
+                        "action": "thought",
+                        "content": f"Turn {turn_num}: Analyzing query and deciding which tools to call",
                     }
 
-                # 💓 Heartbeat before LLM call
-                yield {"type": "heartbeat", "step": step, "phase": "calling_llm"}
-
-                # Call LLM with tool_choice="auto" - LLM decides
+                # Call LLM with ALL tools
                 response = await self._call_llm_with_tools(
                     messages, tools, flow_id,
                     model_name=effective_model,
@@ -2148,40 +2016,24 @@ Respond naturally and helpfully."""
                 tool_calls = self._parse_tool_calls(response)
                 assistant_content = response.get("content") or ""
 
-                # ============================================================
-                # ✅ RESPOND: No tool_calls → LLM decided it has enough data
-                # ============================================================
+                # No tool calls - stream final response
                 if not tool_calls:
-                    self.logger.info(
-                        f"[{flow_id}] ✅ RESPOND: LLM decided - sufficient data to answer"
-                    )
-
                     if enable_reasoning:
                         yield {
                             "type": "reasoning",
-                            "phase": "respond",
-                            "action": "decision",
-                            "content": "LLM evaluated: sufficient data collected → generating response",
+                            "phase": "synthesis",
+                            "action": "start",
+                            "content": "Agent decided no more tools needed - generating final response",
                         }
 
-                    # ============================================================
-                    # ALWAYS STREAM final response for better UX
-                    # ============================================================
-                    # Even if LLM provided content, we re-stream for consistency
-                    # This ensures proper SSE streaming to client
+                    # Add assistant message to get final response
+                    messages.append({"role": "assistant", "content": assistant_content})
 
-                    num_symbols = len(validated_symbols)
-                    adaptive_max_tokens = min(4000 + (num_symbols * 800), 8000)
-
-                    # Add context for final response if needed
-                    if not assistant_content:
-                        messages.append({"role": "assistant", "content": ""})
-
-                    # 💓 Heartbeat before streaming
-                    yield {"type": "heartbeat", "step": step, "phase": "streaming_response"}
-
-                    # Stream response from LLM
-                    self.logger.info(f"[{flow_id}] 📡 Streaming final response...")
+                    # Calculate max_tokens based on query complexity
+                    # More symbols = longer response needed
+                    num_symbols = len(getattr(intent_result, 'validated_symbols', []))
+                    adaptive_max_tokens = 4000 + (num_symbols * 800)  # ~800 tokens per symbol
+                    adaptive_max_tokens = min(adaptive_max_tokens, 8000)  # Cap at 8000
 
                     async for chunk in self.llm_provider.stream_response(
                         model_name=effective_model,
@@ -2195,25 +2047,18 @@ Respond naturally and helpfully."""
 
                     yield {
                         "type": "done",
-                        "total_turns": step,
+                        "total_turns": turn_num,
                         "total_tool_calls": total_tool_calls,
                     }
                     return
 
-                # ============================================================
-                # ⚡ ACT Phase: Execute tools requested by LLM
-                # ============================================================
-                self.logger.info(
-                    f"[{flow_id}] ⚡ ACT: Executing {len(tool_calls)} tools: "
-                    f"{[tc.name for tc in tool_calls]}"
-                )
-
+                # Emit tool calls
                 if enable_reasoning:
                     yield {
                         "type": "reasoning",
-                        "phase": "act",
-                        "action": "execute",
-                        "content": f"LLM requested {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
+                        "phase": "tool_selection",
+                        "action": "decision",
+                        "content": f"Calling {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
                     }
 
                 yield {
@@ -2223,11 +2068,6 @@ Respond naturally and helpfully."""
                         for tc in tool_calls
                     ],
                 }
-
-                # ============================================================
-                # 💓 HEARTBEAT: Keep connection alive during tool execution
-                # ============================================================
-                yield {"type": "heartbeat", "step": step, "phase": "executing_tools"}
 
                 # Execute tools
                 tool_results = await self._execute_tool_calls(
@@ -2239,33 +2079,30 @@ Respond naturally and helpfully."""
 
                 total_tool_calls += len(tool_calls)
 
-                # Heartbeat after tool execution
-                yield {"type": "heartbeat", "step": step, "phase": "tools_completed"}
-
                 # ============================================================
-                # 📝 LOG Phase: Track metrics (debugging only - NO decision)
+                # DYNAMIC TOOL INJECTION from tool_search results
                 # ============================================================
-                log_info = self._log_tool_results(
-                    tool_calls=tool_calls,
-                    tool_results=tool_results,
-                    flow_id=flow_id,
-                    step=step,
-                )
+                for tc, result in zip(tool_calls, tool_results):
+                    if tc.name == "tool_search" and result.get("status") == "success":
+                        found_tools = result.get("data", {}).get("found_tools", [])
+                        for tool_name in found_tools:
+                            if tool_name not in discovered_tool_names:
+                                # Get full tool definition and inject
+                                tool_def = self.catalog.get_full_schema(tool_name)
+                                if tool_def:
+                                    tools.append(tool_def.to_openai_function())
+                                    discovered_tool_names.add(tool_name)
+                                    self.logger.info(
+                                        f"[{flow_id}] 🔧 INJECTED tool: {tool_name}"
+                                    )
 
-                if enable_reasoning:
-                    yield {
-                        "type": "reasoning",
-                        "phase": "log",
-                        "action": "metrics",
-                        "content": log_info["summary"],
-                        "metadata": {
-                            "success_count": log_info["success_count"],
-                            "failed_count": log_info["failed_count"],
-                            "success_rate": f"{log_info['success_rate']:.0f}%",
-                        },
-                    }
+                        if found_tools:
+                            self.logger.info(
+                                f"[{flow_id}] tool_search discovered {len(found_tools)} tools, "
+                                f"total available: {len(tools)}"
+                            )
 
-                # Emit tool results for UI
+                # Emit results
                 yield {
                     "type": "tool_results",
                     "results": [
@@ -2274,10 +2111,7 @@ Respond naturally and helpfully."""
                     ],
                 }
 
-                # ============================================================
-                # 💾 MEMORY: Add results to messages (LLM sees in next THINK)
-                # ============================================================
-                # Add assistant message with tool_calls
+                # Update messages
                 messages.append({
                     "role": "assistant",
                     "content": assistant_content,
@@ -2294,7 +2128,6 @@ Respond naturally and helpfully."""
                     ],
                 })
 
-                # Add tool results to messages (Memory)
                 for tc, result in zip(tool_calls, tool_results):
                     messages.append({
                         "role": "tool",
@@ -2302,66 +2135,33 @@ Respond naturally and helpfully."""
                         "content": json.dumps(result, ensure_ascii=False),
                     })
 
-                # ============================================================
-                # 🔧 DYNAMIC TOOL INJECTION from tool_search results
-                # ============================================================
-                for tc, result in zip(tool_calls, tool_results):
-                    if tc.name == "tool_search" and result.get("status") == "success":
-                        found_tools = result.get("data", {}).get("found_tools", [])
-                        for tool_name in found_tools:
-                            if tool_name not in discovered_tool_names:
-                                tool_def = self.catalog.get_full_schema(tool_name)
-                                if tool_def:
-                                    tools.append(tool_def.to_openai_function())
-                                    discovered_tool_names.add(tool_name)
-                                    self.logger.info(f"[{flow_id}] 🔧 Injected tool: {tool_name}")
-
-                # ============================================================
-                # 🔄 LOOP: Back to THINK (LLM sees results in memory)
-                # ============================================================
-                self.logger.info(
-                    f"[{flow_id}] 🔄 LOOP: Results in memory → back to THINK (step {step + 1})"
-                )
-
-                if enable_reasoning:
-                    yield {
-                        "type": "reasoning",
-                        "phase": "loop",
-                        "action": "continue",
-                        "content": f"Tool results added to memory. LLM will evaluate in next THINK.",
-                    }
-
-                # Continue to next iteration (THINK phase)
-
-            # ================================================================
-            # ⚠️ MAX STEPS REACHED: Force response with available data
-            # ================================================================
-            self.logger.warning(
-                f"[{flow_id}] ⚠️ MAX STEPS ({max_turns}) reached - forcing response"
-            )
-
+            # Max turns reached
             yield {"type": "max_turns_reached", "turns": max_turns}
 
             if enable_reasoning:
                 yield {
                     "type": "reasoning",
-                    "phase": "respond",
-                    "action": "forced",
-                    "content": f"Safety limit ({max_turns} steps) reached. Generating response with available data.",
+                    "phase": "max_turns",
+                    "action": "synthesis",
+                    "content": f"Max turns ({max_turns}) reached - synthesizing final response",
                 }
 
-            # Add prompt to generate final response
             messages.append({
                 "role": "user",
-                "content": """Please provide your final response based on all the information gathered so far.
+                "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
 
-Include all relevant data points and insights. If some information is missing, acknowledge it but provide the best answer possible with available data.
-
-End with 2-3 follow-up questions.""",
+IMPORTANT:
+- Include ALL important data points and numbers from tool results
+- For each symbol, provide: price, technical signals (RSI, MACD), fundamental metrics (P/E, ROE)
+- Give clear insights and actionable recommendations
+- Don't truncate or summarize - be as detailed as needed for a thorough analysis
+- End with 2-3 follow-up questions""",
             })
 
-            num_symbols = len(validated_symbols)
-            adaptive_max_tokens = min(4000 + (num_symbols * 800), 8000)
+            # Adaptive max_tokens based on complexity
+            num_symbols = len(getattr(intent_result, 'validated_symbols', []))
+            adaptive_max_tokens = 4000 + (num_symbols * 800)
+            adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
@@ -2377,7 +2177,6 @@ End with 2-3 follow-up questions.""",
                 "type": "done",
                 "total_turns": max_turns,
                 "total_tool_calls": total_tool_calls,
-                "max_steps_reached": True,
             }
 
         except Exception as e:
@@ -2415,14 +2214,6 @@ End with 2-3 follow-up questions.""",
         skill = self.skill_registry.select_skill(market_type)
         skill_prompt = skill.get_full_prompt()
 
-        # Log skill selection for debugging
-        self.logger.info(
-            f"🎯 SKILL SELECTED: {skill.name} for market_type={market_type}"
-        )
-        self.logger.info(
-            f"   └─ Skill prompt length: {len(skill_prompt)} chars, symbols: {validated_symbols}"
-        )
-
         # Build context hints
         symbols_hint = ""
         if validated_symbols:
@@ -2448,77 +2239,37 @@ Response Language: {system_language.upper()}
 Intent: {intent_summary}
 {user_context}
 
-## AGENT LOOP BEHAVIOR (CRITICAL)
+## TOOL EXECUTION GUIDELINES
 
-You are in an agentic loop. Each turn, you MUST decide:
-1. **Need more data?** → Call appropriate tools
-2. **Have enough data to answer well?** → Respond directly (NO tool calls)
+**You have access to {len(tool_names)} tools. Use your judgment to select the most relevant ones.**
 
-### Decision Process (Like ChatGPT/Claude):
-- **EVALUATE** the data you have vs what you need to answer the query
-- **If you have sufficient data** → Generate your final response WITHOUT calling more tools
-- **If you're missing critical data** → Call only the specific tools needed
+**IMPORTANT - ChatGPT-Style Agent Loop:**
+1. THINK: Analyze what information you need to answer the user's query
+2. ACT: Call the most relevant tools (don't call all tools - be selective)
+3. OBSERVE: Review tool results and decide if more data is needed
+4. REPEAT: Call additional tools only if necessary
+5. RESPOND: When you have enough data, generate your final response
 
-### tool_search Usage (IMPORTANT):
-- When using `tool_search`, ALWAYS use `top_k=5` or higher!
-- `top_k=1` is TOO RESTRICTIVE and will miss important tools
-- Include ALL data types in your query: "stock price, RSI, MACD, support resistance"
-- After tool_search, call ALL discovered tools that are relevant to the query
-
-### When to RESPOND (no tool calls):
-- You have ACTUALLY RECEIVED the key data points from tool results
-- Additional tools wouldn't significantly improve your answer
-- You've already gathered comprehensive data in previous turns
-- You want to ask the user a clarifying question
-
-### When to call MORE tools:
-- You're missing critical information for the query
-- The user asked for specific data you haven't fetched yet (e.g., RSI, technical analysis)
-- Previous tool calls failed and you need to retry or try alternatives
-
-### ⚠️ CRITICAL: DATA INTEGRITY
-**NEVER fabricate data!** Before responding, verify:
-- Did I actually call a tool to get this data? (Check tool results)
-- If user asked for RSI → Did I call getTechnicalIndicators?
-- If user asked for support/resistance → Did I fetch technical analysis?
-- If data is NOT in my tool results → I MUST NOT include it in my response!
-
-### Example Flow:
-```
-Query: "Phân tích NVDA với RSI, MACD và hỗ trợ kháng cự?"
-Turn 1: THINK → "Need price, technical indicators" → tool_search (top_k=5)
-Turn 2: THINK → "Found tools" → ACT: getStockPrice, getTechnicalIndicators (parallel)
-Turn 3: THINK → "Have price + RSI + MACD + support/resistance" → RESPOND
-```
-
-**BAD Example (DO NOT DO THIS):**
-```
-Turn 1: tool_search (top_k=1) → only finds getStockPrice
-Turn 2: getStockPrice → only have price data
-Turn 3: RESPOND with RSI=72, MACD bullish... ← WRONG! Never fetched this data!
-```
-
-## TOOL SELECTION STRATEGY
-
-**You have access to {len(tool_names)} tools. Be SELECTIVE - don't call all tools.**
-
+**Tool Selection Strategy:**
 - Start with essential tools (price, basic data)
-- Add technical indicators ONLY if technical analysis is requested
-- Add fundamentals ONLY for fundamental analysis queries
-- Add news/web search ONLY if current events are relevant
+- Add technical indicators if technical analysis is requested
+- Add fundamentals only for fundamental analysis queries
+- Add news/web search only if current events are relevant
 - DON'T call tools that won't help answer the specific query
 
-## RESPONSE QUALITY REQUIREMENTS
+## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
 
 **1. COMPREHENSIVE DATA SYNTHESIS:**
 - Include ALL important numbers from tool results (prices, percentages, ratios)
-- For each symbol analyzed, provide: current price, key technical levels, trend
-- Don't skip important data points - users want specifics!
+- For each symbol analyzed, provide: current price, key technical levels, trend assessment
+- Don't skip or summarize important data points - users want the specifics!
+- If tools returned financial ratios, include P/E, PEG, ROE, debt ratios with interpretation
 
 **2. ADAPTIVE RESPONSE LENGTH:**
 - Simple query (1 symbol, basic info) → Medium response (300-500 words)
-- Complex query (multiple symbols, technical + fundamental) → Detailed (800-1500 words)
-- NEVER truncate - be as detailed as needed
+- Complex query (multiple symbols, technical + fundamental) → Detailed response (800-1500 words)
+- Comparison queries → Include structured comparison table + detailed analysis
+- NEVER truncate analysis just to keep response short - be as detailed as needed
 
 **3. STRUCTURED ANALYSIS FORMAT:**
 For each symbol, include where applicable:
@@ -2534,14 +2285,10 @@ For each symbol, include where applicable:
 - Highlight actionable insights and recommendations
 - End with 2-3 relevant follow-up questions
 
-**5. DATA INTEGRITY (ABSOLUTELY CRITICAL):**
-- NEVER make up numbers - only use data from ACTUAL tool results in this conversation
-- If a tool wasn't called, that data DOES NOT EXIST - don't fabricate it!
-- If user asked for RSI but getTechnicalIndicators wasn't called → Say "I need to fetch technical indicators"
-- If a tool failed or data is missing, acknowledge it clearly
+**5. DATA INTEGRITY:**
+- NEVER make up numbers - only use data from tool results
+- If a tool failed or data is missing, acknowledge it
 - Be honest about uncertainty or conflicting signals
-- WRONG: "RSI = 72" without getTechnicalIndicators result → This is fabrication!
-- CORRECT: "I have price data. For RSI and technical indicators, let me fetch that data."
 """
 
         messages = [{"role": "system", "content": system_prompt}]
