@@ -61,6 +61,7 @@ class IncludeAPIRouter(object):
         from src.routers.v2.tool_call import router as router_tool_call
         from src.routers.v2.cookies_router import router as router_cookies
         from src.routers.v2.text_translator import router as router_text_translator
+        from src.routers.v2.deep_research import router as router_deep_research
 
         # Live Analysis
         from src.routers.v2.equity_forecast import router as router_equity_forecast
@@ -130,6 +131,7 @@ class IncludeAPIRouter(object):
         router.include_router(router_text_translator, tags=['TOL Translator - Text Translation'])
         router.include_router(router_equity_forecast, tags=['TOL Tool - Equity Forecast'])
         router.include_router(router_smc_analysis, tags=['TOL Tool - Crypto Live Analysis'])
+        router.include_router(router_deep_research, tags=['Deep Research - Multi-Agent Research'])
 
         # Data provider routers
         router.include_router(router_company_search, tags=["TOL Data Provider - FMP"])
