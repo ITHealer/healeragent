@@ -482,11 +482,32 @@ CRITICAL SYMBOL NORMALIZATION RULES:
 
 If unsure about a symbol, make your best guess based on context.
 
-## STEP 3: Determine Market Type
-- "stock": Stocks, ETFs, indices
-- "crypto": Cryptocurrencies
-- "both": Query involves both stock and crypto
-- "none": No specific market
+## STEP 3: Determine Market Type (CRITICAL - USE UI CONTEXT!)
+
+**RULE 1: UI Tab Context is the STRONGEST signal for ambiguous symbols:**
+- If active_tab = "stock" → BTC = Grayscale Bitcoin Trust (stock), SOL = stock symbol
+- If active_tab = "crypto" → BTC = Bitcoin cryptocurrency, SOL = Solana cryptocurrency
+- If active_tab = "none" or missing → Use context clues from query
+
+**RULE 2: Market Type Classification:**
+- "stock": Stocks, ETFs, indices (AAPL, NVDA, SPY, VNM, HPG)
+- "crypto": Cryptocurrencies (BTC, ETH, SOL when crypto context)
+- "both": Query explicitly involves BOTH stock and crypto (e.g., "compare NVDA with BTC")
+- "none": ONLY for non-market queries (greetings, general knowledge)
+
+**RULE 3: If symbols are present, market_type MUST NOT be "none":**
+- If validated_symbols is not empty, market_type must be "stock", "crypto", or "both"
+- Default to "stock" if unsure but symbols are present
+
+**RULE 4: Ambiguous Symbols Reference:**
+| Symbol | Stock Meaning | Crypto Meaning |
+|--------|--------------|----------------|
+| BTC | Grayscale Bitcoin Mini Trust | Bitcoin |
+| ETH | Ethan Allen Interiors | Ethereum |
+| SOL | Emeren Group Ltd | Solana |
+| COIN | Coinbase Global | (Not a crypto) |
+
+**ALWAYS check active_tab first for these ambiguous symbols!**
 
 ## STEP 4: Determine Complexity
 "direct" - NO tools needed:
@@ -581,6 +602,27 @@ Price data requires tools.
 </reasoning>
 <classification>
 {{"intent_summary": "Bitcoin cryptocurrency price", "validated_symbols": ["BTC"], "market_type": "crypto", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "crypto_analysis", "confidence": 0.93}}
+</classification>
+
+Example 5b - Stock BTC with UI Context:
+Query: "Giá BTC" (UI Context: active_tab = stock)
+<reasoning>
+User asks about BTC price. UI context shows STOCK tab, so BTC = Grayscale Bitcoin Mini Trust (GBTC alternative stock).
+Since user is on stock tab, they want stock market data for BTC.
+Price data requires tools.
+</reasoning>
+<classification>
+{{"intent_summary": "Grayscale Bitcoin Mini Trust (BTC) stock price", "validated_symbols": ["BTC"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.92}}
+</classification>
+
+Example 5c - Query with symbols should NOT have market_type=none:
+Query: "Phân tích công ty này" (Working Memory: NVDA mentioned previously)
+<reasoning>
+User refers to "công ty này" (this company). Working memory shows NVDA was discussed.
+NVDA is a stock. Symbols are present, so market_type cannot be "none".
+</reasoning>
+<classification>
+{{"intent_summary": "Analysis of NVIDIA stock (referenced from context)", "validated_symbols": ["NVDA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.88}}
 </classification>
 
 Example 6 - Real-Time Info:
