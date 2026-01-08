@@ -2111,7 +2111,7 @@ Respond naturally and helpfully."""
             # ================================================================
 
             for step in range(1, max_turns + 1):
-                yield {"type": "turn_start", "turn": step}
+                yield {"type": "turn_start", "turn": step, "max_turns": max_turns}
 
                 # ============================================================
                 # 🧠 THINK Phase: LLM analyzes query + data → decides action
@@ -2125,6 +2125,9 @@ Respond naturally and helpfully."""
                         "action": "analyze",
                         "content": f"Step {step}: LLM analyzing query and evaluating data sufficiency",
                     }
+
+                # 💓 Heartbeat before LLM call
+                yield {"type": "heartbeat", "step": step, "phase": "calling_llm"}
 
                 # Call LLM with tool_choice="auto" - LLM decides
                 response = await self._call_llm_with_tools(
@@ -2152,26 +2155,34 @@ Respond naturally and helpfully."""
                             "content": "LLM evaluated: sufficient data collected → generating response",
                         }
 
-                    # Stream final response
-                    if assistant_content:
-                        # LLM already provided response content
-                        yield {"type": "content", "content": assistant_content}
-                    else:
-                        # Generate streaming response
+                    # ============================================================
+                    # ALWAYS STREAM final response for better UX
+                    # ============================================================
+                    # Even if LLM provided content, we re-stream for consistency
+                    # This ensures proper SSE streaming to client
+
+                    num_symbols = len(validated_symbols)
+                    adaptive_max_tokens = min(4000 + (num_symbols * 800), 8000)
+
+                    # Add context for final response if needed
+                    if not assistant_content:
                         messages.append({"role": "assistant", "content": ""})
 
-                        num_symbols = len(validated_symbols)
-                        adaptive_max_tokens = min(4000 + (num_symbols * 800), 8000)
+                    # 💓 Heartbeat before streaming
+                    yield {"type": "heartbeat", "step": step, "phase": "streaming_response"}
 
-                        async for chunk in self.llm_provider.stream_response(
-                            model_name=effective_model,
-                            messages=messages,
-                            provider_type=effective_provider,
-                            api_key=self.api_key,
-                            max_tokens=adaptive_max_tokens,
-                            temperature=0.3,
-                        ):
-                            yield {"type": "content", "content": chunk}
+                    # Stream response from LLM
+                    self.logger.info(f"[{flow_id}] 📡 Streaming final response...")
+
+                    async for chunk in self.llm_provider.stream_response(
+                        model_name=effective_model,
+                        messages=messages,
+                        provider_type=effective_provider,
+                        api_key=self.api_key,
+                        max_tokens=adaptive_max_tokens,
+                        temperature=0.3,
+                    ):
+                        yield {"type": "content", "content": chunk}
 
                     yield {
                         "type": "done",
@@ -2204,6 +2215,11 @@ Respond naturally and helpfully."""
                     ],
                 }
 
+                # ============================================================
+                # 💓 HEARTBEAT: Keep connection alive during tool execution
+                # ============================================================
+                yield {"type": "heartbeat", "step": step, "phase": "executing_tools"}
+
                 # Execute tools
                 tool_results = await self._execute_tool_calls(
                     tool_calls=tool_calls,
@@ -2213,6 +2229,9 @@ Respond naturally and helpfully."""
                 )
 
                 total_tool_calls += len(tool_calls)
+
+                # Heartbeat after tool execution
+                yield {"type": "heartbeat", "step": step, "phase": "tools_completed"}
 
                 # ============================================================
                 # 📝 LOG Phase: Track metrics (debugging only - NO decision)
