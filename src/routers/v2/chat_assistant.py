@@ -1516,9 +1516,10 @@ async def stream_chat_v3(
             # Save classification to working memory (for cross-turn continuity)
             wm_integration.save_classification(
                 query_type=classification.query_type.value,
-                symbols=classification.symbols,
                 categories=classification.tool_categories,
-                requires_tools=classification.requires_tools,
+                symbols=classification.symbols,
+                language=classification.response_language,
+                reasoning=classification.reasoning,
             )
 
             # Resolve charts for frontend
@@ -2009,9 +2010,10 @@ async def stream_chat_v4(
             # Save classification to working memory (for cross-turn continuity)
             wm_integration.save_classification(
                 query_type=intent_result.query_type,
-                symbols=intent_result.validated_symbols,
                 categories=[],  # V4 doesn't use categories
-                requires_tools=intent_result.requires_tools,
+                symbols=intent_result.validated_symbols,
+                language=intent_result.response_language,
+                reasoning=intent_result.reasoning,
             )
 
             # =================================================================
