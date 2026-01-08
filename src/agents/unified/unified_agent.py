@@ -2214,6 +2214,14 @@ IMPORTANT:
         skill = self.skill_registry.select_skill(market_type)
         skill_prompt = skill.get_full_prompt()
 
+        # Log skill selection for debugging
+        self.logger.info(
+            f"🎯 SKILL SELECTED: {skill.name} for market_type={market_type}"
+        )
+        self.logger.info(
+            f"   └─ Skill prompt length: {len(skill_prompt)} chars, symbols: {validated_symbols}"
+        )
+
         # Build context hints
         symbols_hint = ""
         if validated_symbols:
