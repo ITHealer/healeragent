@@ -1347,31 +1347,17 @@ IMPORTANT:
         return processed
 
     # =========================================================================
-    # OBSERVE PHASE: Decision Matrix
+    # OBSERVE PHASE: Simple Result Evaluation
     # =========================================================================
-
-    # NOTE: TOOL_ALTERNATIVES is commented out - not implemented yet
-    # When retry fails, we use webSearch as fallback instead
-    # TOOL_ALTERNATIVES = {
-    #     "getIncomeStatement": ["getKeyMetrics", "getFinancialRatios"],
-    #     "getBalanceSheet": ["getKeyMetrics", "getFinancialRatios"],
-    #     "getCashFlow": ["getKeyMetrics", "getFinancialRatios"],
-    #     "getTechnicalIndicators": ["detectChartPatterns", "getSupportResistance"],
-    #     "getStockPrice": ["getQuote", "getHistoricalPrice"],
-    #     "getStockNews": ["webSearch"],
-    #     "getSectorPerformance": ["getMarketOverview"],
-    # }
-
-    # DATA CATEGORIES: Map tool names to data categories
-    TOOL_CATEGORIES = {
-        "price": ["getstockprice", "getquote", "gethistoricalprice", "getcryptoprice"],
-        "technical": ["gettechnicalindicators", "detectchartpatterns", "getsupportresistance", "getrelativestrength"],
-        "fundamental": ["getincomestatement", "getbalancesheet", "getcashflow", "getfinancialratios", "getkeymetrics"],
-        "news": ["getstocknews", "websearch", "getmarketsentiment"],
-    }
+    # Design principles:
+    # 1. OBSERVE only evaluates tool results (success/fail) - no query interpretation
+    # 2. LLM in THINK phase decides what tools to call (language-agnostic)
+    # 3. No hard-coded keywords - works with any language
+    # 4. Simple confidence = success rate
 
     # WEB_SEARCH FALLBACK: Use webSearch when tool retries are exhausted
     WEB_SEARCH_FALLBACK_ENABLED = True
+    MAX_TOOL_RETRIES = 2
 
     def _observe_and_evaluate_results(
         self,
@@ -1385,19 +1371,23 @@ IMPORTANT:
         max_retries: int = 2,
     ) -> Dict[str, Any]:
         """
-        OBSERVE Phase: Evaluate tool results and make intelligent decisions.
+        OBSERVE Phase: Evaluate tool call results.
 
-        Implements the Agent Loop decision matrix:
-        - RESPOND: Data sufficient, generate final response
-        - CONTINUE: Need more data, call additional tools
-        - RETRY: Tool failed, retry same tool
-        - ALTERNATIVE: Tool failed repeatedly, try alternative tool
-        - TERMINATE: Cannot proceed, explain limitation
+        Simple approach - no query interpretation, no hard-coded keywords:
+        - Count success/fail of tool calls
+        - Track which tools failed for retry logic
+        - Let LLM decide if more tools needed
+
+        Decision matrix:
+        - RESPOND: All tools succeeded OR enough data to answer
+        - RETRY: Some tools failed, retries remaining
+        - WEB_SEARCH: Retries exhausted, try web search fallback
+        - RESPOND (partial): Web search failed, respond with available data
 
         Args:
-            tool_calls: List of tool calls that were made
+            tool_calls: List of tool calls made
             tool_results: Results from tool execution
-            query: Original user query
+            query: Original user query (not parsed - LLM handles this)
             validated_symbols: Symbols being analyzed
             flow_id: Flow ID for logging
             retry_tracker: Dict tracking retry counts per tool
@@ -1405,26 +1395,19 @@ IMPORTANT:
             max_retries: Maximum retries per tool (default 2)
 
         Returns:
-            Dict with decision, confidence, and action details
+            Dict with decision and metadata
         """
         if retry_tracker is None:
             retry_tracker = {}
 
         # ================================================================
-        # 1. ANALYZE RESULTS
+        # 1. ANALYZE RESULTS (simple counting)
         # ================================================================
         success_count = 0
         failed_count = 0
         failed_tools = []
         timeout_tools = []
-
-        # Track data categories
-        categories_found = {
-            "price": False,
-            "technical": False,
-            "fundamental": False,
-            "news": False,
-        }
+        successful_tools = []
         symbols_with_data = set()
 
         for tc, result in zip(tool_calls, tool_results):
@@ -1432,18 +1415,11 @@ IMPORTANT:
             is_success = status in ["success", "200"]
             is_timeout = status == "timeout"
 
-            tool_name_lower = tc.name.lower()
-
             if is_success:
                 success_count += 1
+                successful_tools.append(tc.name)
 
-                # Identify data category
-                for category, tools in self.TOOL_CATEGORIES.items():
-                    if any(t in tool_name_lower for t in tools):
-                        categories_found[category] = True
-                        break
-
-                # Track symbols
+                # Track symbols that got data
                 if tc.arguments.get("symbol"):
                     symbols_with_data.add(tc.arguments.get("symbol"))
             else:
@@ -1452,148 +1428,85 @@ IMPORTANT:
                 if is_timeout:
                     timeout_tools.append(tc.name)
 
-                # Track retries
+                # Track retries per tool
                 retry_tracker[tc.name] = retry_tracker.get(tc.name, 0) + 1
 
         # ================================================================
-        # 2. DETERMINE REQUIRED DATA CATEGORIES
+        # 2. CALCULATE CONFIDENCE (simple: success rate)
         # ================================================================
-        query_lower = query.lower()
-        required_categories = {"price"}  # Price is always required if symbols exist
-
-        # Detect required categories from query
-        technical_keywords = ["kỹ thuật", "technical", "rsi", "macd", "pattern", "chart", "xu hướng", "trend"]
-        fundamental_keywords = ["cơ bản", "fundamental", "p/e", "eps", "revenue", "doanh thu", "lợi nhuận", "valuation"]
-        news_keywords = ["tin tức", "news", "sentiment", "thị trường", "market"]
-
-        if any(kw in query_lower for kw in technical_keywords):
-            required_categories.add("technical")
-        if any(kw in query_lower for kw in fundamental_keywords):
-            required_categories.add("fundamental")
-        if any(kw in query_lower for kw in news_keywords):
-            required_categories.add("news")
-
-        # ================================================================
-        # 3. CALCULATE CONFIDENCE SCORE
-        # ================================================================
-        # Base: success rate
         total_calls = len(tool_calls)
         success_rate = (success_count / total_calls * 100) if total_calls > 0 else 0
 
-        # Category coverage
-        required_count = len(required_categories)
-        covered_count = sum(1 for cat in required_categories if categories_found.get(cat, False))
-        category_coverage = (covered_count / required_count * 100) if required_count > 0 else 100
-
-        # Symbol coverage
+        # Symbol coverage bonus
         symbol_coverage = (
             len(symbols_with_data) / len(validated_symbols) * 100
             if validated_symbols else 100
         )
 
-        # Weighted confidence
-        confidence = int(
-            success_rate * 0.3 +
-            category_coverage * 0.5 +
-            symbol_coverage * 0.2
-        )
+        # Simple weighted confidence
+        confidence = int(success_rate * 0.7 + symbol_coverage * 0.3)
 
         # ================================================================
-        # 4. MAKE DECISION
+        # 3. MAKE DECISION (simple logic - no category/keyword parsing)
         # ================================================================
         decision = "RESPOND"
         reason = ""
         suggested_action = None
-        alternative_tools = []
 
-        # Check for failed critical tools
-        critical_failures = []
-        for tool_name in failed_tools:
-            tool_lower = tool_name.lower()
-            for category in required_categories:
-                if any(t in tool_lower for t in self.TOOL_CATEGORIES.get(category, [])):
-                    critical_failures.append((tool_name, category))
-                    break
-
-        # Decision matrix
-        if confidence >= 80 and not critical_failures:
-            # RESPOND: High confidence, all critical data available
+        # Simple decision matrix based on success/fail
+        if failed_count == 0:
+            # All tools succeeded → RESPOND
             decision = "RESPOND"
-            reason = "All required data gathered successfully"
+            reason = f"All {success_count} tools succeeded"
 
-        elif confidence >= 60 and not critical_failures:
-            # RESPOND with caveat: Acceptable confidence
+        elif success_count > 0 and confidence >= 60:
+            # Some succeeded, confidence OK → RESPOND with available data
             decision = "RESPOND"
-            reason = "Sufficient data available for analysis"
+            reason = f"{success_count}/{total_calls} tools succeeded, sufficient data"
 
-        elif critical_failures:
-            # Check retry count for failed tools
-            for tool_name, category in critical_failures:
+        elif failed_count > 0:
+            # Some tools failed → check retry logic
+            # Find the first failed tool that can be retried
+            tool_to_retry = None
+            for tool_name in failed_tools:
                 retries = retry_tracker.get(tool_name, 0)
-
                 if retries < max_retries:
-                    # RETRY: Still have retries left
-                    decision = "RETRY"
-                    reason = f"{tool_name} failed, retry attempt {retries + 1}/{max_retries}"
-                    suggested_action = {
-                        "type": "retry",
-                        "tool": tool_name,
-                        "retry_count": retries + 1,
-                    }
+                    tool_to_retry = tool_name
                     break
+
+            if tool_to_retry:
+                # RETRY: Still have retries left
+                retries = retry_tracker.get(tool_to_retry, 0)
+                decision = "RETRY"
+                reason = f"{tool_to_retry} failed, retry {retries}/{max_retries}"
+                suggested_action = {
+                    "type": "retry",
+                    "tool": tool_to_retry,
+                    "retry_count": retries,
+                }
+            else:
+                # All retries exhausted → try webSearch fallback
+                websearch_retries = retry_tracker.get("webSearch", 0)
+
+                if self.WEB_SEARCH_FALLBACK_ENABLED and websearch_retries == 0:
+                    # WEB_SEARCH: Try to find info via web search
+                    decision = "WEB_SEARCH"
+                    first_failed = failed_tools[0] if failed_tools else "unknown"
+                    # Build search query from symbols (language-agnostic)
+                    search_query = " ".join(validated_symbols) if validated_symbols else query[:50]
+                    reason = f"{first_failed} failed after retries, trying webSearch"
+                    suggested_action = {
+                        "type": "web_search",
+                        "failed_tool": first_failed,
+                        "search_query": search_query,
+                    }
                 else:
-                    # ============================================================
-                    # FALLBACK: Retries exhausted → Try webSearch
-                    # ============================================================
-                    # NOTE: TOOL_ALTERNATIVES logic is commented out (not implemented)
-                    # Instead, we use webSearch as universal fallback
-
-                    websearch_retries = retry_tracker.get("webSearch", 0)
-
-                    if self.WEB_SEARCH_FALLBACK_ENABLED and websearch_retries == 0:
-                        # WEB_SEARCH: Try to find info via web search
-                        decision = "WEB_SEARCH"
-                        reason = f"{tool_name} failed {retries} times, trying webSearch fallback"
-                        suggested_action = {
-                            "type": "web_search",
-                            "failed_tool": tool_name,
-                            "category": category,
-                            "search_query": f"{' '.join(validated_symbols)} {category} data",
-                        }
-                        break
+                    # webSearch already tried or disabled → RESPOND with what we have
+                    decision = "RESPOND"
+                    if success_count > 0:
+                        reason = f"Some tools failed, responding with {success_count} successful results"
                     else:
-                        # webSearch already tried or disabled → RESPOND with available data
-                        # Skip and finish with what we have
-                        if confidence >= 30:
-                            decision = "RESPOND"
-                            reason = f"Cannot retrieve {category} data, responding with available data"
-                        else:
-                            decision = "RESPOND"
-                            reason = f"Critical data ({category}) unavailable, providing partial response"
-
-                    # OLD ALTERNATIVE LOGIC (commented out - not implemented)
-                    # alternatives = self.TOOL_ALTERNATIVES.get(tool_name, [])
-                    # unused_alternatives = [
-                    #     alt for alt in alternatives
-                    #     if retry_tracker.get(alt, 0) == 0
-                    # ]
-                    #
-                    # if unused_alternatives:
-                    #     decision = "ALTERNATIVE"
-                    #     reason = f"{tool_name} failed {retries} times, trying {unused_alternatives[0]}"
-                    #     alternative_tools = unused_alternatives
-                    #     suggested_action = {
-                    #         "type": "alternative",
-                    #         "failed_tool": tool_name,
-                    #         "alternative": unused_alternatives[0],
-                    #     }
-                    #     break
-
-        elif confidence < 60 and turn_number < 4:
-            # CONTINUE: Low confidence but more turns available
-            decision = "CONTINUE"
-            missing_cats = [cat for cat in required_categories if not categories_found.get(cat, False)]
-            reason = f"Missing data: {', '.join(missing_cats)}"
+                        reason = "All tools failed, providing best effort response"
 
         # ================================================================
         # 5. BUILD OBSERVATION SUMMARY
@@ -1616,11 +1529,8 @@ IMPORTANT:
         # Log with appropriate emoji based on decision
         decision_emoji = {
             "RESPOND": "✅",
-            "CONTINUE": "🔄",
             "RETRY": "🔁",
-            "WEB_SEARCH": "🌐",  # webSearch fallback
-            "ALTERNATIVE": "🔀",  # (commented out - not implemented)
-            "TERMINATE": "⛔",
+            "WEB_SEARCH": "🌐",
         }
         self.logger.info(
             f"[{flow_id}] 👁️ OBSERVE {decision_emoji.get(decision, '❓')}: {observation_summary}"
@@ -1632,10 +1542,7 @@ IMPORTANT:
             "failed_count": failed_count,
             "failed_tools": failed_tools,
             "timeout_tools": timeout_tools,
-
-            # Data coverage
-            "categories_found": categories_found,
-            "required_categories": list(required_categories),
+            "successful_tools": successful_tools,
             "symbols_with_data": list(symbols_with_data),
 
             # Decision
@@ -1643,7 +1550,6 @@ IMPORTANT:
             "reason": reason,
             "confidence": confidence,
             "suggested_action": suggested_action,
-            "alternative_tools": alternative_tools,
 
             # Tracking
             "retry_tracker": retry_tracker,
@@ -1652,12 +1558,9 @@ IMPORTANT:
             # Summary
             "observation_summary": observation_summary,
 
-            # Legacy fields for compatibility
+            # Legacy field for compatibility
             "coverage_score": confidence,
-            "missing_data": [
-                cat for cat in required_categories
-                if not categories_found.get(cat, False)
-            ],
+            "missing_data": [],  # No longer used - LLM decides what's missing
         }
 
     async def _execute_tool_search(
