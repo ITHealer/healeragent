@@ -1467,6 +1467,15 @@ IMPORTANT:
             query = tc.arguments.get("query", "")
             top_k = tc.arguments.get("top_k", 5)
 
+            # Enforce minimum top_k of 3 to ensure sufficient tool discovery
+            # LLM sometimes requests top_k=1 which is too restrictive
+            MIN_TOP_K = 3
+            if top_k < MIN_TOP_K:
+                self.logger.warning(
+                    f"[{flow_id}] top_k={top_k} is too low, enforcing minimum top_k={MIN_TOP_K}"
+                )
+                top_k = MIN_TOP_K
+
             if not query:
                 return {
                     "tool_name": "tool_search",
@@ -2450,22 +2459,43 @@ You are in an agentic loop. Each turn, you MUST decide:
 - **If you have sufficient data** → Generate your final response WITHOUT calling more tools
 - **If you're missing critical data** → Call only the specific tools needed
 
+### tool_search Usage (IMPORTANT):
+- When using `tool_search`, ALWAYS use `top_k=5` or higher!
+- `top_k=1` is TOO RESTRICTIVE and will miss important tools
+- Include ALL data types in your query: "stock price, RSI, MACD, support resistance"
+- After tool_search, call ALL discovered tools that are relevant to the query
+
 ### When to RESPOND (no tool calls):
-- You have the key data points to answer the user's question
+- You have ACTUALLY RECEIVED the key data points from tool results
 - Additional tools wouldn't significantly improve your answer
 - You've already gathered comprehensive data in previous turns
 - You want to ask the user a clarifying question
 
 ### When to call MORE tools:
 - You're missing critical information for the query
-- The user asked for specific data you don't have yet
+- The user asked for specific data you haven't fetched yet (e.g., RSI, technical analysis)
 - Previous tool calls failed and you need to retry or try alternatives
+
+### ⚠️ CRITICAL: DATA INTEGRITY
+**NEVER fabricate data!** Before responding, verify:
+- Did I actually call a tool to get this data? (Check tool results)
+- If user asked for RSI → Did I call getTechnicalIndicators?
+- If user asked for support/resistance → Did I fetch technical analysis?
+- If data is NOT in my tool results → I MUST NOT include it in my response!
 
 ### Example Flow:
 ```
-Query: "Giá Bitcoin hôm nay?"
-Turn 1: THINK → "Need price" → ACT: getCryptoPrice
-Turn 2: THINK → "Got price data, sufficient" → RESPOND (no tool calls)
+Query: "Phân tích NVDA với RSI, MACD và hỗ trợ kháng cự?"
+Turn 1: THINK → "Need price, technical indicators" → tool_search (top_k=5)
+Turn 2: THINK → "Found tools" → ACT: getStockPrice, getTechnicalIndicators (parallel)
+Turn 3: THINK → "Have price + RSI + MACD + support/resistance" → RESPOND
+```
+
+**BAD Example (DO NOT DO THIS):**
+```
+Turn 1: tool_search (top_k=1) → only finds getStockPrice
+Turn 2: getStockPrice → only have price data
+Turn 3: RESPOND with RSI=72, MACD bullish... ← WRONG! Never fetched this data!
 ```
 
 ## TOOL SELECTION STRATEGY
@@ -2504,10 +2534,14 @@ For each symbol, include where applicable:
 - Highlight actionable insights and recommendations
 - End with 2-3 relevant follow-up questions
 
-**5. DATA INTEGRITY:**
-- NEVER make up numbers - only use data from tool results
-- If a tool failed or data is missing, acknowledge it
+**5. DATA INTEGRITY (ABSOLUTELY CRITICAL):**
+- NEVER make up numbers - only use data from ACTUAL tool results in this conversation
+- If a tool wasn't called, that data DOES NOT EXIST - don't fabricate it!
+- If user asked for RSI but getTechnicalIndicators wasn't called → Say "I need to fetch technical indicators"
+- If a tool failed or data is missing, acknowledge it clearly
 - Be honest about uncertainty or conflicting signals
+- WRONG: "RSI = 72" without getTechnicalIndicators result → This is fabrication!
+- CORRECT: "I have price data. For RSI and technical indicators, let me fetch that data."
 """
 
         messages = [{"role": "system", "content": system_prompt}]
