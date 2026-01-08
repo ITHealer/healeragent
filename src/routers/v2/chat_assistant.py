@@ -1474,12 +1474,6 @@ async def stream_chat_v3(
                 f"[CHAT_V3] Loaded {len(conversation_history)} messages from history"
             )
 
-            # Save query context to working memory
-            wm_integration.save_query_context(query, metadata={
-                "version": "v3",
-                "has_images": bool(processed_images),
-            })
-
             # =================================================================
             # Phase 2: Classification (reuse existing classifier)
             # =================================================================
@@ -1970,12 +1964,6 @@ async def stream_chat_v4(
             _logger.debug(
                 f"[CHAT_V4] Loaded {len(conversation_history)} messages from history"
             )
-
-            # Save query context to working memory
-            wm_integration.save_query_context(query, metadata={
-                "version": "v4",
-                "has_images": bool(processed_images),
-            })
 
             # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
