@@ -414,19 +414,13 @@ class ReActAgent(BaseDeepResearchAgent):
             Tool execution result
         """
         # Import here to avoid circular imports
-        from src.agents.tools.registry import get_registry
+        from src.agents.tools.tool_loader import get_registry
 
         try:
             registry = get_registry()
-            tool = registry.get_tool(tool_name)
 
-            if not tool:
-                return {
-                    "success": False,
-                    "error": f"Tool not found: {tool_name}",
-                }
-
-            result = await tool.safe_execute(**params)
+            # Use registry's execute_tool method which handles circuit breaker
+            result = await registry.execute_tool(tool_name, params)
 
             # Store result for later reference
             self._tool_results[tool_name] = result
@@ -436,6 +430,7 @@ class ReActAgent(BaseDeepResearchAgent):
                 "data": result.data,
                 "error": result.error,
                 "execution_time_ms": result.execution_time_ms,
+                "formatted_context": result.formatted_context,
             }
 
         except Exception as e:
