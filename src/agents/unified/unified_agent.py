@@ -1349,16 +1349,18 @@ IMPORTANT:
     # =========================================================================
     # OBSERVE PHASE: Decision Matrix
     # =========================================================================
-    # TOOL ALTERNATIVES MAPPING: When a tool fails, try these alternatives
-    TOOL_ALTERNATIVES = {
-        "getIncomeStatement": ["getKeyMetrics", "getFinancialRatios"],
-        "getBalanceSheet": ["getKeyMetrics", "getFinancialRatios"],
-        "getCashFlow": ["getKeyMetrics", "getFinancialRatios"],
-        "getTechnicalIndicators": ["detectChartPatterns", "getSupportResistance"],
-        "getStockPrice": ["getQuote", "getHistoricalPrice"],
-        "getStockNews": ["webSearch"],
-        "getSectorPerformance": ["getMarketOverview"],
-    }
+
+    # NOTE: TOOL_ALTERNATIVES is commented out - not implemented yet
+    # When retry fails, we use webSearch as fallback instead
+    # TOOL_ALTERNATIVES = {
+    #     "getIncomeStatement": ["getKeyMetrics", "getFinancialRatios"],
+    #     "getBalanceSheet": ["getKeyMetrics", "getFinancialRatios"],
+    #     "getCashFlow": ["getKeyMetrics", "getFinancialRatios"],
+    #     "getTechnicalIndicators": ["detectChartPatterns", "getSupportResistance"],
+    #     "getStockPrice": ["getQuote", "getHistoricalPrice"],
+    #     "getStockNews": ["webSearch"],
+    #     "getSectorPerformance": ["getMarketOverview"],
+    # }
 
     # DATA CATEGORIES: Map tool names to data categories
     TOOL_CATEGORIES = {
@@ -1367,6 +1369,9 @@ IMPORTANT:
         "fundamental": ["getincomestatement", "getbalancesheet", "getcashflow", "getfinancialratios", "getkeymetrics"],
         "news": ["getstocknews", "websearch", "getmarketsentiment"],
     }
+
+    # WEB_SEARCH FALLBACK: Use webSearch when tool retries are exhausted
+    WEB_SEARCH_FALLBACK_ENABLED = True
 
     def _observe_and_evaluate_results(
         self,
@@ -1537,31 +1542,52 @@ IMPORTANT:
                     }
                     break
                 else:
-                    # ALTERNATIVE: Exhausted retries, try alternative
-                    alternatives = self.TOOL_ALTERNATIVES.get(tool_name, [])
-                    unused_alternatives = [
-                        alt for alt in alternatives
-                        if retry_tracker.get(alt, 0) == 0
-                    ]
+                    # ============================================================
+                    # FALLBACK: Retries exhausted → Try webSearch
+                    # ============================================================
+                    # NOTE: TOOL_ALTERNATIVES logic is commented out (not implemented)
+                    # Instead, we use webSearch as universal fallback
 
-                    if unused_alternatives:
-                        decision = "ALTERNATIVE"
-                        reason = f"{tool_name} failed {retries} times, trying {unused_alternatives[0]}"
-                        alternative_tools = unused_alternatives
+                    websearch_retries = retry_tracker.get("webSearch", 0)
+
+                    if self.WEB_SEARCH_FALLBACK_ENABLED and websearch_retries == 0:
+                        # WEB_SEARCH: Try to find info via web search
+                        decision = "WEB_SEARCH"
+                        reason = f"{tool_name} failed {retries} times, trying webSearch fallback"
                         suggested_action = {
-                            "type": "alternative",
+                            "type": "web_search",
                             "failed_tool": tool_name,
-                            "alternative": unused_alternatives[0],
+                            "category": category,
+                            "search_query": f"{' '.join(validated_symbols)} {category} data",
                         }
                         break
                     else:
-                        # TERMINATE or RESPOND with limitation
-                        if confidence >= 40:
+                        # webSearch already tried or disabled → RESPOND with available data
+                        # Skip and finish with what we have
+                        if confidence >= 30:
                             decision = "RESPOND"
                             reason = f"Cannot retrieve {category} data, responding with available data"
                         else:
-                            decision = "TERMINATE"
-                            reason = f"Critical data ({category}) unavailable after all attempts"
+                            decision = "RESPOND"
+                            reason = f"Critical data ({category}) unavailable, providing partial response"
+
+                    # OLD ALTERNATIVE LOGIC (commented out - not implemented)
+                    # alternatives = self.TOOL_ALTERNATIVES.get(tool_name, [])
+                    # unused_alternatives = [
+                    #     alt for alt in alternatives
+                    #     if retry_tracker.get(alt, 0) == 0
+                    # ]
+                    #
+                    # if unused_alternatives:
+                    #     decision = "ALTERNATIVE"
+                    #     reason = f"{tool_name} failed {retries} times, trying {unused_alternatives[0]}"
+                    #     alternative_tools = unused_alternatives
+                    #     suggested_action = {
+                    #         "type": "alternative",
+                    #         "failed_tool": tool_name,
+                    #         "alternative": unused_alternatives[0],
+                    #     }
+                    #     break
 
         elif confidence < 60 and turn_number < 4:
             # CONTINUE: Low confidence but more turns available
@@ -1592,7 +1618,8 @@ IMPORTANT:
             "RESPOND": "✅",
             "CONTINUE": "🔄",
             "RETRY": "🔁",
-            "ALTERNATIVE": "🔀",
+            "WEB_SEARCH": "🌐",  # webSearch fallback
+            "ALTERNATIVE": "🔀",  # (commented out - not implemented)
             "TERMINATE": "⛔",
         }
         self.logger.info(
@@ -2513,13 +2540,15 @@ Respond naturally and helpfully."""
                         }
                     break  # Exit loop
 
-                elif decision in ["CONTINUE", "RETRY", "ALTERNATIVE"]:
+                elif decision in ["CONTINUE", "RETRY", "WEB_SEARCH"]:
                     # Need more data - continue to next turn
+                    # NOTE: ALTERNATIVE is commented out (not implemented)
                     if turn_num < max_turns:
                         action_desc = {
                             "CONTINUE": "gathering more data",
                             "RETRY": f"retrying {observation.get('suggested_action', {}).get('tool', 'failed tool')}",
-                            "ALTERNATIVE": f"trying {observation.get('suggested_action', {}).get('alternative', 'alternative tool')}",
+                            "WEB_SEARCH": f"searching web for {observation.get('suggested_action', {}).get('category', 'missing')} data",
+                            # "ALTERNATIVE": f"trying {observation.get('suggested_action', {}).get('alternative', 'alternative tool')}",  # Not implemented
                         }
                         self.logger.info(
                             f"[{flow_id}] 🔄 LOOP→{decision}: Confidence {observation['confidence']}% - "
