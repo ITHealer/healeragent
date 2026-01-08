@@ -101,6 +101,12 @@ from src.services.context_management_service import (
     ContextManagementService,
     get_context_manager,
 )
+# Conversation Compactor (auto-compress long conversations)
+from src.services.conversation_compactor import (
+    check_and_compact_if_needed,
+    get_conversation_compactor,
+    CompactionResult,
+)
 
 
 # Router instance
@@ -1432,6 +1438,8 @@ async def stream_chat_v3(
             # For LEARN phase
             "tool_results": [],
             "final_content": "",
+            # Compaction tracking
+            "compaction_result": None,
         }
 
         try:
@@ -1473,6 +1481,31 @@ async def stream_chat_v3(
             _logger.debug(
                 f"[CHAT_V3] Loaded {len(conversation_history)} messages from history"
             )
+
+            # =================================================================
+            # Phase 1.6: Context Compaction Check
+            # Auto-compress conversation when token count exceeds threshold
+            # =================================================================
+            compaction_result: Optional[CompactionResult] = None
+            if conversation_history:
+                conversation_history, compaction_result = await check_and_compact_if_needed(
+                    messages=conversation_history,
+                    system_prompt="",  # Will be built after classification
+                    symbols=[],  # Symbols extracted during classification
+                    additional_context="",
+                )
+                if compaction_result:
+                    stats["compaction_result"] = compaction_result
+                    _logger.info(
+                        f"[CHAT_V3] ✅ Context compacted: "
+                        f"{compaction_result.original_tokens:,} → {compaction_result.final_tokens:,} tokens "
+                        f"(saved {compaction_result.tokens_saved:,}, {compaction_result.compression_ratio:.1%})"
+                    )
+                    yield emitter.emit_progress(
+                        phase="context_compaction",
+                        progress_percent=15,
+                        message=f"Compressed context: saved {compaction_result.tokens_saved:,} tokens",
+                    )
 
             # =================================================================
             # Phase 2: Classification (reuse existing classifier)
@@ -1923,6 +1956,8 @@ async def stream_chat_v4(
             # For LEARN phase
             "tool_results": [],
             "final_content": "",
+            # Compaction tracking
+            "compaction_result": None,
         }
 
         try:
@@ -1965,6 +2000,31 @@ async def stream_chat_v4(
             _logger.debug(
                 f"[CHAT_V4] Loaded {len(conversation_history)} messages from history"
             )
+
+            # =================================================================
+            # Phase 1.6: Context Compaction Check
+            # Auto-compress conversation when token count exceeds threshold
+            # =================================================================
+            compaction_result: Optional[CompactionResult] = None
+            if conversation_history:
+                conversation_history, compaction_result = await check_and_compact_if_needed(
+                    messages=conversation_history,
+                    system_prompt="",  # Will be built after classification
+                    symbols=[],  # Symbols extracted during classification
+                    additional_context="",
+                )
+                if compaction_result:
+                    stats["compaction_result"] = compaction_result
+                    _logger.info(
+                        f"[CHAT_V4] ✅ Context compacted: "
+                        f"{compaction_result.original_tokens:,} → {compaction_result.final_tokens:,} tokens "
+                        f"(saved {compaction_result.tokens_saved:,}, {compaction_result.compression_ratio:.1%})"
+                    )
+                    yield emitter.emit_progress(
+                        phase="context_compaction",
+                        progress_percent=15,
+                        message=f"Compressed context: saved {compaction_result.tokens_saved:,} tokens",
+                    )
 
             # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
