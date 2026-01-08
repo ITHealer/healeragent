@@ -480,6 +480,23 @@ class UnifiedClassifier(LoggerMixin):
                 rs.to_dict() for rs in result.resolved_symbols
             ]
 
+            # CRITICAL: Update classification.symbols with normalized tickers
+            # This ensures Router and Agent use correct symbols (GOOGL not GOOGLE)
+            if result.resolved_symbols:
+                normalized_symbols = []
+                for rs in result.resolved_symbols:
+                    # Use the resolved symbol (ticker) not the original text
+                    ticker = rs.symbol
+                    if ticker and ticker not in normalized_symbols:
+                        normalized_symbols.append(ticker)
+
+                if normalized_symbols:
+                    old_symbols = classification.symbols
+                    classification.symbols = normalized_symbols
+                    self.logger.info(
+                        f"[CLASSIFIER] Symbols normalized: {old_symbols} → {normalized_symbols}"
+                    )
+
             if result.has_ambiguity():
                 classification.clarification_needed = True
                 classification.clarification_messages = result.clarification_messages
