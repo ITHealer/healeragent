@@ -91,6 +91,16 @@ from src.agents.streaming import (
 )
 # LEARN Phase - Memory updates after execution
 from src.agents.hooks import LearnHook
+# Working Memory Integration (session-scoped scratchpad)
+from src.agents.memory import (
+    WorkingMemoryIntegration,
+    setup_working_memory_for_request,
+)
+# Context Management Service (auto-compaction)
+from src.services.context_management_service import (
+    ContextManagementService,
+    get_context_manager,
+)
 
 
 # Router instance
@@ -162,6 +172,24 @@ def _get_unified_agent() -> UnifiedAgent:
     if _unified_agent is None:
         _unified_agent = get_unified_agent()
     return _unified_agent
+
+
+# --- Context Management (auto-compaction) ---
+
+_context_manager: Optional[ContextManagementService] = None
+
+
+def _get_context_manager() -> ContextManagementService:
+    """Get or create Context Manager singleton for auto-compaction."""
+    global _context_manager
+    if _context_manager is None:
+        _context_manager = get_context_manager(
+            enable_compaction=True,
+            max_context_tokens=180000,
+            trigger_percent=80.0,  # Auto-compact at 80% usage
+            strategy="smart_summary",
+        )
+    return _context_manager
 
 
 # --- Image Processing ---
@@ -1419,12 +1447,21 @@ async def stream_chat_v3(
                     )
 
             # =================================================================
-            # Phase 1: Session Start
+            # Phase 1: Session Start + Working Memory Setup
             # =================================================================
             yield emitter.emit_session_start({
                 "mode_requested": "llm_router",
                 "version": "v3",
             })
+
+            # Setup WorkingMemoryIntegration (session-scoped scratchpad)
+            flow_id = f"v3_{session_id[:8]}_{int(datetime.now().timestamp())}"
+            wm_integration = setup_working_memory_for_request(
+                session_id=session_id,
+                user_id=user_id,
+                flow_id=flow_id,
+            )
+            _logger.debug(f"[CHAT_V3] WorkingMemory initialized: {flow_id}")
 
             # =================================================================
             # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
@@ -1436,6 +1473,12 @@ async def stream_chat_v3(
             _logger.debug(
                 f"[CHAT_V3] Loaded {len(conversation_history)} messages from history"
             )
+
+            # Save query context to working memory
+            wm_integration.save_query_context(query, metadata={
+                "version": "v3",
+                "has_images": bool(processed_images),
+            })
 
             # =================================================================
             # Phase 2: Classification (reuse existing classifier)
@@ -1475,6 +1518,14 @@ async def stream_chat_v3(
                         "symbols": classification.symbols,
                     },
                 )
+
+            # Save classification to working memory (for cross-turn continuity)
+            wm_integration.save_classification(
+                query_type=classification.query_type.value,
+                symbols=classification.symbols,
+                categories=classification.tool_categories,
+                requires_tools=classification.requires_tools,
+            )
 
             # Resolve charts for frontend
             charts = resolve_charts_from_classification(
@@ -1646,6 +1697,9 @@ async def stream_chat_v3(
                 # LEARN errors should not fail the request
                 _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
 
+            # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
+            wm_integration.complete_request()
+
             yield emitter.emit_done(
                 total_turns=stats["total_turns"],
                 total_tool_calls=stats["total_tool_calls"],
@@ -1656,6 +1710,11 @@ async def stream_chat_v3(
 
         except Exception as e:
             _logger.error(f"[CHAT_V3] Error: {e}", exc_info=True)
+            # Attempt to complete working memory even on error
+            try:
+                wm_integration.complete_request()
+            except Exception:
+                pass
             yield emitter.emit_error(str(e), "CHAT_V3_ERROR")
             yield format_done_marker()
 
@@ -1884,12 +1943,21 @@ async def stream_chat_v4(
                     )
 
             # =================================================================
-            # Phase 1: Session Start
+            # Phase 1: Session Start + Working Memory Setup
             # =================================================================
             yield emitter.emit_session_start({
                 "mode_requested": "intent_classifier",
                 "version": "v4",
             })
+
+            # Setup WorkingMemoryIntegration (session-scoped scratchpad)
+            flow_id = f"v4_{session_id[:8]}_{int(datetime.now().timestamp())}"
+            wm_integration = setup_working_memory_for_request(
+                session_id=session_id,
+                user_id=user_id,
+                flow_id=flow_id,
+            )
+            _logger.debug(f"[CHAT_V4] WorkingMemory initialized: {flow_id}")
 
             # =================================================================
             # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
@@ -1902,6 +1970,12 @@ async def stream_chat_v4(
             _logger.debug(
                 f"[CHAT_V4] Loaded {len(conversation_history)} messages from history"
             )
+
+            # Save query context to working memory
+            wm_integration.save_query_context(query, metadata={
+                "version": "v4",
+                "has_images": bool(processed_images),
+            })
 
             # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
@@ -1943,6 +2017,14 @@ async def stream_chat_v4(
                         "market_type": intent_result.market_type.value,
                     },
                 )
+
+            # Save classification to working memory (for cross-turn continuity)
+            wm_integration.save_classification(
+                query_type=intent_result.query_type,
+                symbols=intent_result.validated_symbols,
+                categories=[],  # V4 doesn't use categories
+                requires_tools=intent_result.requires_tools,
+            )
 
             # =================================================================
             # Phase 3: Agent Execution with ALL Tools
@@ -2062,6 +2144,9 @@ async def stream_chat_v4(
             except Exception as learn_err:
                 _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
 
+            # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
+            wm_integration.complete_request()
+
             yield emitter.emit_done(
                 total_turns=stats["total_turns"],
                 total_tool_calls=stats["total_tool_calls"],
@@ -2072,6 +2157,11 @@ async def stream_chat_v4(
 
         except Exception as e:
             _logger.error(f"[CHAT_V4] Error: {e}", exc_info=True)
+            # Attempt to complete working memory even on error
+            try:
+                wm_integration.complete_request()
+            except Exception:
+                pass
             yield emitter.emit_error(str(e), "CHAT_V4_ERROR")
             yield format_done_marker()
 
