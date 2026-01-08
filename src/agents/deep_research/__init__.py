@@ -29,22 +29,37 @@ from src.agents.deep_research.models import (
     ResearchSection,
     WorkerTask,
     WorkerResult,
+    WorkerRole,
     Artifact,
     ArtifactType,
     DeepResearchResult,
+    DeepResearchConfig,
     ClarificationQuestion,
     ClarificationResponse,
+    DeepResearchEventType,
+)
+
+from src.agents.deep_research.orchestrator import (
+    DeepResearchOrchestrator,
+    create_orchestrator,
 )
 
 __all__ = [
+    # Models
     "AgentState",
     "ResearchPlan",
     "ResearchSection",
     "WorkerTask",
     "WorkerResult",
+    "WorkerRole",
     "Artifact",
     "ArtifactType",
     "DeepResearchResult",
+    "DeepResearchConfig",
     "ClarificationQuestion",
     "ClarificationResponse",
+    "DeepResearchEventType",
+    # Orchestrator
+    "DeepResearchOrchestrator",
+    "create_orchestrator",
 ]

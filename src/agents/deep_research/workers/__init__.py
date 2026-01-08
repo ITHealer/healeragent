@@ -9,4 +9,12 @@ Contains specialized worker agents for different research aspects:
 - WebResearcherWorker: Web search and news
 """
 
-# Workers will be implemented in Phase 3
+from src.agents.deep_research.workers.base_worker import (
+    ResearchWorker,
+    WORKER_PROMPTS,
+)
+
+__all__ = [
+    "ResearchWorker",
+    "WORKER_PROMPTS",
+]
