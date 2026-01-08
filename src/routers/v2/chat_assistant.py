@@ -443,6 +443,53 @@ _tool_execution_service = None
 _chat_repo = None
 _validation_agent = None
 
+# Session repository for loading conversation history (V4)
+_v4_session_repo = None
+
+
+def _get_v4_session_repo():
+    """Get or create session repository for V4."""
+    global _v4_session_repo
+    if _v4_session_repo is None:
+        from src.database.repository.sessions import SessionRepository
+        _v4_session_repo = SessionRepository()
+    return _v4_session_repo
+
+
+async def _load_conversation_history(session_id: str, limit: int = 10) -> List[Dict[str, str]]:
+    """
+    Load recent conversation history from session.
+
+    This is CRITICAL for memory - without loading history,
+    the agent has no context about previous messages.
+
+    Args:
+        session_id: Session identifier
+        limit: Maximum number of messages to load
+
+    Returns:
+        List of message dicts with role and content
+    """
+    try:
+        session_repo = _get_v4_session_repo()
+        recent_chat = await session_repo.get_session_messages(
+            session_id=session_id,
+            limit=limit,
+        )
+        # CRITICAL: Reverse to chronological order (oldest first)
+        # Repository returns newest first (desc), but LLM needs oldest first
+        recent_chat.reverse()
+
+        # Format for agent
+        return [
+            {"role": msg.get("role", "user"), "content": msg.get("content", "")}
+            for msg in recent_chat
+            if msg.get("content")
+        ]
+    except Exception as e:
+        _logger.warning(f"[V4] Failed to load conversation history: {e}")
+        return []
+
 def _init_streaming_components():
     """Initialize shared components for StreamingChatHandler (called once)"""
     global _streaming_components_initialized
@@ -1380,6 +1427,17 @@ async def stream_chat_v3(
             })
 
             # =================================================================
+            # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
+            # =================================================================
+            conversation_history = await _load_conversation_history(
+                session_id=session_id,
+                limit=10,
+            )
+            _logger.debug(
+                f"[CHAT_V3] Loaded {len(conversation_history)} messages from history"
+            )
+
+            # =================================================================
             # Phase 2: Classification (reuse existing classifier)
             # =================================================================
             yield emitter.emit_classifying()
@@ -1387,7 +1445,7 @@ async def stream_chat_v3(
             classifier = _get_classifier()
             classification_context = ClassifierContext(
                 query=query,
-                conversation_history=[],
+                conversation_history=conversation_history,  # NOW WITH HISTORY!
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
                 images=processed_images,
             )
@@ -1476,11 +1534,12 @@ async def stream_chat_v3(
 
             # Stream events from Unified Agent
             # Pass user-provided model_name for final response generation
+            # CRITICAL: Pass conversation_history for memory/context!
             async for event in unified_agent.run_stream(
                 query=query,
                 router_decision=router_decision,
                 classification=classification,
-                conversation_history=[],
+                conversation_history=conversation_history,  # NOW WITH HISTORY!
                 system_language=classification.response_language,
                 user_id=int(user_id) if user_id else None,
                 session_id=session_id,
@@ -1833,6 +1892,18 @@ async def stream_chat_v4(
             })
 
             # =================================================================
+            # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
+            # This was missing in V4 - V3 has it via NormalModeChatHandler._load_context()
+            # =================================================================
+            conversation_history = await _load_conversation_history(
+                session_id=session_id,
+                limit=10,  # Last 10 messages for context
+            )
+            _logger.debug(
+                f"[CHAT_V4] Loaded {len(conversation_history)} messages from history"
+            )
+
+            # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
             # =================================================================
             yield emitter.emit_classifying()
@@ -1841,7 +1912,7 @@ async def stream_chat_v4(
             intent_result = await intent_classifier.classify(
                 query=query,
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
-                conversation_history=[],
+                conversation_history=conversation_history,  # Pass history for better context!
             )
 
             # Emit classification result (using intent result)
@@ -1886,10 +1957,11 @@ async def stream_chat_v4(
                 )
 
             # Stream events from Agent with ALL tools
+            # CRITICAL: Pass conversation_history for memory/context!
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
                 intent_result=intent_result,
-                conversation_history=[],
+                conversation_history=conversation_history,  # NOW WITH HISTORY!
                 system_language=intent_result.response_language,
                 user_id=int(user_id) if user_id else None,
                 session_id=session_id,
