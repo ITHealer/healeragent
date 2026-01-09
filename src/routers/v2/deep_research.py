@@ -189,8 +189,8 @@ async def start_deep_research(
         # api_key is from settings.OPENAI_API_KEY, NOT from user auth
     )
 
-    # Save session
-    save_session(orchestrator.research_id or "temp", {
+    # Save session (research_id is guaranteed from orchestrator.__init__)
+    save_session(orchestrator.research_id, {
         "research_id": orchestrator.research_id,
         "query": request.query,
         "symbols": request.symbols,

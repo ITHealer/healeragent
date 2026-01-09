@@ -89,8 +89,8 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
         self._provider = None
         self._emitter: Optional[ArtifactEmitter] = None
 
-        # Research state
-        self.research_id: Optional[str] = None
+        # Research state - Generate research_id immediately
+        self.research_id: str = f"dr_{uuid.uuid4().hex[:12]}"
         self.query: Optional[str] = None
         self.symbols: List[str] = []
         self.clarification_answers: Dict[str, str] = {}
@@ -151,8 +151,7 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
         Yields:
             SSE events for each phase of research
         """
-        # Initialize research session
-        self.research_id = f"dr_{uuid.uuid4().hex[:12]}"
+        # Initialize research session (research_id already set in __init__)
         self.query = query
         self.symbols = symbols or []
         self._emitter = ArtifactEmitter(self.research_id)
