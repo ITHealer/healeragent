@@ -67,7 +67,13 @@ class GetIncomeStatementTool(BaseTool):
             description=(
                 "Fetch income statement (profit & loss) with revenue, expenses, net income, "
                 "EPS, and profit margins. Supports quarterly and annual reports. "
-                "Use when user asks about revenue, earnings, profitability, or income statement."
+                "Use when user asks about revenue, earnings, profitability, or income statement. "
+                "\n\nIMPORTANT - FISCAL YEAR vs CALENDAR YEAR:\n"
+                "- NVDA fiscal year ends in JANUARY (Q4 FY2025 = Oct 2024 - Jan 2025)\n"
+                "- AAPL fiscal year ends in SEPTEMBER (Q1 FY2025 = Oct-Dec 2024)\n"
+                "- Most US companies: fiscal year = calendar year\n"
+                "- The API returns data labeled by FISCAL period (e.g., 'Q4' = fiscal Q4)\n"
+                "- Use limit=8+ when user asks for a specific quarter to ensure you get enough data."
             ),
             capabilities=[
                 "✅ Total revenue and revenue growth",
@@ -123,9 +129,14 @@ class GetIncomeStatementTool(BaseTool):
                 ToolParameter(
                     name="limit",
                     type="integer",
-                    description="Number of periods to return",
+                    description=(
+                        "Number of periods to return. IMPORTANT: When user asks for a SPECIFIC "
+                        "quarter (e.g., Q4 2025, Q1 FY2025), use limit=8 or higher to ensure "
+                        "you get enough historical data to find the exact period requested. "
+                        "The API returns the MOST RECENT periods first."
+                    ),
                     required=False,
-                    default=4
+                    default=8
                 )
             ],
             returns={
@@ -162,7 +173,13 @@ class GetIncomeStatementTool(BaseTool):
         """
         symbol_upper = symbol.upper()
         period = period.lower()
-        limit = max(1, min(10, limit))
+
+        # Enforce minimum limit for quarterly data to ensure enough history
+        # When user asks for specific quarter, we need enough data to find it
+        if period in ["quarter", "quarterly"]:
+            limit = max(8, min(20, limit))  # At least 8 quarters (2 years)
+        else:
+            limit = max(4, min(10, limit))  # At least 4 years for annual
         
         self.logger.info(
             f"[getIncomeStatement] Executing: symbol={symbol_upper}, "
