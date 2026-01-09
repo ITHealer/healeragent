@@ -178,7 +178,24 @@ class GetIncomeStatementTool(BaseTool):
                     "limit": limit
                 }
             )
-            
+
+            # ============================================================
+            # DEBUG: Print raw data from FMP API
+            # ============================================================
+            if raw_data:
+                self.logger.info(f"[getIncomeStatement] 📊 RAW DATA from FMP for {symbol_upper}:")
+                for i, item in enumerate(raw_data[:limit]):
+                    self.logger.info(
+                        f"  [{i}] date={item.get('date')} | "
+                        f"period={item.get('period')} | "
+                        f"calendarYear={item.get('calendarYear')} | "
+                        f"revenue={item.get('revenue'):,.0f} | "
+                        f"netIncome={item.get('netIncome'):,.0f} | "
+                        f"eps={item.get('eps')}"
+                    )
+            else:
+                self.logger.warning(f"[getIncomeStatement] ⚠️ No raw data returned from FMP for {symbol_upper}")
+
             if not raw_data:
                 return create_error_output(
                     tool_name=self.schema.name,

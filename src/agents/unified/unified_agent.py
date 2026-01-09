@@ -1344,6 +1344,34 @@ IMPORTANT:
             else:
                 processed.append(result)
 
+        # ============================================================
+        # DEBUG: Log tool results before sending to LLM
+        # ============================================================
+        for res in processed:
+            tool_name = res.get("tool_name", "unknown")
+            status = res.get("status", "unknown")
+            self.logger.info(f"[{flow_id}] 📊 TOOL RESULT: {tool_name} | status={status}")
+
+            # Log key data from financial tools
+            if status == "success" and "data" in res:
+                data = res["data"]
+                if isinstance(data, dict):
+                    # Income Statement specific logging
+                    if "revenue" in data:
+                        self.logger.info(
+                            f"[{flow_id}]   └─ revenue={data.get('revenue'):,.0f} | "
+                            f"net_income={data.get('net_income'):,.0f} | "
+                            f"eps={data.get('eps')}"
+                        )
+                    # Log first statement if available
+                    if "statements" in data and data["statements"]:
+                        stmt = data["statements"][0]
+                        self.logger.info(
+                            f"[{flow_id}]   └─ Latest: date={stmt.get('date')} | "
+                            f"period={stmt.get('period')} | "
+                            f"revenue={stmt.get('revenue'):,.0f if stmt.get('revenue') else 'N/A'}"
+                        )
+
         return processed
 
     async def _execute_tool_search(
