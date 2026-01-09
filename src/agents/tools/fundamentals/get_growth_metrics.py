@@ -73,7 +73,12 @@ class GetGrowthMetricsTool(BaseTool):
             description=(
                 "Calculate company growth metrics including revenue growth, earnings growth, "
                 "and historical growth rates. Returns growth trends and projections. "
-                "Use when user asks about company growth, growth rate, or growth potential."
+                "Use when user asks about company growth, growth rate, or growth potential. "
+                "\n\nIMPORTANT - FISCAL YEAR vs CALENDAR YEAR:\n"
+                "- NVDA fiscal year ends in JANUARY (FY2025 = Feb 2024 - Jan 2025)\n"
+                "- AAPL fiscal year ends in SEPTEMBER (FY2025 = Oct 2024 - Sep 2025)\n"
+                "- Most US companies: fiscal year = calendar year\n"
+                "- Use lookback_years=5+ for comprehensive growth analysis."
             ),
             capabilities=[
                 "✅ Revenue growth (YoY, QoQ)",
