@@ -22,6 +22,7 @@ Flow Example:
 
 import json
 import uuid
+import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
@@ -53,6 +54,14 @@ router = APIRouter(
 
 logger = LoggerMixin()
 api_key_auth = APIKeyAuth()
+
+# Heartbeat interval in seconds (keep SSE connection alive)
+HEARTBEAT_INTERVAL_SEC = 15
+
+
+def format_sse_heartbeat() -> str:
+    """Format SSE heartbeat comment to keep connection alive."""
+    return ": heartbeat\n\n"
 
 
 # ============================================================================
@@ -383,6 +392,7 @@ async def execute_research(
     Confirm plan and execute research.
 
     Returns SSE stream with research progress and results.
+    Includes heartbeat every 15s to keep connection alive.
 
     SSE Events:
     - research_init: Research started
@@ -393,6 +403,7 @@ async def execute_research(
     - synthesis_started: Report synthesis started
     - synthesis_artifact: Report section generated
     - research_completed: All done
+    - heartbeat: Keep-alive ping (SSE comment)
 
     Example Request:
     ```json
@@ -434,36 +445,68 @@ async def execute_research(
 
     orchestrator.clarification_answers = session.get("clarification_answers", {})
 
-    async def generate_events():
-        """Generate SSE events during execution."""
+    async def generate_events_with_heartbeat():
+        """Generate SSE events with heartbeat support to keep connection alive."""
+        research_generator = orchestrator.execute_research(
+            query=session.get("query"),
+            symbols=session.get("symbols"),
+            plan_data=session.get("plan"),
+        )
+
+        pending_task = None
+
         try:
-            async for event in orchestrator.execute_research(
-                query=session.get("query"),
-                symbols=session.get("symbols"),
-                plan_data=session.get("plan"),
-            ):
-                event_type = event.get("type", "progress")
+            while True:
+                # Create task to get next event if not pending
+                if pending_task is None:
+                    pending_task = asyncio.create_task(anext(research_generator))
 
-                # Update session on synthesis start
-                if event_type == "synthesis_started":
-                    update_session_status(
-                        request.research_id,
-                        ResearchSessionStatus.SYNTHESIZING,
-                    )
+                # Wait for event with heartbeat timeout
+                done, _ = await asyncio.wait(
+                    {pending_task},
+                    timeout=HEARTBEAT_INTERVAL_SEC
+                )
 
-                # Update session on completion
-                if event_type == "research_completed":
-                    update_session_status(
-                        request.research_id,
-                        ResearchSessionStatus.COMPLETED,
-                        {"result": event},
-                    )
+                if done:
+                    try:
+                        event = pending_task.result()
+                    except StopAsyncIteration:
+                        # Stream completed
+                        break
+                    except Exception as e:
+                        logger.logger.error(f"[DeepResearch] Event error: {e}")
+                        raise
+                    finally:
+                        pending_task = None
 
-                yield f"event: {event_type}\n"
-                yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                    event_type = event.get("type", "progress")
+
+                    # Update session on synthesis start
+                    if event_type == "synthesis_started":
+                        update_session_status(
+                            request.research_id,
+                            ResearchSessionStatus.SYNTHESIZING,
+                        )
+
+                    # Update session on completion
+                    if event_type == "research_completed":
+                        update_session_status(
+                            request.research_id,
+                            ResearchSessionStatus.COMPLETED,
+                            {"result": event},
+                        )
+
+                    yield f"event: {event_type}\n"
+                    yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
+                else:
+                    # Timeout - emit heartbeat to keep connection alive
+                    yield format_sse_heartbeat()
 
             yield format_sse_done()
 
+        except asyncio.CancelledError:
+            logger.logger.info(f"[DeepResearch] Stream cancelled | id={request.research_id}")
+            raise
         except Exception as e:
             logger.logger.error(f"[DeepResearch] Execute error: {e}", exc_info=True)
             update_session_status(
@@ -474,9 +517,13 @@ async def execute_research(
             yield f"event: error\n"
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             yield format_sse_done()
+        finally:
+            # Cancel pending task if exists
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
 
     return StreamingResponse(
-        generate_events(),
+        generate_events_with_heartbeat(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
