@@ -226,6 +226,324 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
             ).to_dict()
 
     # ========================================================================
+    # NEW API METHODS (for refactored router)
+    # ========================================================================
+
+    async def analyze_and_plan(
+        self,
+        query: str,
+        symbols: Optional[List[str]] = None,
+        user_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Analyze query and return clarification questions OR research plan.
+
+        This is the first step in the new API flow:
+        - POST /start calls this method
+        - Returns JSON (not SSE stream)
+
+        Args:
+            query: User's research query
+            symbols: Pre-detected symbols
+            user_context: User profile/preferences
+
+        Returns:
+            If clarification needed:
+                {"needs_clarification": True, "questions": [...], "analysis": {...}}
+            If no clarification:
+                {"needs_clarification": False, "plan": {...}}
+        """
+        self.query = query
+        self.symbols = symbols or []
+
+        self.logger.info(
+            f"[{self.agent_id}] Analyzing query | research_id={self.research_id}"
+        )
+
+        await self._ensure_provider_initialized()
+
+        # Step 1: Check if clarification is needed
+        if not self.config.skip_clarification:
+            clarification_result = await self._analyze_for_clarification(user_context)
+
+            if clarification_result.get("needs_clarification", False):
+                questions = clarification_result.get("questions", [])
+                if questions:
+                    return {
+                        "needs_clarification": True,
+                        "questions": questions,
+                        "analysis": clarification_result.get("analysis", {}),
+                    }
+
+        # Step 2: No clarification needed, generate plan directly
+        plan_result = await self._generate_plan(user_context)
+
+        return {
+            "needs_clarification": False,
+            "plan": plan_result,
+        }
+
+    async def _analyze_for_clarification(
+        self,
+        user_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Analyze query to determine if clarification questions are needed.
+
+        Returns:
+            {"needs_clarification": bool, "questions": [...], "analysis": {...}}
+        """
+        messages = [
+            {"role": "system", "content": CLARIFICATION_SYSTEM_PROMPT},
+            {"role": "user", "content": generate_clarification_prompt(
+                query=self.query,
+                symbols=self.symbols,
+                user_context=user_context,
+            )},
+        ]
+
+        try:
+            response = await self.provider.generate(
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1000,
+            )
+
+            content = response.get("content", "")
+            result = self._parse_json_response(content)
+
+            if result.get("needs_clarification", False):
+                questions = []
+                for i, q in enumerate(result.get("questions", [])):
+                    questions.append({
+                        "question_id": q.get("question_id", f"q{i}"),
+                        "question": q.get("question", ""),
+                        "question_type": q.get("question_type", "single_choice"),
+                        "options": q.get("options", []),
+                        "default": q.get("default"),
+                        "required": q.get("required", True),
+                    })
+
+                return {
+                    "needs_clarification": True,
+                    "questions": questions,
+                    "analysis": {
+                        "reasoning": result.get("reasoning", ""),
+                        "detected_intent": result.get("detected_intent", ""),
+                    },
+                }
+
+            return {"needs_clarification": False}
+
+        except Exception as e:
+            self.logger.error(f"[{self.agent_id}] Clarification analysis error: {e}")
+            return {"needs_clarification": False}
+
+    async def _generate_plan(
+        self,
+        user_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate research plan based on query and clarification answers.
+
+        Returns:
+            Plan dictionary with title, objective, sections, etc.
+        """
+        messages = [
+            {"role": "system", "content": PLANNING_SYSTEM_PROMPT},
+            {"role": "user", "content": generate_planning_prompt(
+                query=self.query,
+                symbols=self.symbols,
+                clarification_answers=self.clarification_answers,
+                user_context=user_context,
+            )},
+        ]
+
+        response = await self.provider.generate(
+            messages=messages,
+            temperature=0.3,
+            max_tokens=2000,
+        )
+
+        content = response.get("content", "")
+        plan_data = self._parse_json_response(content)
+
+        # Build plan structure
+        sections = []
+        for i, s in enumerate(plan_data.get("sections", [])):
+            role_str = s.get("worker_role", "web_researcher")
+            try:
+                role = WorkerRole(role_str)
+            except ValueError:
+                role = WorkerRole.WEB_RESEARCHER
+
+            sections.append({
+                "id": s.get("id", i + 1),
+                "name": s.get("name", f"Section {i + 1}"),
+                "description": s.get("description", ""),
+                "worker_role": role.value,
+                "tools_needed": s.get("tools_needed", []),
+                "estimated_duration_sec": s.get("estimated_duration_sec", 60),
+                "priority": s.get("priority", 1),
+                "dependencies": s.get("dependencies", []),
+            })
+
+        return {
+            "research_id": self.research_id,
+            "title": plan_data.get("title", f"Research: {self.query[:50]}"),
+            "query": self.query,
+            "objective": plan_data.get("objective", ""),
+            "sections": sections,
+            "estimated_duration_min": plan_data.get("estimated_duration_min", 5),
+            "symbols": self.symbols,
+        }
+
+    async def generate_plan_with_context(
+        self,
+        query: str,
+        symbols: Optional[List[str]] = None,
+        clarification_answers: Optional[Dict[str, str]] = None,
+        user_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Generate research plan with clarification answers.
+
+        Called by POST /clarify after user answers questions.
+
+        Args:
+            query: User's research query
+            symbols: Pre-detected symbols
+            clarification_answers: User's answers to clarification questions
+            user_context: User profile/preferences
+
+        Returns:
+            {"plan": {...}}
+        """
+        self.query = query
+        self.symbols = symbols or []
+        self.clarification_answers = clarification_answers or {}
+
+        self.logger.info(
+            f"[{self.agent_id}] Generating plan with clarification | "
+            f"research_id={self.research_id}"
+        )
+
+        await self._ensure_provider_initialized()
+
+        plan_result = await self._generate_plan(user_context)
+
+        return {"plan": plan_result}
+
+    async def execute_research(
+        self,
+        query: str,
+        symbols: Optional[List[str]] = None,
+        plan_data: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Execute research based on confirmed plan.
+
+        Called by POST /execute to start SSE streaming.
+
+        Args:
+            query: User's research query
+            symbols: Pre-detected symbols
+            plan_data: Confirmed research plan
+
+        Yields:
+            SSE events for execution and synthesis phases
+        """
+        self.query = query
+        self.symbols = symbols or []
+        self._emitter = ArtifactEmitter(self.research_id)
+        self._start_time = datetime.utcnow()
+
+        self.logger.info(
+            f"[{self.agent_id}] Executing research | research_id={self.research_id}"
+        )
+
+        # Emit init event
+        yield self._emitter.research_init(
+            query=query,
+            config=self.config.to_dict(),
+        ).to_dict()
+
+        try:
+            await self._ensure_provider_initialized()
+
+            # Reconstruct plan from plan_data
+            if plan_data:
+                sections = []
+                for s in plan_data.get("sections", []):
+                    role_str = s.get("worker_role", "web_researcher")
+                    try:
+                        role = WorkerRole(role_str)
+                    except ValueError:
+                        role = WorkerRole.WEB_RESEARCHER
+
+                    sections.append(ResearchSection(
+                        id=s.get("id", 0),
+                        name=s.get("name", ""),
+                        description=s.get("description", ""),
+                        worker_role=role,
+                        tools_needed=s.get("tools_needed", []),
+                        estimated_duration_sec=s.get("estimated_duration_sec", 60),
+                        priority=s.get("priority", 1),
+                        dependencies=s.get("dependencies", []),
+                    ))
+
+                self.plan = ResearchPlan(
+                    research_id=self.research_id,
+                    title=plan_data.get("title", ""),
+                    query=query,
+                    objective=plan_data.get("objective", ""),
+                    sections=sections,
+                    estimated_duration_min=plan_data.get("estimated_duration_min", 5),
+                    symbols=self.symbols,
+                    confirmed=True,
+                    confirmed_at=datetime.utcnow(),
+                )
+
+            if not self.plan or not self.plan.sections:
+                yield self._emitter.error(
+                    error="No valid research plan provided",
+                    phase="execution",
+                    recoverable=False,
+                ).to_dict()
+                return
+
+            # Execute workers
+            self.state = AgentState.EXECUTING
+            async for event in self._run_execution_phase():
+                yield event
+
+            # Run synthesis
+            self.state = AgentState.SYNTHESIZING
+            async for event in self._run_synthesis_phase():
+                yield event
+
+            # Complete
+            self.state = AgentState.COMPLETED
+            self._end_time = datetime.utcnow()
+
+            yield self._emitter.research_completed(
+                total_duration_ms=self.get_duration_ms(),
+                sections_completed=len([r for r in self.worker_results if r.success]),
+                sources_count=sum(len(r.sources) for r in self.worker_results),
+                final_report_length=len(self.worker_results),
+            ).to_dict()
+
+        except Exception as e:
+            self.state = AgentState.FAILED
+            self._end_time = datetime.utcnow()
+            self.logger.error(f"[{self.agent_id}] Execution failed: {e}", exc_info=True)
+            yield self._emitter.research_failed(
+                error=str(e),
+                phase=self._current_phase,
+                duration_ms=self.get_duration_ms(),
+            ).to_dict()
+
+    # ========================================================================
     # PHASE 1: CLARIFICATION
     # ========================================================================
 
