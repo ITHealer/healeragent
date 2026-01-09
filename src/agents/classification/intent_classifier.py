@@ -131,16 +131,49 @@ class IntentResult:
         except ValueError:
             complexity = IntentComplexity.DIRECT
 
+        # Get values from data
+        validated_symbols = data.get("validated_symbols", [])
+        requires_tools = data.get("requires_tools", False)
+        query_type = data.get("query_type", "general")
+
+        # =====================================================================
+        # VALIDATION: Force requires_tools=True when symbols + data query
+        # Same validation as _parse_result to fix cached wrong classifications
+        # =====================================================================
+        tool_required_query_types = {
+            "stock_analysis", "crypto_analysis", "comparison",
+            "screener", "real_time_info", "fundamental_analysis",
+            "technical_analysis", "news", "financial_data"
+        }
+
+        if validated_symbols and not requires_tools:
+            if query_type in tool_required_query_types:
+                requires_tools = True
+                complexity = IntentComplexity.AGENT_LOOP
+
+            # Check intent summary for data-related keywords
+            intent_lower = data.get("intent_summary", "").lower()
+            data_keywords = [
+                "price", "giá", "analysis", "phân tích", "report", "báo cáo",
+                "financial", "tài chính", "earnings", "revenue", "doanh thu",
+                "news", "tin tức", "chart", "biểu đồ", "technical", "kỹ thuật",
+                "fundamental", "cơ bản", "compare", "so sánh", "data", "dữ liệu",
+                "quote", "current", "hiện tại", "real-time", "retrieve", "lấy"
+            ]
+            if any(kw in intent_lower for kw in data_keywords):
+                requires_tools = True
+                complexity = IntentComplexity.AGENT_LOOP
+
         return cls(
             intent_summary=data.get("intent_summary", ""),
             reasoning=data.get("reasoning", ""),
-            validated_symbols=data.get("validated_symbols", []),
+            validated_symbols=validated_symbols,
             market_type=market_type,
             complexity=complexity,
-            requires_tools=data.get("requires_tools", False),
+            requires_tools=requires_tools,
             response_language=data.get("response_language", "en"),
             confidence=data.get("confidence", 0.9),
-            query_type=data.get("query_type", "general"),
+            query_type=query_type,
             classification_method=data.get("classification_method", "intent_classifier"),
         )
 
@@ -351,8 +384,9 @@ class IntentClassifier(LoggerMixin):
         """
         start_time = datetime.now()
 
-        # Check cache first
-        if use_cache:
+        # Check cache first - BUT skip cache if working_memory_symbols exist
+        # This ensures context-dependent queries are re-classified
+        if use_cache and not working_memory_symbols:
             cached = await _intent_cache.get(query, ui_context)
             if cached:
                 elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
@@ -372,12 +406,45 @@ class IntentClassifier(LoggerMixin):
             # Parse result
             result = self._parse_result(result_data)
 
+            # =====================================================================
+            # CRITICAL FIX: Inherit symbols from working_memory when query uses
+            # reference words but LLM didn't extract symbols
+            # =====================================================================
+            if not result.validated_symbols and working_memory_symbols:
+                query_lower = query.lower()
+                # Reference words that indicate user is talking about previous context
+                reference_patterns = [
+                    "công ty", "cổ phiếu", "mã", "symbol", "ticker",
+                    "nó", "này", "đó", "the company", "the stock", "it",
+                    "this", "that", "these", "those", "them",
+                    "xem tiếp", "phân tích tiếp", "cho tôi xem", "show me",
+                    "báo cáo", "report", "financial", "tài chính",
+                    "price", "giá", "chart", "biểu đồ"
+                ]
+
+                # Check if query uses reference words without explicit symbol
+                uses_reference = any(ref in query_lower for ref in reference_patterns)
+
+                # Also check if query has NO uppercase words (potential symbols)
+                has_explicit_symbol = bool(re.search(r'\b[A-Z]{2,5}\b', query))
+
+                if uses_reference and not has_explicit_symbol:
+                    self.logger.warning(
+                        f"[INTENT_CLASSIFIER] Inheriting symbols from working memory: "
+                        f"{working_memory_symbols} (query uses reference words without explicit symbol)"
+                    )
+                    result.validated_symbols = working_memory_symbols.copy()
+                    # Also ensure requires_tools is True since we have symbols now
+                    if result.validated_symbols:
+                        result.requires_tools = True
+                        result.complexity = IntentComplexity.AGENT_LOOP
+
             # Log
             elapsed_ms = int((datetime.now() - start_time).total_seconds() * 1000)
             self._log_result(result, elapsed_ms, is_cached=False)
 
-            # Cache asynchronously
-            if use_cache:
+            # Cache asynchronously - only if no working_memory context
+            if use_cache and not working_memory_symbols:
                 asyncio.create_task(_intent_cache.set(query, result, ui_context))
 
             return result
@@ -729,16 +796,59 @@ Now analyze the query and provide your classification:
             if isinstance(s, str) and s.strip()
         ]
 
+        # Get requires_tools from LLM
+        requires_tools = data.get("requires_tools", False)
+        query_type = data.get("query_type", "general")
+
+        # =====================================================================
+        # VALIDATION: Force requires_tools=True when symbols + data query
+        # This catches LLM classification errors where it incorrectly says
+        # tools are not needed for queries that clearly need real-time data.
+        # =====================================================================
+        tool_required_query_types = {
+            "stock_analysis", "crypto_analysis", "comparison",
+            "screener", "real_time_info", "fundamental_analysis",
+            "technical_analysis", "news", "financial_data"
+        }
+
+        if validated_symbols and not requires_tools:
+            # If symbols are present AND query type suggests data retrieval
+            if query_type in tool_required_query_types:
+                self.logger.warning(
+                    f"[INTENT_CLASSIFIER] Forcing requires_tools=True "
+                    f"(symbols={validated_symbols}, query_type={query_type})"
+                )
+                requires_tools = True
+                complexity = IntentComplexity.AGENT_LOOP
+
+            # Also check intent summary for data-related keywords
+            intent_lower = data.get("intent_summary", "").lower()
+            data_keywords = [
+                "price", "giá", "analysis", "phân tích", "report", "báo cáo",
+                "financial", "tài chính", "earnings", "revenue", "doanh thu",
+                "news", "tin tức", "chart", "biểu đồ", "technical", "kỹ thuật",
+                "fundamental", "cơ bản", "compare", "so sánh", "data", "dữ liệu",
+                "quote", "current", "hiện tại", "real-time", "retrieve", "lấy"
+            ]
+            if any(kw in intent_lower for kw in data_keywords):
+                if not requires_tools:
+                    self.logger.warning(
+                        f"[INTENT_CLASSIFIER] Forcing requires_tools=True based on intent keywords "
+                        f"(intent={intent_lower[:50]}...)"
+                    )
+                    requires_tools = True
+                    complexity = IntentComplexity.AGENT_LOOP
+
         return IntentResult(
             intent_summary=data.get("intent_summary", ""),
             reasoning=data.get("reasoning", ""),
             validated_symbols=validated_symbols,
             market_type=market_type,
             complexity=complexity,
-            requires_tools=data.get("requires_tools", False),
+            requires_tools=requires_tools,
             response_language=data.get("response_language", "en"),
             confidence=data.get("confidence", 0.9),
-            query_type=data.get("query_type", "general"),
+            query_type=query_type,
         )
 
     def _extract_tag_content(self, content: str, tag: str) -> Optional[str]:
