@@ -1871,6 +1871,7 @@ Respond naturally and helpfully."""
         provider_type: Optional[str] = None,
         max_turns: int = 6,
         enable_tool_search_mode: bool = False,
+        working_memory_symbols: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run agent with ALL tools available (new architecture).
@@ -1888,6 +1889,9 @@ Respond naturally and helpfully."""
             enable_tool_search_mode: If True, start with ONLY tool_search meta-tool.
                 Agent must call tool_search to discover available tools.
                 Token savings: ~85% (from ~15K to ~500 tokens)
+            working_memory_symbols: Symbols from previous turns (Working Memory).
+                These are MERGED with intent_result.validated_symbols to provide
+                context continuity for follow-up questions.
 
         Yields:
             Stream events: reasoning, tool_calls, tool_results, content, done
@@ -1898,10 +1902,30 @@ Respond naturally and helpfully."""
         effective_model = model_name or self.model_name
         effective_provider = provider_type or self.provider_type
 
+        # =====================================================================
+        # MERGE SYMBOLS: intent_result + working_memory (for context continuity)
+        # =====================================================================
+        intent_symbols = getattr(intent_result, 'validated_symbols', []) or []
+        wm_symbols = working_memory_symbols or []
+
+        # Merge: intent_symbols take priority, then add wm_symbols not in intent
+        merged_symbols = list(intent_symbols)
+        for sym in wm_symbols:
+            if sym and sym not in merged_symbols:
+                merged_symbols.append(sym)
+
+        # If we inherited symbols from working_memory, log it
+        if not intent_symbols and merged_symbols:
+            self.logger.info(
+                f"[{flow_id}] 📝 Inherited symbols from working_memory: {merged_symbols}"
+            )
+
         self.logger.info("─" * 50)
         self.logger.info(f"[{flow_id}] 🚀 AGENT WITH ALL TOOLS")
         self.logger.info("─" * 50)
-        self.logger.info(f"  ├─ Symbols: {getattr(intent_result, 'validated_symbols', [])}")
+        self.logger.info(f"  ├─ Symbols (intent): {intent_symbols}")
+        self.logger.info(f"  ├─ Symbols (working_memory): {wm_symbols}")
+        self.logger.info(f"  ├─ Symbols (merged): {merged_symbols}")
         self.logger.info(f"  ├─ Market: {getattr(intent_result, 'market_type', 'unknown')}")
         self.logger.info(f"  ├─ Tools: ALL ({len(self.catalog.get_tool_names())})")
         self.logger.info(f"  ├─ Model: {effective_model}")
@@ -1991,6 +2015,7 @@ Respond naturally and helpfully."""
                 tools=tools,
                 user_id=user_id,
                 images=images,
+                merged_symbols=merged_symbols,  # Pass merged symbols for context continuity
             )
 
             total_tool_calls = 0
@@ -2194,11 +2219,16 @@ IMPORTANT:
         tools: List[Dict[str, Any]],
         user_id: Optional[int],
         images: Optional[List[Any]] = None,
+        merged_symbols: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
 
         Key difference: Agent sees ALL tools, prompt encourages smart selection.
+
+        Args:
+            merged_symbols: Pre-merged symbols from intent_result + working_memory.
+                            If provided, these override intent_result.validated_symbols.
         """
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -2207,7 +2237,8 @@ IMPORTANT:
         if hasattr(market_type, 'value'):
             market_type = market_type.value
 
-        validated_symbols = getattr(intent_result, 'validated_symbols', [])
+        # Use merged_symbols if provided, else fallback to intent_result
+        validated_symbols = merged_symbols if merged_symbols is not None else getattr(intent_result, 'validated_symbols', [])
         intent_summary = getattr(intent_result, 'intent_summary', '')
 
         # Select skill for domain-specific prompt

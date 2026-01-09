@@ -2122,6 +2122,7 @@ async def stream_chat_v4(
 
             # Stream events from Agent with ALL tools
             # CRITICAL: Pass conversation_history for memory/context!
+            # CRITICAL: Pass wm_symbols for cross-turn symbol continuity!
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
                 intent_result=intent_result,
@@ -2134,7 +2135,8 @@ async def stream_chat_v4(
                 model_name=data.model_name,
                 provider_type=data.provider_type,
                 max_turns=6,
-                enable_tool_search_mode=data.enable_tool_search_mode,  # Tool Search Mode for token savings
+                enable_tool_search_mode=data.enable_tool_search_mode,  # Token savings
+                working_memory_symbols=wm_symbols,  # Symbols from previous turns
             ):
                 event_type = event.get("type", "unknown")
 
