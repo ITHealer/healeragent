@@ -210,27 +210,34 @@ async def start_deep_research(
                 session_id=request.session_id,
                 skip_clarification=request.skip_clarification,
             ):
-                # Update session status
-                if event.get("type") == "clarification_request":
-                    save_session(orchestrator.research_id, {
-                        **get_session(orchestrator.research_id) or {},
+                # Update session status based on event type
+                event_type = event.get("type", "progress")
+                current_session = get_session(orchestrator.research_id) or {}
+
+                if event_type == "clarification_request":
+                    updated_data = {
+                        **current_session,
                         "status": "awaiting_clarification",
                         "clarification_questions": event.get("data", {}).get("questions"),
-                    })
-                elif event.get("type") == "plan_created":
-                    save_session(orchestrator.research_id, {
-                        **get_session(orchestrator.research_id) or {},
+                    }
+                    save_session(orchestrator.research_id, updated_data)
+
+                elif event_type == "plan_created":
+                    updated_data = {
+                        **current_session,
                         "status": "awaiting_confirmation",
                         "plan": event.get("data", {}).get("plan"),
-                    })
-                elif event.get("type") == "research_completed":
-                    save_session(orchestrator.research_id, {
-                        **get_session(orchestrator.research_id) or {},
+                    }
+                    save_session(orchestrator.research_id, updated_data)
+
+                elif event_type == "research_completed":
+                    updated_data = {
+                        **current_session,
                         "status": "completed",
-                    })
+                    }
+                    save_session(orchestrator.research_id, updated_data)
 
                 # Format as SSE
-                event_type = event.get("type", "progress")
                 yield f"event: {event_type}\n"
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
 
