@@ -453,10 +453,10 @@ class DeepResearchConfig:
     Configuration for deep research execution.
     """
     # Model configuration
-    model_tier: str = "standard"  # budget, standard, premium
-    lead_model: str = "gpt-4o"
+    model_tier: str = "budget"  # budget, standard, premium (default: budget for cost savings)
+    lead_model: str = "gpt-4o-mini"
     worker_model: str = "gpt-4o-mini"
-    synthesis_model: str = "gpt-4o"
+    synthesis_model: str = "gpt-4o-mini"
 
     # Execution limits
     max_workers: int = 4
