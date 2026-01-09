@@ -2090,9 +2090,11 @@ async def stream_chat_v4(
                 core_memory = get_core_memory()
                 cm_data = await core_memory.load_core_memory(str(user_id))
                 human_block = cm_data.get("human", "")
-                if human_block and len(human_block) > 50:  # Only if meaningful content
+                if human_block and len(human_block) > 20:  # Include if has any profile
                     core_memory_context = human_block
-                    _logger.debug(f"[CHAT_V4] Loaded Core Memory context: {len(human_block)} chars")
+                    _logger.info(f"[CHAT_V4] ✅ Loaded Core Memory: {len(human_block)} chars for user {user_id}")
+                else:
+                    _logger.info(f"[CHAT_V4] ⚠️ Core Memory empty or minimal for user {user_id}")
             except Exception as cm_err:
                 _logger.warning(f"[CHAT_V4] Core Memory load failed (non-fatal): {cm_err}")
 
@@ -2200,6 +2202,7 @@ async def stream_chat_v4(
             # Stream events from Agent with ALL tools
             # CRITICAL: Pass conversation_history for memory/context!
             # CRITICAL: Pass wm_symbols for cross-turn symbol continuity!
+            # CRITICAL: Pass core_memory for user personalization!
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
                 intent_result=intent_result,
@@ -2207,6 +2210,7 @@ async def stream_chat_v4(
                 system_language=intent_result.response_language,
                 user_id=int(user_id) if user_id else None,
                 session_id=session_id,
+                core_memory=core_memory_context,  # User profile & preferences
                 enable_reasoning=data.enable_thinking,
                 images=processed_images,
                 model_name=data.model_name,
