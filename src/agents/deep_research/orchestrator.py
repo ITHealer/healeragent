@@ -726,6 +726,9 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
     async def _run_execution_phase(self) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run execution phase - spawn and coordinate workers.
+
+        Fixed: Uses sequential execution per priority group instead of
+        problematic as_completed with async generators.
         """
         self._current_phase = "execution"
         self.logger.info(f"[{self.agent_id}] Starting execution phase")
@@ -741,7 +744,7 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
             message=f"Starting execution of {total_sections} research sections...",
         ).to_dict()
 
-        # Group sections by priority for parallel execution
+        # Group sections by priority for execution order
         priority_groups: Dict[int, List[ResearchSection]] = {}
         for section in self.plan.sections:
             priority = section.priority
@@ -757,22 +760,17 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
                 f"{[s.name for s in sections]}"
             )
 
-            # Execute sections in parallel within same priority
-            tasks = []
+            # Execute sections sequentially within priority group
+            # (safer than problematic as_completed with async generators)
             for section in sections:
-                task = self._execute_section(section)
-                tasks.append(task)
-
-            # Run workers and yield events
-            for coro in asyncio.as_completed(tasks):
-                async for event in await coro:
+                async for event in self._execute_section_with_timeout(section):
                     yield event
-                    completed += 1 / total_sections
 
+                completed += 1
                 yield self._emitter.progress(
                     phase="execution",
                     progress=min(completed / total_sections, 0.99),
-                    message=f"Completed {int(completed)} of {total_sections} sections",
+                    message=f"Completed {completed} of {total_sections} sections",
                 ).to_dict()
 
         yield self._emitter.progress(
@@ -781,14 +779,54 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
             message="All sections completed",
         ).to_dict()
 
-    async def _execute_section(
+    async def _execute_section_with_timeout(
         self,
         section: ResearchSection,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
+        Execute a section with timeout protection.
+
+        Uses config.worker_timeout_sec (default 120s) per worker.
+        """
+        timeout_sec = self.config.worker_timeout_sec
+        worker_id = f"worker_{section.id}_{uuid.uuid4().hex[:6]}"
+
+        try:
+            async with asyncio.timeout(timeout_sec):
+                async for event in self._execute_section(section, worker_id):
+                    yield event
+        except asyncio.TimeoutError:
+            self.logger.error(
+                f"[{self.agent_id}] Worker {worker_id} timed out after {timeout_sec}s"
+            )
+            yield self._emitter.worker_failed(
+                worker_id=worker_id,
+                section_id=section.id,
+                error=f"Worker timed out after {timeout_sec} seconds",
+                duration_ms=timeout_sec * 1000,
+            ).to_dict()
+
+            # Add failed result
+            result = WorkerResult(
+                worker_id=worker_id,
+                section_id=section.id,
+                section_name=section.name,
+                success=False,
+                error=f"Timeout after {timeout_sec}s",
+                duration_ms=timeout_sec * 1000,
+            )
+            self.worker_results.append(result)
+
+    async def _execute_section(
+        self,
+        section: ResearchSection,
+        worker_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
         Execute a single research section using a worker.
         """
-        worker_id = f"worker_{section.id}_{uuid.uuid4().hex[:6]}"
+        if not worker_id:
+            worker_id = f"worker_{section.id}_{uuid.uuid4().hex[:6]}"
 
         self.logger.info(
             f"[{self.agent_id}] Spawning worker {worker_id} for section: {section.name}"
@@ -1042,6 +1080,125 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
         """
         self.state = AgentState.CANCELLED
         self.logger.info(f"[{self.agent_id}] Research cancelled: {reason}")
+
+    # ========================================================================
+    # STATE SERIALIZATION (for session management)
+    # ========================================================================
+
+    def to_state_dict(self) -> Dict[str, Any]:
+        """
+        Serialize orchestrator state for session storage.
+
+        Used to persist state between API calls (e.g., /start → /clarify → /execute).
+        """
+        return {
+            "research_id": self.research_id,
+            "agent_id": self.agent_id,
+            "query": self.query,
+            "symbols": self.symbols,
+            "clarification_answers": self.clarification_answers,
+            "plan": self.plan.to_dict() if self.plan else None,
+            "state": self.state.value,
+            "current_phase": self._current_phase,
+            "worker_results": [r.to_dict() for r in self.worker_results],
+            "config": self.config.to_dict(),
+        }
+
+    @classmethod
+    def from_state_dict(
+        cls,
+        state_data: Dict[str, Any],
+        config: Optional[DeepResearchConfig] = None,
+        api_key: Optional[str] = None,
+    ) -> "DeepResearchOrchestrator":
+        """
+        Restore orchestrator from serialized state.
+
+        Args:
+            state_data: Serialized state from to_state_dict()
+            config: Override config (uses saved config if None)
+            api_key: API key for LLM provider
+
+        Returns:
+            Restored DeepResearchOrchestrator instance
+        """
+        # Restore config
+        if config is None:
+            config_data = state_data.get("config", {})
+            config = DeepResearchConfig(
+                model_tier=config_data.get("model_tier", "standard"),
+                skip_clarification=config_data.get("skip_clarification", False),
+                auto_confirm_plan=config_data.get("auto_confirm_plan", False),
+            )
+
+        # Create orchestrator
+        orchestrator = cls(config=config, api_key=api_key)
+
+        # Restore state
+        orchestrator.research_id = state_data.get("research_id", orchestrator.research_id)
+        orchestrator.query = state_data.get("query")
+        orchestrator.symbols = state_data.get("symbols", [])
+        orchestrator.clarification_answers = state_data.get("clarification_answers", {})
+        orchestrator._current_phase = state_data.get("current_phase", "init")
+
+        # Restore agent state
+        state_str = state_data.get("state", "idle")
+        try:
+            orchestrator.state = AgentState(state_str)
+        except ValueError:
+            orchestrator.state = AgentState.IDLE
+
+        # Restore plan if exists
+        plan_data = state_data.get("plan")
+        if plan_data:
+            sections = []
+            for s in plan_data.get("sections", []):
+                role_str = s.get("worker_role", "web_researcher")
+                try:
+                    role = WorkerRole(role_str)
+                except ValueError:
+                    role = WorkerRole.WEB_RESEARCHER
+
+                sections.append(ResearchSection(
+                    id=s.get("id", 0),
+                    name=s.get("name", ""),
+                    description=s.get("description", ""),
+                    worker_role=role,
+                    tools_needed=s.get("tools_needed", []),
+                    estimated_duration_sec=s.get("estimated_duration_sec", 60),
+                    priority=s.get("priority", 1),
+                    dependencies=s.get("dependencies", []),
+                    status=s.get("status", "pending"),
+                ))
+
+            orchestrator.plan = ResearchPlan(
+                research_id=plan_data.get("research_id", orchestrator.research_id),
+                title=plan_data.get("title", ""),
+                query=plan_data.get("query", orchestrator.query or ""),
+                objective=plan_data.get("objective", ""),
+                sections=sections,
+                estimated_duration_min=plan_data.get("estimated_duration_min", 5),
+                symbols=plan_data.get("symbols", []),
+                confirmed=plan_data.get("confirmed", False),
+            )
+
+        # Restore worker results
+        for wr_data in state_data.get("worker_results", []):
+            orchestrator.worker_results.append(WorkerResult(
+                worker_id=wr_data.get("worker_id", ""),
+                section_id=wr_data.get("section_id", 0),
+                section_name=wr_data.get("section_name", ""),
+                success=wr_data.get("success", False),
+                findings=wr_data.get("findings", ""),
+                data=wr_data.get("data", {}),
+                sources=wr_data.get("sources", []),
+                error=wr_data.get("error"),
+                duration_ms=wr_data.get("duration_ms", 0),
+                iterations_used=wr_data.get("iterations_used", 0),
+                tools_called=wr_data.get("tools_called", []),
+            ))
+
+        return orchestrator
 
 
 # ============================================================================

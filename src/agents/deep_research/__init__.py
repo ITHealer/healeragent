@@ -37,6 +37,9 @@ from src.agents.deep_research.models import (
     ClarificationQuestion,
     ClarificationResponse,
     DeepResearchEventType,
+    ResearchSessionStatus,
+    VALID_SESSION_TRANSITIONS,
+    validate_session_transition,
 )
 
 from src.agents.deep_research.orchestrator import (
@@ -59,6 +62,10 @@ __all__ = [
     "ClarificationQuestion",
     "ClarificationResponse",
     "DeepResearchEventType",
+    # Session State Management
+    "ResearchSessionStatus",
+    "VALID_SESSION_TRANSITIONS",
+    "validate_session_transition",
     # Orchestrator
     "DeepResearchOrchestrator",
     "create_orchestrator",

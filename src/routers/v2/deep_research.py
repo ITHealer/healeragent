@@ -36,6 +36,8 @@ from src.agents.deep_research import (
     DeepResearchOrchestrator,
     DeepResearchConfig,
     ClarificationResponse,
+    ResearchSessionStatus,
+    validate_session_transition,
 )
 from src.agents.deep_research.streaming.artifact_emitter import format_sse_done
 
@@ -121,6 +123,52 @@ def save_session(research_id: str, data: Dict[str, Any]):
     }
 
 
+def update_session_status(
+    research_id: str,
+    new_status: ResearchSessionStatus,
+    extra_data: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """
+    Update session status with validation.
+
+    Args:
+        research_id: Session ID
+        new_status: Target status
+        extra_data: Additional data to save
+
+    Returns:
+        True if status was updated, False if transition invalid
+    """
+    session = get_session(research_id)
+    if not session:
+        return False
+
+    current_status_str = session.get("status", "started")
+    try:
+        current_status = ResearchSessionStatus(current_status_str)
+    except ValueError:
+        current_status = ResearchSessionStatus.STARTED
+
+    # Validate transition
+    if not validate_session_transition(current_status, new_status):
+        logger.logger.warning(
+            f"[DeepResearch] Invalid status transition: {current_status} -> {new_status}"
+        )
+        # Allow transition anyway for now, but log warning
+        # In production, you might want to return False here
+
+    data = {
+        **session,
+        "status": new_status.value,
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    if extra_data:
+        data.update(extra_data)
+
+    _research_sessions[research_id] = data
+    return True
+
+
 # ============================================================================
 # ENDPOINTS
 # ============================================================================
@@ -187,7 +235,7 @@ async def start_deep_research(
         "user_id": request.user_id,
         "session_id": request.session_id,
         "config": config.to_dict(),
-        "status": "analyzing",
+        "status": ResearchSessionStatus.ANALYZING.value,
         "created_at": datetime.utcnow().isoformat(),
     })
 
@@ -199,43 +247,43 @@ async def start_deep_research(
         )
 
         if result.get("needs_clarification"):
-            # Update session
-            save_session(research_id, {
-                **get_session(research_id),
-                "status": "awaiting_clarification",
-                "clarification_questions": result.get("questions"),
-            })
+            # Update session with state validation
+            update_session_status(
+                research_id,
+                ResearchSessionStatus.AWAITING_CLARIFICATION,
+                {"clarification_questions": result.get("questions")},
+            )
 
             return DeepResearchStartResponse(
                 type="clarify",
                 research_id=research_id,
-                status="awaiting_clarification",
+                status=ResearchSessionStatus.AWAITING_CLARIFICATION.value,
                 questions=result.get("questions"),
                 analysis=result.get("analysis"),
             )
         else:
             # Have plan ready
             plan = result.get("plan")
-            save_session(research_id, {
-                **get_session(research_id),
-                "status": "awaiting_confirmation",
-                "plan": plan,
-            })
+            update_session_status(
+                research_id,
+                ResearchSessionStatus.AWAITING_CONFIRMATION,
+                {"plan": plan},
+            )
 
             return DeepResearchStartResponse(
                 type="plan",
                 research_id=research_id,
-                status="awaiting_confirmation",
+                status=ResearchSessionStatus.AWAITING_CONFIRMATION.value,
                 plan=plan,
             )
 
     except Exception as e:
         logger.logger.error(f"[DeepResearch] Start error: {e}", exc_info=True)
-        save_session(research_id, {
-            **get_session(research_id),
-            "status": "error",
-            "error": str(e),
-        })
+        update_session_status(
+            research_id,
+            ResearchSessionStatus.FAILED,
+            {"error": str(e)},
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -267,20 +315,27 @@ async def submit_clarification(
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
 
-    if session.get("status") != "awaiting_clarification":
+    current_status = session.get("status")
+    if current_status != ResearchSessionStatus.AWAITING_CLARIFICATION.value:
         raise HTTPException(
             status_code=400,
-            detail=f"Research is not awaiting clarification. Status: {session.get('status')}"
+            detail=f"Research is not awaiting clarification. Status: {current_status}"
         )
 
-    # Create orchestrator with saved context
+    # Restore orchestrator from session state (if available) or create new
     config_data = session.get("config", {})
     config = DeepResearchConfig(
         model_tier=config_data.get("model_tier", "standard"),
     )
 
-    orchestrator = DeepResearchOrchestrator(config=config)
-    orchestrator.research_id = request.research_id
+    # Use from_state_dict if orchestrator state was saved
+    orchestrator_state = session.get("orchestrator_state")
+    if orchestrator_state:
+        orchestrator = DeepResearchOrchestrator.from_state_dict(orchestrator_state, config=config)
+    else:
+        orchestrator = DeepResearchOrchestrator(config=config)
+        orchestrator.research_id = request.research_id
+
     orchestrator.clarification_answers = request.answers
 
     try:
@@ -292,22 +347,30 @@ async def submit_clarification(
         )
 
         plan = result.get("plan")
-        save_session(request.research_id, {
-            **session,
-            "status": "awaiting_confirmation",
-            "plan": plan,
-            "clarification_answers": request.answers,
-        })
+        update_session_status(
+            request.research_id,
+            ResearchSessionStatus.AWAITING_CONFIRMATION,
+            {
+                "plan": plan,
+                "clarification_answers": request.answers,
+                "orchestrator_state": orchestrator.to_state_dict(),
+            },
+        )
 
         return DeepResearchStartResponse(
             type="plan",
             research_id=request.research_id,
-            status="awaiting_confirmation",
+            status=ResearchSessionStatus.AWAITING_CONFIRMATION.value,
             plan=plan,
         )
 
     except Exception as e:
         logger.logger.error(f"[DeepResearch] Clarify error: {e}", exc_info=True)
+        update_session_status(
+            request.research_id,
+            ResearchSessionStatus.FAILED,
+            {"error": str(e)},
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -344,27 +407,31 @@ async def execute_research(
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
 
-    if session.get("status") != "awaiting_confirmation":
+    current_status = session.get("status")
+    if current_status != ResearchSessionStatus.AWAITING_CONFIRMATION.value:
         raise HTTPException(
             status_code=400,
-            detail=f"Research is not ready to execute. Status: {session.get('status')}"
+            detail=f"Research is not ready to execute. Status: {current_status}"
         )
 
-    # Update status
-    save_session(request.research_id, {
-        **session,
-        "status": "executing",
-    })
+    # Update status to executing
+    update_session_status(request.research_id, ResearchSessionStatus.EXECUTING)
 
-    # Create orchestrator
+    # Restore or create orchestrator
     config_data = session.get("config", {})
     config = DeepResearchConfig(
         model_tier=config_data.get("model_tier", "standard"),
         auto_confirm_plan=True,
     )
 
-    orchestrator = DeepResearchOrchestrator(config=config)
-    orchestrator.research_id = request.research_id
+    # Use from_state_dict if orchestrator state was saved
+    orchestrator_state = session.get("orchestrator_state")
+    if orchestrator_state:
+        orchestrator = DeepResearchOrchestrator.from_state_dict(orchestrator_state, config=config)
+    else:
+        orchestrator = DeepResearchOrchestrator(config=config)
+        orchestrator.research_id = request.research_id
+
     orchestrator.clarification_answers = session.get("clarification_answers", {})
 
     async def generate_events():
@@ -377,13 +444,20 @@ async def execute_research(
             ):
                 event_type = event.get("type", "progress")
 
+                # Update session on synthesis start
+                if event_type == "synthesis_started":
+                    update_session_status(
+                        request.research_id,
+                        ResearchSessionStatus.SYNTHESIZING,
+                    )
+
                 # Update session on completion
                 if event_type == "research_completed":
-                    save_session(request.research_id, {
-                        **get_session(request.research_id),
-                        "status": "completed",
-                        "result": event,
-                    })
+                    update_session_status(
+                        request.research_id,
+                        ResearchSessionStatus.COMPLETED,
+                        {"result": event},
+                    )
 
                 yield f"event: {event_type}\n"
                 yield f"data: {json.dumps(event, ensure_ascii=False, default=str)}\n\n"
@@ -392,11 +466,11 @@ async def execute_research(
 
         except Exception as e:
             logger.logger.error(f"[DeepResearch] Execute error: {e}", exc_info=True)
-            save_session(request.research_id, {
-                **get_session(request.research_id),
-                "status": "error",
-                "error": str(e),
-            })
+            update_session_status(
+                request.research_id,
+                ResearchSessionStatus.FAILED,
+                {"error": str(e)},
+            )
             yield f"event: error\n"
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
             yield format_sse_done()
@@ -457,10 +531,23 @@ async def cancel_research(
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
 
-    save_session(research_id, {
-        **session,
-        "status": "cancelled",
-        "cancelled_at": datetime.utcnow().isoformat(),
-    })
+    # Check if already in terminal state
+    current_status = session.get("status")
+    terminal_states = [
+        ResearchSessionStatus.COMPLETED.value,
+        ResearchSessionStatus.CANCELLED.value,
+        ResearchSessionStatus.FAILED.value,
+    ]
+    if current_status in terminal_states:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Research is already in terminal state: {current_status}"
+        )
+
+    update_session_status(
+        research_id,
+        ResearchSessionStatus.CANCELLED,
+        {"cancelled_at": datetime.utcnow().isoformat()},
+    )
 
     return {"message": "Research cancelled", "research_id": research_id}

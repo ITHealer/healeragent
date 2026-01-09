@@ -43,6 +43,69 @@ class AgentState(str, Enum):
     CANCELLED = "cancelled"            # User cancelled
 
 
+class ResearchSessionStatus(str, Enum):
+    """
+    Status enum for research sessions in the router.
+
+    Provides type-safe status management with valid transitions.
+    """
+    STARTED = "started"
+    ANALYZING = "analyzing"
+    AWAITING_CLARIFICATION = "awaiting_clarification"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    EXECUTING = "executing"
+    SYNTHESIZING = "synthesizing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+# Valid state transitions for session management
+VALID_SESSION_TRANSITIONS: Dict[ResearchSessionStatus, List[ResearchSessionStatus]] = {
+    ResearchSessionStatus.STARTED: [
+        ResearchSessionStatus.ANALYZING,
+        ResearchSessionStatus.CANCELLED,
+    ],
+    ResearchSessionStatus.ANALYZING: [
+        ResearchSessionStatus.AWAITING_CLARIFICATION,
+        ResearchSessionStatus.AWAITING_CONFIRMATION,
+        ResearchSessionStatus.FAILED,
+    ],
+    ResearchSessionStatus.AWAITING_CLARIFICATION: [
+        ResearchSessionStatus.AWAITING_CONFIRMATION,
+        ResearchSessionStatus.CANCELLED,
+        ResearchSessionStatus.FAILED,
+    ],
+    ResearchSessionStatus.AWAITING_CONFIRMATION: [
+        ResearchSessionStatus.EXECUTING,
+        ResearchSessionStatus.CANCELLED,
+        ResearchSessionStatus.FAILED,
+    ],
+    ResearchSessionStatus.EXECUTING: [
+        ResearchSessionStatus.SYNTHESIZING,
+        ResearchSessionStatus.COMPLETED,
+        ResearchSessionStatus.FAILED,
+        ResearchSessionStatus.CANCELLED,
+    ],
+    ResearchSessionStatus.SYNTHESIZING: [
+        ResearchSessionStatus.COMPLETED,
+        ResearchSessionStatus.FAILED,
+    ],
+    ResearchSessionStatus.COMPLETED: [],  # Terminal state
+    ResearchSessionStatus.CANCELLED: [],  # Terminal state
+    ResearchSessionStatus.FAILED: [],     # Terminal state
+}
+
+
+def validate_session_transition(
+    current: ResearchSessionStatus,
+    target: ResearchSessionStatus,
+) -> bool:
+    """Check if a session state transition is valid."""
+    valid_targets = VALID_SESSION_TRANSITIONS.get(current, [])
+    return target in valid_targets
+
+
 class WorkerRole(str, Enum):
     """
     Specialized roles for research workers.
