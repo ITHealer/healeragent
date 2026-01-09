@@ -108,8 +108,9 @@ class Settings(BaseSettings):
     MODEL_DEFAULT: str = Field("", env='MODEL_DEFAULT')
     PROVIDER_DEFAULT: str = Field("", env='PROVIDER_DEFAULT')
 
-    # Classification Model (fast, cheap - called first for every request)
-    CLASSIFIER_MODEL: str = Field("gpt-4.1-nano", env='CLASSIFIER_MODEL')
+    # Classification Model (needs reasoning capability for context understanding)
+    # Note: nano is too weak for complex context reasoning with history/memory
+    CLASSIFIER_MODEL: str = Field("gpt-4.1-mini", env='CLASSIFIER_MODEL')
     CLASSIFIER_PROVIDER: str = Field("openai", env='CLASSIFIER_PROVIDER')
 
     # Agent Loop Model (main reasoning - needs higher quality)
