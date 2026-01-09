@@ -150,7 +150,7 @@ def cleanup_old_sessions(max_age_hours: int = 24):
 @router.post("/start")
 async def start_deep_research(
     request: DeepResearchStartRequest,
-    api_key: str = Depends(api_key_auth),
+    api_key: str = Depends(api_key_auth.author_with_api_key),
 ):
     """
     Start a new deep research session.
@@ -269,7 +269,7 @@ async def start_deep_research(
 @router.post("/clarify")
 async def submit_clarification(
     request: ClarificationAnswersRequest,
-    api_key: str = Depends(api_key_auth),
+    api_key: str = Depends(api_key_auth.author_with_api_key),
 ):
     """
     Submit answers to clarification questions.
@@ -345,7 +345,7 @@ async def submit_clarification(
 @router.post("/confirm")
 async def confirm_plan(
     request: ConfirmPlanRequest,
-    api_key: str = Depends(api_key_auth),
+    api_key: str = Depends(api_key_auth.author_with_api_key),
 ):
     """
     Confirm a research plan and start execution.
@@ -422,7 +422,7 @@ async def confirm_plan(
 @router.get("/status/{research_id}")
 async def get_research_status(
     research_id: str,
-    api_key: str = Depends(api_key_auth),
+    api_key: str = Depends(api_key_auth.author_with_api_key),
 ):
     """
     Get the status of a research session.
@@ -449,7 +449,7 @@ async def get_research_status(
 @router.delete("/cancel/{research_id}")
 async def cancel_research(
     research_id: str,
-    api_key: str = Depends(api_key_auth),
+    api_key: str = Depends(api_key_auth.author_with_api_key),
 ):
     """
     Cancel an ongoing research session.
