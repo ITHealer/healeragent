@@ -494,6 +494,70 @@ def _get_v4_session_repo():
     return _v4_session_repo
 
 
+# Chat repository for saving messages (V4)
+_v4_chat_repo = None
+
+
+def _get_v4_chat_repo():
+    """Get or create chat repository for V4 message persistence."""
+    global _v4_chat_repo
+    if _v4_chat_repo is None:
+        from src.database.repository.chat import ChatRepository
+        _v4_chat_repo = ChatRepository()
+    return _v4_chat_repo
+
+
+async def _save_conversation_turn(
+    session_id: str,
+    user_id: str,
+    user_query: str,
+    assistant_response: str,
+    response_time_ms: float,
+) -> None:
+    """
+    Save a conversation turn (user question + assistant response) to database.
+
+    This is CRITICAL for conversation memory - without saving,
+    follow-up questions have no context.
+
+    Args:
+        session_id: Session UUID
+        user_id: User ID
+        user_query: User's question
+        assistant_response: Assistant's response
+        response_time_ms: Time taken to generate response
+    """
+    try:
+        chat_repo = _get_v4_chat_repo()
+
+        # Save user question
+        question_id = chat_repo.save_user_question(
+            session_id=session_id,
+            created_at=datetime.now(),
+            created_by=user_id,
+            content=user_query,
+        )
+        _logger.debug(f"[CHAT_V4] Saved user question: {question_id[:8]}...")
+
+        # Save assistant response
+        response_id = chat_repo.save_assistant_response(
+            session_id=session_id,
+            created_at=datetime.now(),
+            question_id=question_id,
+            content=assistant_response,
+            response_time=response_time_ms / 1000.0,  # Convert ms to seconds
+        )
+        _logger.debug(f"[CHAT_V4] Saved assistant response: {response_id[:8]}...")
+
+        _logger.info(
+            f"[CHAT_V4] ✅ Conversation saved: "
+            f"query={len(user_query)} chars, response={len(assistant_response)} chars"
+        )
+
+    except Exception as e:
+        _logger.warning(f"[CHAT_V4] Failed to save conversation (non-fatal): {e}")
+
+
 async def _load_conversation_history(session_id: str, limit: int = 10) -> List[Dict[str, str]]:
     """
     Load recent conversation history from session.
@@ -1737,6 +1801,18 @@ async def stream_chat_v3(
                 # LEARN errors should not fail the request
                 _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
 
+            # =================================================================
+            # SAVE Phase: Persist conversation to database (CRITICAL FOR MEMORY!)
+            # Without this, conversation history will be empty on next turn
+            # =================================================================
+            await _save_conversation_turn(
+                session_id=session_id,
+                user_id=str(user_id),
+                user_query=query,
+                assistant_response=stats["final_content"],
+                response_time_ms=elapsed_ms,
+            )
+
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()
 
@@ -2228,6 +2304,18 @@ async def stream_chat_v4(
                 )
             except Exception as learn_err:
                 _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
+
+            # =================================================================
+            # SAVE Phase: Persist conversation to database (CRITICAL FOR MEMORY!)
+            # Without this, conversation history will be empty on next turn
+            # =================================================================
+            await _save_conversation_turn(
+                session_id=session_id,
+                user_id=str(user_id),
+                user_query=query,
+                assistant_response=stats["final_content"],
+                response_time_ms=elapsed_ms,
+            )
 
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()
