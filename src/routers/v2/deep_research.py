@@ -183,10 +183,10 @@ async def start_deep_research(
         auto_confirm_plan=request.auto_confirm_plan,
     )
 
-    # Create orchestrator
+    # Create orchestrator (uses settings.OPENAI_API_KEY by default)
     orchestrator = DeepResearchOrchestrator(
         config=config,
-        api_key=api_key,
+        # api_key is from settings.OPENAI_API_KEY, NOT from user auth
     )
 
     # Save session
@@ -305,7 +305,6 @@ async def submit_clarification(
     # Create new orchestrator with clarification response
     orchestrator = DeepResearchOrchestrator(
         config=config,
-        api_key=api_key,
     )
     orchestrator.research_id = request.research_id
 
@@ -381,7 +380,6 @@ async def confirm_plan(
     # Create orchestrator with confirmed plan
     orchestrator = DeepResearchOrchestrator(
         config=config,
-        api_key=api_key,
     )
     orchestrator.research_id = request.research_id
 
