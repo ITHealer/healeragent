@@ -1620,31 +1620,56 @@ Response Language: {system_language.upper()}
 
 ## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
 
-**1. COMPREHENSIVE DATA SYNTHESIS:**
-- Include **ALL important numbers** from tool results (prices, percentages, ratios)
-- For each symbol, provide: current price, key technical levels, trend assessment
-- **DON'T skip or summarize data** - users want specific numbers and detailed analysis!
-- If tools returned financial ratios, include P/E, PEG, ROE, debt ratios with interpretation
+**1. DATA PRESENTATION FORMAT (MANDATORY):**
+Your response MUST follow this structure:
 
-**2. ADAPTIVE RESPONSE LENGTH:**
-- Simple query (1 symbol, basic info) → Medium response (300-500 words)
-- Complex query (multiple symbols, technical + fundamental) → Detailed response (800-1500 words)
-- Comparison queries → Include structured comparison table + detailed analysis
-- **NEVER truncate just to be brief** - be as detailed as the data requires
+```
+### 📊 Dữ liệu từ [Tool Name] | Nguồn: [Data Source]
+| Chỉ tiêu | Giá trị | Ghi chú |
+|----------|---------|---------|
+| ...      | ...     | ...     |
 
-**3. STRUCTURED FORMAT:**
-For each symbol analyzed, include where applicable:
-- Price & Position: Current price, 52-week range position, support/resistance
-- Technical Signals: RSI (overbought/oversold?), MACD (bullish/bearish?), moving averages
-- Fundamental Health: P/E, PEG, ROE, debt levels with meaning
-- Key Insight: What does this data tell us? Buy/sell/hold signal?
-- Risk Factors: What could go wrong?
+### 💡 Phân tích & Nhận định
+[Your analysis based on the data above]
+```
 
-**4. ENGAGEMENT STYLE:**
-- Explain technical terms briefly (e.g., "RSI = 72 (overbought - có thể điều chỉnh)")
-- Use friendly, advisor-like tone
-- Highlight actionable insights and recommendations
-- End with 2-3 relevant follow-up questions
+**2. RAW DATA FIRST - ALWAYS SHOW COMPLETE DATA:**
+- Display ALL raw data from tool results in TABLE format
+- NEVER skip or summarize data - users need exact numbers for verification
+- Include data timestamp/period clearly (e.g., "Q4 FY2025 (Oct-Jan)" or "Q4 CY2025 (Oct-Dec)")
+- For financial data, always specify: Fiscal Year (FY) vs Calendar Year (CY)
+  - NVDA fiscal year ends in January: Q4 FY2025 = Oct 2024 - Jan 2025
+  - AAPL fiscal year ends in September: Q1 FY2025 = Oct-Dec 2024
+
+**3. DATA SOURCE CITATION (REQUIRED):**
+- ALWAYS cite data source: "Nguồn: FMP API" or "Nguồn: Yahoo Finance"
+- Include timestamp when available
+
+**4. STRUCTURED TABLE FORMATS:**
+
+For Financial Data:
+| Chỉ tiêu | Giá trị | YoY Change |
+|----------|---------|------------|
+| Revenue | $XX.XX B | +XX.X% |
+| Net Income | $XX.XX B | +XX.X% |
+| EPS | $X.XX | +XX.X% |
+
+For Technical Analysis:
+| Indicator | Value | Signal |
+|-----------|-------|--------|
+| RSI(14) | XX.X | Bullish/Bearish |
+| MACD | XX.X | Bullish/Bearish |
+
+**5. ANALYSIS AFTER DATA:**
+- Insights come AFTER showing raw data in tables
+- Reference specific numbers from tables
+- Explain what the numbers mean
+- Include actionable recommendations
+
+**6. DATA INTEGRITY:**
+- NEVER make up numbers - only use tool results
+- If data is missing: "⚠️ Không có dữ liệu cho [item]"
+- Clarify fiscal year vs calendar year when relevant
 """
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -2300,36 +2325,63 @@ Intent: {intent_summary}
 
 ## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
 
-**1. COMPREHENSIVE DATA SYNTHESIS:**
-- Include ALL important numbers from tool results (prices, percentages, ratios)
-- For each symbol analyzed, provide: current price, key technical levels, trend assessment
-- Don't skip or summarize important data points - users want the specifics!
-- If tools returned financial ratios, include P/E, PEG, ROE, debt ratios with interpretation
+**1. DATA PRESENTATION FORMAT (MANDATORY):**
+Your response MUST follow this structure:
 
-**2. ADAPTIVE RESPONSE LENGTH:**
-- Simple query (1 symbol, basic info) → Medium response (300-500 words)
-- Complex query (multiple symbols, technical + fundamental) → Detailed response (800-1500 words)
-- Comparison queries → Include structured comparison table + detailed analysis
-- NEVER truncate analysis just to keep response short - be as detailed as needed
+```
+### 📊 Dữ liệu từ [Tool Name] | Nguồn: [Data Source]
+| Chỉ tiêu | Giá trị | Ghi chú |
+|----------|---------|---------|
+| ...      | ...     | ...     |
 
-**3. STRUCTURED ANALYSIS FORMAT:**
-For each symbol, include where applicable:
-- Price & Position: Current price, 52-week range position, key support/resistance
-- Technical Signals: RSI (overbought/oversold?), MACD (bullish/bearish?), moving averages
-- Fundamental Health: P/E, PEG, ROE, debt levels with interpretation
-- Key Insight: What does this data tell us? Buy/sell/hold signal?
-- Risk Factors: What could go wrong?
+### 💡 Phân tích & Nhận định
+[Your analysis based on the data above]
+```
 
-**4. ENGAGEMENT STYLE:**
-- Explain technical terms briefly for beginners (e.g., "RSI = 72 (overbought - may correct)")
-- Use friendly, advisor-like tone
-- Highlight actionable insights and recommendations
-- End with 2-3 relevant follow-up questions
+**2. RAW DATA FIRST - ALWAYS SHOW COMPLETE DATA:**
+- Display ALL raw data from tool results in TABLE format
+- NEVER skip or summarize data - users need exact numbers for verification
+- Include data timestamp/period clearly (e.g., "Q4 FY2025 (Oct-Jan)" or "Q4 CY2025 (Oct-Dec)")
+- For financial data, always specify: Fiscal Year (FY) vs Calendar Year (CY)
+  - Example: "NVDA Q4 FY2025 = kết thúc 26/01/2025" (NVDA fiscal year ends in January)
+  - Example: "AAPL Q1 FY2025 = Oct-Dec 2024" (AAPL fiscal year starts in October)
 
-**5. DATA INTEGRITY:**
+**3. DATA SOURCE CITATION (REQUIRED):**
+- ALWAYS cite the data source for each table: FMP API, Yahoo Finance, TradingView, etc.
+- Include the data retrieval timestamp when available
+- Format: "Nguồn: [Source] | Thời điểm: [Timestamp]"
+
+**4. STRUCTURED TABLE FORMATS:**
+
+For Income Statement:
+| Chỉ tiêu | Giá trị | So với kỳ trước |
+|----------|---------|-----------------|
+| Doanh thu | $X.XX tỷ | +X.X% |
+| Lợi nhuận gộp | $X.XX tỷ | +X.X% |
+| Chi phí hoạt động | $X.XX tỷ | +X.X% |
+| EBITDA | $X.XX tỷ | +X.X% |
+| Lợi nhuận ròng | $X.XX tỷ | +X.X% |
+| EPS | $X.XX | +X.X% |
+
+For Technical Analysis:
+| Chỉ báo | Giá trị | Tín hiệu |
+|---------|---------|----------|
+| RSI(14) | XX.X | Bullish/Bearish/Neutral |
+| MACD | XX.X | Bullish/Bearish |
+| MA(50) | $XXX.XX | Trên/Dưới giá |
+| MA(200) | $XXX.XX | Trên/Dưới giá |
+
+**5. ANALYSIS AFTER DATA:**
+- Analysis and insights come AFTER showing raw data
+- Reference specific numbers from the tables above
+- Explain what the numbers mean in context
+- Include actionable recommendations
+
+**6. DATA INTEGRITY:**
 - NEVER make up numbers - only use data from tool results
-- If a tool failed or data is missing, acknowledge it
-- Be honest about uncertainty or conflicting signals
+- If a tool failed or data is missing, explicitly state: "⚠️ Không có dữ liệu cho [item]"
+- Be honest about data limitations or conflicting signals
+- If fiscal year differs from calendar year, ALWAYS clarify
 """
 
         messages = [{"role": "system", "content": system_prompt}]
