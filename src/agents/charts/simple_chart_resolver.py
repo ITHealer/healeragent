@@ -212,19 +212,39 @@ class SimpleChartResolver(LoggerMixin):
         categories: Set[str] = set()
 
         # Tool name patterns to category mapping
+        # Pattern matching is case-insensitive (tool_name.lower())
         tool_patterns = {
-            "price": ["get_stock_price", "get_quote", "price"],
-            "technical": ["get_technical", "indicators", "rsi", "macd", "sma"],
-            "fundamentals": ["get_financials", "get_fundamentals", "earnings"],
-            "news": ["get_news", "news"],
-            "market": ["get_market", "market_overview", "indices"],
-            "discovery": ["screen", "trending", "gainers", "losers"],
-            "crypto": ["crypto", "bitcoin", "ethereum"],
-            "risk": ["risk", "volatility"],
+            "price": [
+                "get_stock_price", "get_quote", "price", "getstockprice",
+                "getquote", "stockprice"
+            ],
+            "technical": [
+                "get_technical", "indicators", "rsi", "macd", "sma",
+                "gettechnical", "detectchartpatterns", "supportresistance",
+                "chart_pattern", "technical_indicator"
+            ],
+            "fundamentals": [
+                "get_financials", "get_fundamentals", "earnings",
+                "getincomestatement", "getbalancesheet", "getcashflow",
+                "getfinancialratios", "getgrowthmetrics", "income_statement",
+                "balance_sheet", "cash_flow", "financial_ratio", "growth"
+            ],
+            "news": ["get_news", "news", "getnews", "stocknews"],
+            "market": [
+                "get_market", "market_overview", "indices", "getmarket",
+                "marketoverview", "sector"
+            ],
+            "discovery": [
+                "screen", "trending", "gainers", "losers", "screener",
+                "gettrending", "gettopgainers", "gettoplosers"
+            ],
+            "crypto": ["crypto", "bitcoin", "ethereum", "getcrypto"],
+            "risk": ["risk", "volatility", "getrisk"],
         }
 
         for result in tool_results:
-            tool_name = result.get("tool", result.get("name", "")).lower()
+            # Support multiple key formats: "tool", "name", "tool_name"
+            tool_name = result.get("tool", result.get("name", result.get("tool_name", ""))).lower()
 
             for category, patterns in tool_patterns.items():
                 if any(p in tool_name for p in patterns):

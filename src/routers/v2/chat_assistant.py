@@ -46,6 +46,7 @@ from src.agents.classification import (
 from src.agents.charts import (
     resolve_charts_from_classification,
     charts_to_dict_list,
+    get_chart_resolver,
 )
 # LLM Router + Unified Agent (ChatGPT-style 2-phase tool selection)
 from src.agents.router import (
@@ -2319,6 +2320,35 @@ async def stream_chat_v4(
 
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()
+
+            # =================================================================
+            # Chart Resolution: Map tool results to frontend charts
+            # This is critical for FE to show relevant charts with symbols
+            # =================================================================
+            try:
+                # Collect symbols from intent + working memory (merge, dedupe)
+                chart_symbols = list(intent_result.validated_symbols) if intent_result.validated_symbols else []
+                if wm_symbols:
+                    for sym in wm_symbols:
+                        if sym not in chart_symbols:
+                            chart_symbols.append(sym)
+
+                # Use chart resolver to map tool results to charts
+                chart_resolver = get_chart_resolver()
+                charts = chart_resolver.resolve_from_tool_results(
+                    tool_results=stats["tool_results"],
+                    symbols=chart_symbols,
+                    query=query,
+                    max_charts=3,
+                )
+                if charts:
+                    stats["charts"] = charts_to_dict_list(charts)
+                    _logger.info(
+                        f"[CHAT_V4] Charts resolved: {[c.type for c in charts]} "
+                        f"with symbols={chart_symbols}"
+                    )
+            except Exception as chart_err:
+                _logger.warning(f"[CHAT_V4] Chart resolution failed (non-fatal): {chart_err}")
 
             yield emitter.emit_done(
                 total_turns=stats["total_turns"],
