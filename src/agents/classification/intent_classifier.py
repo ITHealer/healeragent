@@ -484,12 +484,24 @@ IMPORTANT: When Active Tab is "{active_tab}", interpret ambiguous symbols accord
         # Working Memory Symbols (CRITICAL for cross-turn context)
         wm_hint = ""
         if working_memory_symbols and len(working_memory_symbols) > 0:
+            # Symbols are in chronological order: oldest first, newest LAST
+            most_recent = working_memory_symbols[-1]  # LAST symbol is MOST RECENT
+            older_symbols = working_memory_symbols[:-1] if len(working_memory_symbols) > 1 else []
+
+            # Format with clear chronological indication
+            symbols_timeline = ""
+            if older_symbols:
+                symbols_timeline = f"Older symbols (in order): {' → '.join(older_symbols)}\n"
+            symbols_timeline += f"**MOST RECENT SYMBOL: {most_recent}** ← This is the symbol from the LAST user query"
+
             wm_hint = f"""
 <working_memory>
-SYMBOLS FROM RECENT TURNS: {', '.join(working_memory_symbols)}
-CRITICAL: When user refers to "nó", "this stock", "công ty này", "symbol đó", "these stocks", etc.
-without explicit names, they likely refer to these symbols from recent conversation.
-Use these symbols to resolve ambiguous references!
+{symbols_timeline}
+
+CRITICAL: The symbols are listed in CHRONOLOGICAL ORDER.
+- When user says "symbol gần nhất" (most recent symbol) → Use: {most_recent}
+- When user says "mã đó", "nó", "this stock", "công ty này" without explicit name → Use: {most_recent}
+- When user asks about "các mã đã hỏi" (previously asked symbols) → Use all: {', '.join(working_memory_symbols)}
 </working_memory>
 """
 
@@ -502,16 +514,26 @@ Use these symbols to resolve ambiguous references!
 </user_profile>
 """
 
-        # History context - INCREASED from 100 to 500 chars per message
+        # History context - Format with clear chronological ordering
         history_hint = ""
         if conversation_history and len(conversation_history) > 0:
-            recent = conversation_history[-5:]  # Last 5 messages (increased from 3)
-            history_text = "\n".join([
-                f"- {msg.get('role', 'user')}: {msg.get('content', '')[:500]}"
-                for msg in recent
-            ])
+            recent = conversation_history[-5:]  # Last 5 messages
+            total_msgs = len(recent)
+
+            # Format with turn numbers to show chronological order
+            history_lines = []
+            for i, msg in enumerate(recent):
+                turn_label = f"[Turn {i + 1}/{total_msgs}]"
+                if i == total_msgs - 1:
+                    turn_label = f"[Turn {i + 1}/{total_msgs} - MOST RECENT]"
+                role = msg.get('role', 'user').upper()
+                content = msg.get('content', '')[:500]
+                history_lines.append(f"{turn_label} {role}: {content}")
+
+            history_text = "\n".join(history_lines)
             history_hint = f"""
 <conversation_history>
+(Listed in chronological order, oldest first, newest last)
 {history_text}
 </conversation_history>
 """

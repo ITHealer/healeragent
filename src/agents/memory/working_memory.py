@@ -396,23 +396,43 @@ class WorkingMemory(LoggerMixin):
     ) -> str:
         """
         Add extracted symbols for current context
-        
-        FIXED: Merges with existing symbols instead of replacing
-        
+
+        FIXED: Merges with existing symbols while PRESERVING chronological order.
+        Most recent symbols are LAST in the list.
+
+        Order: [oldest, ..., newest]
+
         Args:
             symbols: List of symbols (e.g., ["AAPL", "NVDA"])
             source: Where symbols came from (query, history, tool)
-            
+
         Returns:
             Entry ID
         """
         with self._lock:
             # Get existing symbols
             existing_symbols = self.get_current_symbols()
-            
-            # Merge new symbols (deduplicate)
-            merged_symbols = list(set(existing_symbols + symbols))
-            
+
+            # =================================================================
+            # FIXED: Preserve chronological order while deduplicating
+            # Order: existing symbols (older) + new symbols (newer)
+            # Duplicates are kept in their LATEST position (most recent mention)
+            # =================================================================
+            seen = set()
+            merged_symbols = []
+
+            # Process all symbols in order: existing first, then new
+            # If a symbol appears again in new, it will be moved to the end
+            all_symbols = existing_symbols + symbols
+
+            # Reverse iterate to keep the LAST occurrence (most recent)
+            for sym in reversed(all_symbols):
+                if sym not in seen:
+                    seen.add(sym)
+                    merged_symbols.insert(0, sym)  # Insert at beginning to maintain order
+
+            # Now merged_symbols is in chronological order: oldest first, newest last
+
             # Clear old symbols entry
             self.clear_type(EntryType.SYMBOLS)
             
