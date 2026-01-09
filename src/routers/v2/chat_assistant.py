@@ -108,6 +108,11 @@ from src.services.conversation_compactor import (
     get_conversation_compactor,
     CompactionResult,
 )
+# Recursive Summary Manager (for long conversation summarization)
+from src.agents.memory.recursive_summary import (
+    get_recursive_summary_manager,
+    RecursiveSummaryManager,
+)
 
 
 # Router instance
@@ -1584,6 +1589,24 @@ async def stream_chat_v3(
                     )
 
             # =================================================================
+            # Phase 1.7: Load Conversation Summary (CRITICAL FOR LONG SESSIONS!)
+            # Summary compresses old messages (1 to n-k) while recent messages
+            # are kept raw in conversation_history. This is HYBRID CONTEXT.
+            # =================================================================
+            conversation_summary_v3: Optional[str] = None
+            try:
+                summary_manager = get_recursive_summary_manager()
+                conversation_summary_v3 = await summary_manager.get_active_summary(session_id)
+                if conversation_summary_v3:
+                    _logger.info(
+                        f"[CHAT_V3] ✅ Loaded Conversation Summary: {len(conversation_summary_v3)} chars"
+                    )
+                else:
+                    _logger.debug(f"[CHAT_V3] No active summary for session {session_id[:8]}...")
+            except Exception as sum_err:
+                _logger.warning(f"[CHAT_V3] Summary load failed (non-fatal): {sum_err}")
+
+            # =================================================================
             # Phase 2: Classification (reuse existing classifier)
             # =================================================================
             yield emitter.emit_classifying()
@@ -1691,11 +1714,13 @@ async def stream_chat_v3(
             # Stream events from Unified Agent
             # Pass user-provided model_name for final response generation
             # CRITICAL: Pass conversation_history for memory/context!
+            # CRITICAL: Pass conversation_summary for long-term context!
             async for event in unified_agent.run_stream(
                 query=query,
                 router_decision=router_decision,
                 classification=classification,
-                conversation_history=conversation_history,  # NOW WITH HISTORY!
+                conversation_history=conversation_history,  # Recent K messages (raw)
+                conversation_summary=conversation_summary_v3,  # Old messages (compressed)
                 system_language=classification.response_language,
                 user_id=int(user_id) if user_id else None,
                 session_id=session_id,
@@ -1813,6 +1838,31 @@ async def stream_chat_v3(
                 assistant_response=stats["final_content"],
                 response_time_ms=elapsed_ms,
             )
+
+            # =================================================================
+            # SUMMARY Phase: Create/update recursive summary if threshold reached
+            # This compresses old messages for future turns, enabling long
+            # conversations without context overflow.
+            # =================================================================
+            try:
+                summary_manager = get_recursive_summary_manager()
+                summary_result = await summary_manager.check_and_create_summary(
+                    session_id=session_id,
+                    user_id=str(user_id),
+                    organization_id=org_id,
+                )
+                if summary_result.get("created"):
+                    _logger.info(
+                        f"[CHAT_V3] ✅ Summary created: v{summary_result.get('version')} "
+                        f"({summary_result.get('token_count')} tokens, "
+                        f"summarized {summary_result.get('messages_summarized')} messages)"
+                    )
+                else:
+                    _logger.debug(
+                        f"[CHAT_V3] Summary skipped: {summary_result.get('reason', 'unknown')}"
+                    )
+            except Exception as sum_err:
+                _logger.warning(f"[CHAT_V3] Summary creation failed (non-fatal): {sum_err}")
 
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()
@@ -2136,6 +2186,24 @@ async def stream_chat_v4(
                     )
 
             # =================================================================
+            # Phase 1.7: Load Conversation Summary (CRITICAL FOR LONG SESSIONS!)
+            # Summary compresses old messages (1 to n-k) while recent messages (n-k to n)
+            # are kept raw in conversation_history. This is HYBRID CONTEXT LOADING.
+            # =================================================================
+            conversation_summary: Optional[str] = None
+            try:
+                summary_manager = get_recursive_summary_manager()
+                conversation_summary = await summary_manager.get_active_summary(session_id)
+                if conversation_summary:
+                    _logger.info(
+                        f"[CHAT_V4] ✅ Loaded Conversation Summary: {len(conversation_summary)} chars"
+                    )
+                else:
+                    _logger.debug(f"[CHAT_V4] No active summary for session {session_id[:8]}...")
+            except Exception as sum_err:
+                _logger.warning(f"[CHAT_V4] Summary load failed (non-fatal): {sum_err}")
+
+            # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
             # =================================================================
             yield emitter.emit_classifying()
@@ -2144,9 +2212,10 @@ async def stream_chat_v4(
             intent_result = await intent_classifier.classify(
                 query=query,
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
-                conversation_history=conversation_history,  # Pass history for better context!
+                conversation_history=conversation_history,  # Recent K messages (raw)
                 working_memory_symbols=wm_symbols,  # Symbols from previous turns!
                 core_memory_context=core_memory_context,  # User profile context!
+                conversation_summary=conversation_summary,  # Older messages (compressed)
             )
 
             # Emit classification result (using intent result)
@@ -2203,10 +2272,12 @@ async def stream_chat_v4(
             # CRITICAL: Pass conversation_history for memory/context!
             # CRITICAL: Pass wm_symbols for cross-turn symbol continuity!
             # CRITICAL: Pass core_memory for user personalization!
+            # CRITICAL: Pass conversation_summary for long-term context!
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
                 intent_result=intent_result,
-                conversation_history=conversation_history,  # NOW WITH HISTORY!
+                conversation_history=conversation_history,  # Recent K messages (raw)
+                conversation_summary=conversation_summary,  # Old messages (compressed)
                 system_language=intent_result.response_language,
                 user_id=int(user_id) if user_id else None,
                 session_id=session_id,
@@ -2321,6 +2392,31 @@ async def stream_chat_v4(
                 assistant_response=stats["final_content"],
                 response_time_ms=elapsed_ms,
             )
+
+            # =================================================================
+            # SUMMARY Phase: Create/update recursive summary if threshold reached
+            # This compresses old messages for future turns, enabling long
+            # conversations without context overflow.
+            # =================================================================
+            try:
+                summary_manager = get_recursive_summary_manager()
+                summary_result = await summary_manager.check_and_create_summary(
+                    session_id=session_id,
+                    user_id=str(user_id),
+                    organization_id=org_id,
+                )
+                if summary_result.get("created"):
+                    _logger.info(
+                        f"[CHAT_V4] ✅ Summary created: v{summary_result.get('version')} "
+                        f"({summary_result.get('token_count')} tokens, "
+                        f"summarized {summary_result.get('messages_summarized')} messages)"
+                    )
+                else:
+                    _logger.debug(
+                        f"[CHAT_V4] Summary skipped: {summary_result.get('reason', 'unknown')}"
+                    )
+            except Exception as sum_err:
+                _logger.warning(f"[CHAT_V4] Summary creation failed (non-fatal): {sum_err}")
 
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()

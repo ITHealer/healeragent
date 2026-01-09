@@ -367,6 +367,7 @@ class IntentClassifier(LoggerMixin):
         use_cache: bool = True,
         working_memory_symbols: Optional[List[str]] = None,
         core_memory_context: Optional[str] = None,
+        conversation_summary: Optional[str] = None,
     ) -> IntentResult:
         """
         Classify query and extract normalized symbols in a single LLM call.
@@ -374,10 +375,11 @@ class IntentClassifier(LoggerMixin):
         Args:
             query: User query
             ui_context: UI context (active_tab, recent_symbols)
-            conversation_history: Previous messages for context
+            conversation_history: Recent K messages for immediate context
             use_cache: Whether to use caching
             working_memory_symbols: Symbols from previous turns (Working Memory)
             core_memory_context: User profile from Core Memory (portfolio, preferences)
+            conversation_summary: Summary of older messages (compressed context)
 
         Returns:
             IntentResult with validated_symbols already normalized
@@ -397,7 +399,8 @@ class IntentClassifier(LoggerMixin):
             # Build prompt with symbol normalization instructions
             prompt = self._build_prompt(
                 query, ui_context, conversation_history,
-                working_memory_symbols, core_memory_context
+                working_memory_symbols, core_memory_context,
+                conversation_summary
             )
 
             # Call LLM
@@ -460,6 +463,7 @@ class IntentClassifier(LoggerMixin):
         conversation_history: Optional[List[Dict[str, str]]],
         working_memory_symbols: Optional[List[str]] = None,
         core_memory_context: Optional[str] = None,
+        conversation_summary: Optional[str] = None,
     ) -> str:
         """Build classification prompt with symbol normalization and memory context."""
 
@@ -514,6 +518,16 @@ CRITICAL: The symbols are listed in CHRONOLOGICAL ORDER.
 </user_profile>
 """
 
+        # Conversation Summary (compressed context from older messages)
+        summary_hint = ""
+        if conversation_summary:
+            summary_hint = f"""
+<conversation_summary>
+(Summary of earlier messages in this session - use for understanding broader context)
+{conversation_summary[:1000]}
+</conversation_summary>
+"""
+
         # History context - Format with clear chronological ordering
         history_hint = ""
         if conversation_history and len(conversation_history) > 0:
@@ -550,6 +564,7 @@ You are a financial intent classifier. Analyze the user query and provide a stru
 {ui_hint}
 {wm_hint}
 {cm_hint}
+{summary_hint}
 {history_hint}
 
 <instructions>
