@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import List, Optional, Dict, Any, Set
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 
 from src.utils.logger.custom_logging import LoggerMixin
 
@@ -30,26 +30,106 @@ CHART_PRIORITY: List[ChartType] = [
 ]
 
 
-# Category to chart type mapping
+# =============================================================================
+# DIRECT TOOL NAME → CHART TYPE MAPPING (Production-Ready)
+# =============================================================================
+# This mapping is based on exact tool names from ToolSchema.name
+# NO keyword matching - deterministic and language-agnostic
+# =============================================================================
+
+TOOL_TO_CHART: Dict[str, ChartType] = {
+    # -------------------------------------------------------------------------
+    # TECHNICAL TOOLS → STOCK_CHART (Technical Analysis Chart)
+    # -------------------------------------------------------------------------
+    "getTechnicalIndicators": ChartType.STOCK_CHART,
+    "detectChartPatterns": ChartType.STOCK_CHART,
+    "getRelativeStrength": ChartType.STOCK_CHART,
+    "getSupportResistance": ChartType.STOCK_CHART,
+
+    # -------------------------------------------------------------------------
+    # PRICE TOOLS → STOCK_PRICE
+    # -------------------------------------------------------------------------
+    "getStockPrice": ChartType.STOCK_PRICE,
+    "getStockPerformance": ChartType.STOCK_PRICE,
+    "getPriceTargets": ChartType.STOCK_PRICE,
+
+    # -------------------------------------------------------------------------
+    # FUNDAMENTALS TOOLS → STOCK_FINANCIALS
+    # -------------------------------------------------------------------------
+    "getIncomeStatement": ChartType.STOCK_FINANCIALS,
+    "getBalanceSheet": ChartType.STOCK_FINANCIALS,
+    "getCashFlow": ChartType.STOCK_FINANCIALS,
+    "getFinancialRatios": ChartType.STOCK_FINANCIALS,
+    "getGrowthMetrics": ChartType.STOCK_FINANCIALS,
+
+    # -------------------------------------------------------------------------
+    # NEWS TOOLS → STOCK_NEWS
+    # -------------------------------------------------------------------------
+    "getStockNews": ChartType.STOCK_NEWS,
+    "getEarningsCalendar": ChartType.STOCK_NEWS,
+    "getCompanyEvents": ChartType.STOCK_NEWS,
+
+    # -------------------------------------------------------------------------
+    # MARKET TOOLS → MARKET_OVERVIEW (or STOCK_HEATMAP)
+    # -------------------------------------------------------------------------
+    "getMarketIndices": ChartType.MARKET_OVERVIEW,
+    "getSectorPerformance": ChartType.MARKET_OVERVIEW,
+    "getMarketMovers": ChartType.MARKET_OVERVIEW,
+    "getMarketBreadth": ChartType.MARKET_OVERVIEW,
+    "getMarketNews": ChartType.MARKET_OVERVIEW,
+    "getTopGainers": ChartType.TRENDING_STOCKS,
+    "getTopLosers": ChartType.TRENDING_STOCKS,
+    "getMostActives": ChartType.TRENDING_STOCKS,
+    "getStockHeatmap": ChartType.STOCK_HEATMAP,
+
+    # -------------------------------------------------------------------------
+    # CRYPTO TOOLS → CRYPTO_CHART
+    # -------------------------------------------------------------------------
+    "getCryptoPrice": ChartType.CRYPTO_CHART,
+    "getCryptoTechnicals": ChartType.CRYPTO_CHART,
+
+    # -------------------------------------------------------------------------
+    # DISCOVERY TOOLS → TRENDING_STOCKS
+    # -------------------------------------------------------------------------
+    "stockScreener": ChartType.TRENDING_STOCKS,
+
+    # -------------------------------------------------------------------------
+    # RISK TOOLS → STOCK_CHART (show with technical data)
+    # -------------------------------------------------------------------------
+    "assessRisk": ChartType.STOCK_CHART,
+    "getVolumeProfile": ChartType.STOCK_CHART,
+    "getSentiment": ChartType.STOCK_PRICE,
+    "suggestStopLoss": ChartType.STOCK_CHART,
+
+    # -------------------------------------------------------------------------
+    # NO CHART MAPPING (memory, reasoning, web)
+    # -------------------------------------------------------------------------
+    # "searchConversationHistory": None,
+    # "getRecentConversations": None,
+    # "memoryUserEdits": None,
+    # "think": None,
+    # "webSearch": None,
+}
+
+
+# Category fallback mapping (used when tool name not in TOOL_TO_CHART)
 CATEGORY_TO_CHART: Dict[str, ChartType] = {
     "price": ChartType.STOCK_PRICE,
     "technical": ChartType.STOCK_CHART,
     "fundamentals": ChartType.STOCK_FINANCIALS,
     "news": ChartType.STOCK_NEWS,
     "market": ChartType.MARKET_OVERVIEW,
-    "discovery": ChartType.TRENDING_STOCKS,  # Default, may become HEATMAP
+    "discovery": ChartType.TRENDING_STOCKS,
     "crypto": ChartType.CRYPTO_CHART,
-    "risk": ChartType.STOCK_PRICE,  # Fallback to price chart
+    "risk": ChartType.STOCK_CHART,
     # "memory" - no chart mapping
+    # "reasoning" - no chart mapping
+    # "web" - no chart mapping
 }
 
 
-# Keywords that trigger heatmap instead of trending
-HEATMAP_KEYWORDS: Set[str] = {
-    "heatmap", "heat map", "heat-map",
-    "sector map", "sector performance",
-    "market map", "bản đồ nhiệt"
-}
+# Categories that should NOT produce charts
+NO_CHART_CATEGORIES: Set[str] = {"memory", "reasoning", "web"}
 
 
 @dataclass
@@ -82,14 +162,79 @@ class ChartInfo:
 
 class SimpleChartResolver(LoggerMixin):
     """
-    Resolves chart types based on tool categories.
+    Resolves chart types based on executed tools.
 
-    Simple mapping logic - no LLM calls required.
-    Frontend will fetch chart data based on type and symbols.
+    Production-ready mapping logic:
+    - Direct tool name → chart type (deterministic)
+    - Category fallback for unknown tools
+    - No keyword matching (language-agnostic)
     """
 
     def __init__(self):
         super().__init__()
+
+    def resolve_from_tool_results(
+        self,
+        tool_results: List[Dict[str, Any]],
+        symbols: List[str],
+        query: str = "",
+        max_charts: int = 3,
+    ) -> List[ChartInfo]:
+        """
+        Resolve chart types from actual tool execution results.
+
+        Uses direct tool name mapping - no keyword patterns.
+
+        Args:
+            tool_results: List of tool results with tool names
+            symbols: List of symbols
+            query: Original query (unused, kept for API compatibility)
+            max_charts: Maximum charts to return
+
+        Returns:
+            List of ChartInfo
+        """
+        if not tool_results:
+            return []
+
+        charts: List[ChartInfo] = []
+        seen_types: Set[str] = set()
+
+        for result in tool_results:
+            # Extract tool name from result (support multiple key formats)
+            tool_name = self._extract_tool_name(result)
+
+            if not tool_name:
+                continue
+
+            # Get chart type for this tool
+            chart_type = self._get_chart_type_for_tool(tool_name, result)
+
+            if chart_type and chart_type.value not in seen_types:
+                seen_types.add(chart_type.value)
+                charts.append(ChartInfo(
+                    type=chart_type.value,
+                    symbols=symbols.copy(),
+                    primary=False,
+                    metadata={"source_tool": tool_name}
+                ))
+
+        # Sort by priority
+        charts = self._sort_by_priority(charts)
+
+        # Limit number of charts
+        charts = charts[:max_charts]
+
+        # Mark first chart as primary
+        if charts:
+            charts[0].primary = True
+
+        self.logger.info(
+            f"[CHART_RESOLVER] Resolved {len(charts)} charts from "
+            f"{len(tool_results)} tool results, symbols={symbols}"
+        )
+
+        return charts
 
     def resolve_from_categories(
         self,
@@ -99,12 +244,12 @@ class SimpleChartResolver(LoggerMixin):
         max_charts: int = 3,
     ) -> List[ChartInfo]:
         """
-        Resolve chart types from tool categories.
+        Resolve chart types from tool categories (fallback method).
 
         Args:
             categories: List of tool categories (e.g., ["price", "technical"])
             symbols: List of symbols (e.g., ["NVDA", "AAPL"])
-            query: Original query (used for heatmap detection)
+            query: Original query (unused)
             max_charts: Maximum number of charts to return
 
         Returns:
@@ -115,21 +260,20 @@ class SimpleChartResolver(LoggerMixin):
 
         charts: List[ChartInfo] = []
         seen_types: Set[str] = set()
-        query_lower = query.lower() if query else ""
 
-        # Check for heatmap keywords
-        use_heatmap = any(kw in query_lower for kw in HEATMAP_KEYWORDS)
-
-        # Map categories to chart types
         for category in categories:
-            chart_type = self._get_chart_type(category, use_heatmap)
+            if category in NO_CHART_CATEGORIES:
+                continue
+
+            chart_type = CATEGORY_TO_CHART.get(category)
 
             if chart_type and chart_type.value not in seen_types:
                 seen_types.add(chart_type.value)
                 charts.append(ChartInfo(
                     type=chart_type.value,
                     symbols=symbols.copy(),
-                    primary=False,  # Will set primary later
+                    primary=False,
+                    metadata={"source_category": category}
                 ))
 
         # Sort by priority
@@ -149,51 +293,46 @@ class SimpleChartResolver(LoggerMixin):
 
         return charts
 
-    def resolve_from_tool_results(
-        self,
-        tool_results: List[Dict[str, Any]],
-        symbols: List[str],
-        query: str = "",
-        max_charts: int = 3,
-    ) -> List[ChartInfo]:
+    def _extract_tool_name(self, result: Dict[str, Any]) -> Optional[str]:
         """
-        Resolve chart types from actual tool execution results.
+        Extract tool name from result dict.
 
-        Args:
-            tool_results: List of tool results with tool names
-            symbols: List of symbols
-            query: Original query
-            max_charts: Maximum charts to return
-
-        Returns:
-            List of ChartInfo
+        Supports multiple key formats used by different API versions.
         """
-        if not tool_results:
-            return []
+        # Try different key names used across the codebase
+        for key in ["tool", "name", "tool_name", "toolName"]:
+            if key in result and result[key]:
+                return str(result[key])
+        return None
 
-        # Extract categories from tool names
-        categories = self._extract_categories_from_tools(tool_results)
-
-        return self.resolve_from_categories(
-            categories=categories,
-            symbols=symbols,
-            query=query,
-            max_charts=max_charts,
-        )
-
-    def _get_chart_type(
+    def _get_chart_type_for_tool(
         self,
-        category: str,
-        use_heatmap: bool = False
+        tool_name: str,
+        result: Dict[str, Any]
     ) -> Optional[ChartType]:
-        """Get chart type for a category"""
-        if category == "memory":
-            return None  # No chart for memory
+        """
+        Get chart type for a specific tool.
 
-        if category == "discovery" and use_heatmap:
-            return ChartType.STOCK_HEATMAP
+        Priority:
+        1. Direct tool name mapping (TOOL_TO_CHART)
+        2. Category-based fallback (CATEGORY_TO_CHART)
+        """
+        # 1. Direct mapping (exact match)
+        if tool_name in TOOL_TO_CHART:
+            return TOOL_TO_CHART[tool_name]
 
-        return CATEGORY_TO_CHART.get(category)
+        # 2. Try category from result metadata
+        category = result.get("category", result.get("tool_category", ""))
+        if category:
+            if category in NO_CHART_CATEGORIES:
+                return None
+            return CATEGORY_TO_CHART.get(category)
+
+        # 3. No mapping found
+        self.logger.debug(
+            f"[CHART_RESOLVER] No chart mapping for tool: {tool_name}"
+        )
+        return None
 
     def _sort_by_priority(self, charts: List[ChartInfo]) -> List[ChartInfo]:
         """Sort charts by priority order"""
@@ -204,57 +343,11 @@ class SimpleChartResolver(LoggerMixin):
             key=lambda c: priority_map.get(c.type, len(CHART_PRIORITY))
         )
 
-    def _extract_categories_from_tools(
-        self,
-        tool_results: List[Dict[str, Any]]
-    ) -> List[str]:
-        """Extract unique categories from tool results"""
-        categories: Set[str] = set()
 
-        # Tool name patterns to category mapping
-        # Pattern matching is case-insensitive (tool_name.lower())
-        tool_patterns = {
-            "price": [
-                "get_stock_price", "get_quote", "price", "getstockprice",
-                "getquote", "stockprice"
-            ],
-            "technical": [
-                "get_technical", "indicators", "rsi", "macd", "sma",
-                "gettechnical", "detectchartpatterns", "supportresistance",
-                "chart_pattern", "technical_indicator"
-            ],
-            "fundamentals": [
-                "get_financials", "get_fundamentals", "earnings",
-                "getincomestatement", "getbalancesheet", "getcashflow",
-                "getfinancialratios", "getgrowthmetrics", "income_statement",
-                "balance_sheet", "cash_flow", "financial_ratio", "growth"
-            ],
-            "news": ["get_news", "news", "getnews", "stocknews"],
-            "market": [
-                "get_market", "market_overview", "indices", "getmarket",
-                "marketoverview", "sector"
-            ],
-            "discovery": [
-                "screen", "trending", "gainers", "losers", "screener",
-                "gettrending", "gettopgainers", "gettoplosers"
-            ],
-            "crypto": ["crypto", "bitcoin", "ethereum", "getcrypto"],
-            "risk": ["risk", "volatility", "getrisk"],
-        }
+# =============================================================================
+# SINGLETON & HELPER FUNCTIONS
+# =============================================================================
 
-        for result in tool_results:
-            # Support multiple key formats: "tool", "name", "tool_name"
-            tool_name = result.get("tool", result.get("name", result.get("tool_name", ""))).lower()
-
-            for category, patterns in tool_patterns.items():
-                if any(p in tool_name for p in patterns):
-                    categories.add(category)
-                    break
-
-        return list(categories)
-
-
-# Singleton instance
 _chart_resolver: Optional[SimpleChartResolver] = None
 
 
@@ -278,7 +371,7 @@ def resolve_charts_from_categories(
     Args:
         categories: Tool categories
         symbols: Stock/crypto symbols
-        query: Original query (for heatmap detection)
+        query: Original query
         max_charts: Max charts to return
 
     Returns:
