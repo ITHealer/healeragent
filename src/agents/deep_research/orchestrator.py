@@ -787,14 +787,20 @@ class DeepResearchOrchestrator(BaseDeepResearchAgent):
         Execute a section with timeout protection.
 
         Uses config.worker_timeout_sec (default 120s) per worker.
+        Compatible with Python 3.10+ (uses manual timeout check instead of asyncio.timeout)
         """
         timeout_sec = self.config.worker_timeout_sec
         worker_id = f"worker_{section.id}_{uuid.uuid4().hex[:6]}"
+        start_time = datetime.utcnow()
 
         try:
-            async with asyncio.timeout(timeout_sec):
-                async for event in self._execute_section(section, worker_id):
-                    yield event
+            async for event in self._execute_section(section, worker_id):
+                # Check timeout manually (compatible with Python 3.10)
+                elapsed = (datetime.utcnow() - start_time).total_seconds()
+                if elapsed > timeout_sec:
+                    raise asyncio.TimeoutError(f"Worker exceeded {timeout_sec}s timeout")
+                yield event
+
         except asyncio.TimeoutError:
             self.logger.error(
                 f"[{self.agent_id}] Worker {worker_id} timed out after {timeout_sec}s"
