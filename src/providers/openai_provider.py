@@ -138,6 +138,8 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
         **kwargs
     ) -> Dict[str, Any]:
         """Generate a chat completion (non-streaming)."""
+        import time
+
         if self._client is None:
             await self.initialize()
 
@@ -145,13 +147,22 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
         params = convert_params_for_model(model, kwargs, self.logger)
 
         try:
-            self.logger.debug(f"[OPENAI] Generate | model={model} | params={list(params.keys())}")
+            msg_count = len(messages)
+            total_chars = sum(len(m.get('content', '')) for m in messages)
+            self.logger.debug(
+                f"[OPENAI] Generate | model={model} | msgs={msg_count} | "
+                f"~{total_chars} chars | params={list(params.keys())}"
+            )
 
+            start_time = time.time()
             response = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
                 **params
             )
+            elapsed = time.time() - start_time
+            self.logger.debug(f"[OPENAI] Generate done | {elapsed:.2f}s | model={model}")
+
             return self._format_response(response)
 
         except openai.BadRequestError as e:
@@ -182,6 +193,8 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
         **kwargs
     ) -> AsyncGenerator[str, None]:
         """Stream chat completion chunks."""
+        import time
+
         if self._client is None:
             await self.initialize()
 
@@ -189,8 +202,14 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
         params = convert_params_for_model(model, kwargs, self.logger)
 
         try:
-            self.logger.debug(f"[OPENAI] Stream | model={model} | params={list(params.keys())}")
+            msg_count = len(messages)
+            total_chars = sum(len(m.get('content', '')) for m in messages)
+            self.logger.debug(
+                f"[OPENAI] Stream | model={model} | msgs={msg_count} | "
+                f"~{total_chars} chars | params={list(params.keys())}"
+            )
 
+            stream_start = time.time()
             response_stream = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -198,8 +217,13 @@ class OpenAIModelProvider(ModelProvider, LoggerMixin):
                 **params
             )
 
+            first_chunk = True
             async for chunk in response_stream:
                 if chunk.choices and chunk.choices[0].delta.content:
+                    if first_chunk:
+                        ttft = time.time() - stream_start
+                        self.logger.debug(f"[OPENAI] First chunk | TTFT={ttft:.2f}s | model={model}")
+                        first_chunk = False
                     yield chunk.choices[0].delta.content
 
         except openai.BadRequestError as e:
