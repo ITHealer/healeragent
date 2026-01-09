@@ -2324,14 +2324,13 @@ async def stream_chat_v4(
             # =================================================================
             # Chart Resolution: Map tool results to frontend charts
             # This is critical for FE to show relevant charts with symbols
+            # IMPORTANT: Only use symbols from current query (intent_result),
+            # NOT from working memory (wm_symbols) - wm_symbols are for LLM
+            # context, not for chart display
             # =================================================================
             try:
-                # Collect symbols from intent + working memory (merge, dedupe)
+                # Only use symbols from current query intent - NOT from working memory
                 chart_symbols = list(intent_result.validated_symbols) if intent_result.validated_symbols else []
-                if wm_symbols:
-                    for sym in wm_symbols:
-                        if sym not in chart_symbols:
-                            chart_symbols.append(sym)
 
                 # Use chart resolver to map tool results to charts
                 chart_resolver = get_chart_resolver()
