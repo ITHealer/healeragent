@@ -1903,29 +1903,36 @@ Respond naturally and helpfully."""
         effective_provider = provider_type or self.provider_type
 
         # =====================================================================
-        # MERGE SYMBOLS: intent_result + working_memory (for context continuity)
+        # SYMBOL RESOLUTION: intent_result OR working_memory (NOT both!)
+        # - If intent has symbols → use ONLY those (explicit user request)
+        # - If intent has NO symbols → use working_memory as FALLBACK
+        # Merging causes confusion: agent sees NVDA,GRAB,TSLA and picks wrong one
         # =====================================================================
         intent_symbols = getattr(intent_result, 'validated_symbols', []) or []
         wm_symbols = working_memory_symbols or []
 
-        # Merge: intent_symbols take priority, then add wm_symbols not in intent
-        merged_symbols = list(intent_symbols)
-        for sym in wm_symbols:
-            if sym and sym not in merged_symbols:
-                merged_symbols.append(sym)
-
-        # If we inherited symbols from working_memory, log it
-        if not intent_symbols and merged_symbols:
+        # Use intent symbols if available, otherwise fallback to working_memory
+        if intent_symbols:
+            # User explicitly mentioned symbols - use only those
+            merged_symbols = list(intent_symbols)
             self.logger.info(
-                f"[{flow_id}] 📝 Inherited symbols from working_memory: {merged_symbols}"
+                f"[{flow_id}] Using intent symbols (explicit): {merged_symbols}"
             )
+        elif wm_symbols:
+            # No explicit symbols - use working_memory as fallback for follow-ups
+            merged_symbols = list(wm_symbols)
+            self.logger.info(
+                f"[{flow_id}] 📝 Using working_memory symbols (fallback): {merged_symbols}"
+            )
+        else:
+            merged_symbols = []
 
         self.logger.info("─" * 50)
         self.logger.info(f"[{flow_id}] 🚀 AGENT WITH ALL TOOLS")
         self.logger.info("─" * 50)
         self.logger.info(f"  ├─ Symbols (intent): {intent_symbols}")
         self.logger.info(f"  ├─ Symbols (working_memory): {wm_symbols}")
-        self.logger.info(f"  ├─ Symbols (merged): {merged_symbols}")
+        self.logger.info(f"  ├─ Symbols (final): {merged_symbols}")
         self.logger.info(f"  ├─ Market: {getattr(intent_result, 'market_type', 'unknown')}")
         self.logger.info(f"  ├─ Tools: ALL ({len(self.catalog.get_tool_names())})")
         self.logger.info(f"  ├─ Model: {effective_model}")
@@ -2245,10 +2252,13 @@ IMPORTANT:
         skill = self.skill_registry.select_skill(market_type)
         skill_prompt = skill.get_full_prompt()
 
-        # Build context hints
+        # Build context hints - be EXPLICIT about which symbols to analyze
         symbols_hint = ""
         if validated_symbols:
-            symbols_hint = f"Symbols to analyze: {', '.join(validated_symbols)}"
+            if len(validated_symbols) == 1:
+                symbols_hint = f"**PRIMARY SYMBOL TO ANALYZE: {validated_symbols[0]}** - Focus your analysis on this symbol only."
+            else:
+                symbols_hint = f"**SYMBOLS TO ANALYZE: {', '.join(validated_symbols)}** - Focus on these specific symbols."
 
         user_context = ""
         if core_memory:
