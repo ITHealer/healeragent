@@ -2119,6 +2119,8 @@ async def stream_chat_v4(
             # CRITICAL: Pass wm_symbols for cross-turn symbol continuity!
             # CRITICAL: Pass core_memory for user personalization!
             # CRITICAL: Pass conversation_summary for long-term context!
+            _logger.info(f"[CHAT_V4] 🚀 Starting agent loop with {len(unified_agent.catalog.get_tool_names())} tools")
+            agent_event_count = 0
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
                 intent_result=intent_result,
@@ -2137,10 +2139,12 @@ async def stream_chat_v4(
                 working_memory_symbols=wm_symbols,  # Symbols from previous turns
             ):
                 event_type = event.get("type", "unknown")
+                agent_event_count += 1
 
                 if event_type == "turn_start":
                     turn = event.get("turn", 1)
                     stats["total_turns"] = turn
+                    _logger.info(f"[CHAT_V4] 📍 Turn {turn} started")
                     yield emitter.emit_turn_start(
                         turn_number=turn,
                         max_turns=6,
@@ -2190,6 +2194,9 @@ async def stream_chat_v4(
                     content = event.get("content", "")
                     if content:
                         stats["final_content"] += content
+                        # Log first content chunk
+                        if len(stats["final_content"]) == len(content):
+                            _logger.info(f"[CHAT_V4] 📝 First content chunk received ({len(content)} chars)")
                         yield emitter.emit_content(content)
 
                 elif event_type == "max_turns_reached":
@@ -2202,12 +2209,30 @@ async def stream_chat_v4(
                 elif event_type == "done":
                     stats["total_turns"] = event.get("total_turns", stats["total_turns"])
                     stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
+                    _logger.info(
+                        f"[CHAT_V4] ✅ Agent done: {stats['total_turns']} turns, "
+                        f"{stats['total_tool_calls']} tools, {len(stats['final_content'])} chars content"
+                    )
 
                 elif event_type == "error":
+                    _logger.error(f"[CHAT_V4] ❌ Agent error: {event.get('error', 'Unknown')}")
                     yield emitter.emit_error(
                         error_message=event.get("error", "Unknown error"),
                         error_code="AGENT_ERROR",
                     )
+
+            # Log agent loop completion
+            _logger.info(
+                f"[CHAT_V4] 🏁 Agent loop finished: {agent_event_count} events, "
+                f"content_length={len(stats['final_content'])}"
+            )
+
+            # Warn if no content was generated
+            if not stats["final_content"]:
+                _logger.warning(
+                    f"[CHAT_V4] ⚠️ No content generated! "
+                    f"turns={stats['total_turns']}, tools={stats['total_tool_calls']}"
+                )
 
             # =================================================================
             # Phase 4: Done

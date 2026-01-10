@@ -2176,14 +2176,20 @@ Respond naturally and helpfully."""
                     }
 
                 # Call LLM with ALL tools
+                self.logger.info(f"[{flow_id}] Turn {turn_num}: Calling LLM with {len(tools)} tools")
                 response = await self._call_llm_with_tools(
                     messages, tools, flow_id,
                     model_name=effective_model,
                     provider_type=effective_provider,
                 )
+                self.logger.info(f"[{flow_id}] Turn {turn_num}: LLM responded")
 
                 tool_calls = self._parse_tool_calls(response)
                 assistant_content = response.get("content") or ""
+                self.logger.info(
+                    f"[{flow_id}] Turn {turn_num}: tool_calls={len(tool_calls)}, "
+                    f"content_len={len(assistant_content)}"
+                )
 
                 # No tool calls - stream final response
                 if not tool_calls:
@@ -2204,6 +2210,8 @@ Respond naturally and helpfully."""
                     adaptive_max_tokens = 4000 + (num_symbols * 800)  # ~800 tokens per symbol
                     adaptive_max_tokens = min(adaptive_max_tokens, 8000)  # Cap at 8000
 
+                    self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={adaptive_max_tokens})")
+                    content_chunks = 0
                     async for chunk in self.llm_provider.stream_response(
                         model_name=effective_model,
                         messages=messages,
@@ -2212,8 +2220,10 @@ Respond naturally and helpfully."""
                         max_tokens=adaptive_max_tokens,
                         temperature=0.3,
                     ):
+                        content_chunks += 1
                         yield {"type": "content", "content": chunk}
 
+                    self.logger.info(f"[{flow_id}] Final response streamed: {content_chunks} chunks")
                     yield {
                         "type": "done",
                         "total_turns": turn_num,
@@ -2305,6 +2315,7 @@ Respond naturally and helpfully."""
                     })
 
             # Max turns reached
+            self.logger.info(f"[{flow_id}] Max turns ({max_turns}) reached - generating final response")
             yield {"type": "max_turns_reached", "turns": max_turns}
 
             if enable_reasoning:
@@ -2332,6 +2343,8 @@ IMPORTANT:
             adaptive_max_tokens = 4000 + (num_symbols * 800)
             adaptive_max_tokens = min(adaptive_max_tokens, 8000)
 
+            self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={adaptive_max_tokens})")
+            content_chunks = 0
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
                 messages=messages,
@@ -2340,8 +2353,10 @@ IMPORTANT:
                 max_tokens=adaptive_max_tokens,
                 temperature=0.3,
             ):
+                content_chunks += 1
                 yield {"type": "content", "content": chunk}
 
+            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
             yield {
                 "type": "done",
                 "total_turns": max_turns,
