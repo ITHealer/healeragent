@@ -912,8 +912,8 @@ class UnifiedAgent(LoggerMixin):
 
                 # Adaptive max_tokens based on number of symbols
                 num_symbols = len(classification.symbols) if classification else 1
-                adaptive_max_tokens = 4000 + (num_symbols * 800)
-                adaptive_max_tokens = min(adaptive_max_tokens, 8000)
+                adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
+                adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
 
                 async for chunk in self.llm_provider.stream_response(
                     model_name=effective_model,
@@ -1017,8 +1017,8 @@ IMPORTANT:
 
         # Adaptive max_tokens based on complexity
         num_symbols = len(classification.symbols) if classification else 1
-        adaptive_max_tokens = 4000 + (num_symbols * 800)
-        adaptive_max_tokens = min(adaptive_max_tokens, 8000)
+        adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
+        adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
 
         async for chunk in self.llm_provider.stream_response(
             model_name=effective_model,
@@ -2255,8 +2255,8 @@ Respond naturally and helpfully."""
                     # Calculate max_tokens based on query complexity
                     # More symbols = longer response needed
                     num_symbols = len(getattr(intent_result, 'validated_symbols', []))
-                    adaptive_max_tokens = 4000 + (num_symbols * 800)  # ~800 tokens per symbol
-                    adaptive_max_tokens = min(adaptive_max_tokens, 8000)  # Cap at 8000
+                    adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses  # ~800 tokens per symbol
+                    adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis  # Cap at 8000
 
                     self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={adaptive_max_tokens})")
                     content_chunks = 0
@@ -2439,8 +2439,8 @@ IMPORTANT:
 
             # Adaptive max_tokens based on complexity
             num_symbols = len(getattr(intent_result, 'validated_symbols', []))
-            adaptive_max_tokens = 4000 + (num_symbols * 800)
-            adaptive_max_tokens = min(adaptive_max_tokens, 8000)
+            adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
+            adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
 
             self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={adaptive_max_tokens})")
             content_chunks = 0
@@ -2566,12 +2566,22 @@ Turn 3: think(deciding) → "NVDA 120% growth justifies premium. For growth inve
 Turn 4: Final response with data-backed, personalized recommendation
 ```
 
-**Tool Selection Strategy:**
-- Start with essential tools (price, basic data)
-- Add technical indicators if technical analysis is requested
-- Add fundamentals only for fundamental analysis queries
-- Add news/web search only if current events are relevant
-- DON'T call tools that won't help answer the specific query
+**Tool Selection Strategy - MANDATORY for Symbol Queries:**
+
+⚠️ **ALWAYS CALL THESE TOOLS WHEN SYMBOLS ARE DETECTED:**
+1. **getStockPrice/getCryptoPrice** - Get real-time price data (ALWAYS FIRST)
+2. **getStockNews** - Get latest news for context
+3. **webSearch/serpSearch** - Search for recent news, events, analyst opinions
+
+Then add based on query type:
+- Technical analysis: getTechnicalIndicators, getSupportResistance
+- Fundamental analysis: getFinancialRatios, getIncomeStatement, getKeyMetrics
+- Comparison: Get same tools for all symbols
+
+**CRITICAL - Always Include External Context:**
+- Call webSearch or serpSearch to get latest market sentiment, analyst ratings, and recent news
+- Include source URLs and publication dates in your response
+- This ensures your response includes current, verifiable information beyond API data
 
 ## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
 
@@ -2632,6 +2642,49 @@ For Technical Analysis:
 - If a tool failed or data is missing, explicitly state: "⚠️ Không có dữ liệu cho [item]"
 - Be honest about data limitations or conflicting signals
 - If fiscal year differs from calendar year, ALWAYS clarify
+
+**7. RESPONSE LENGTH & DEPTH (CRITICAL):**
+Your response should be COMPREHENSIVE and DETAILED like a professional analyst report:
+
+**Minimum Response Structure:**
+1. **📊 Tổng quan giá & thị trường** (Price Overview with live data)
+   - Current price, change %, volume, market cap
+   - 52-week high/low, support/resistance levels
+
+2. **📰 Tin tức & sự kiện gần đây** (Recent News & Events)
+   - Include at least 3-5 relevant news items with dates and sources
+   - Key events: earnings, product launches, regulatory changes
+   - Analyst ratings and price targets from multiple sources
+
+3. **📈 Phân tích kỹ thuật** (Technical Analysis)
+   - Key indicators: RSI, MACD, MA crossovers
+   - Chart patterns, trend analysis
+   - Support/resistance levels
+
+4. **💰 Phân tích cơ bản** (Fundamental Analysis)
+   - Valuation metrics: P/E, P/B, P/S, EV/EBITDA
+   - Growth metrics: Revenue, EPS, margin trends
+   - Comparison with industry/peers
+
+5. **🌐 Tin tức từ web search** (Web Search Insights)
+   - Include information from webSearch/serpSearch
+   - Recent analyst reports, market sentiment
+   - Include source URLs and publication dates
+
+6. **⚠️ Rủi ro & cơ hội** (Risks & Opportunities)
+   - Key risk factors
+   - Growth catalysts and opportunities
+
+7. **💡 Kết luận & khuyến nghị** (Conclusion & Recommendation)
+   - Summary of key findings
+   - Actionable recommendation with rationale
+
+**IMPORTANT:**
+- Write detailed explanations, not just bullet points
+- Explain the significance of each data point
+- Include market context and industry comparisons
+- Always cite sources with URLs when available
+- Your response should be at least 800-1200 words for comprehensive analysis
 """
 
         messages = [{"role": "system", "content": system_prompt}]

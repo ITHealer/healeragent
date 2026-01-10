@@ -112,10 +112,11 @@ TOOL_DEFINITIONS = {
     ],
 
     # ========================================================================
-    # WEB TOOLS (1) - Web Search
+    # WEB TOOLS (2) - Web Search (Tavily + SerpAPI)
     # ========================================================================
     "web": [
         ("src.agents.tools.web", "WebSearchTool", "tavily_api_key"),
+        ("src.agents.tools.web", "SerpSearchTool", "serpapi_api_key"),
     ],
 
 }
@@ -135,14 +136,17 @@ def _create_tool_instance(
     init_arg: Optional[str],
     api_key: Optional[str],
     tavily_api_key: Optional[str] = None,
+    serpapi_api_key: Optional[str] = None,
 ):
     """Create tool instance with optional init argument"""
     tool_class = _import_tool_class(module_path, class_name)
-    
+
     if init_arg == "api_key" and api_key:
         return tool_class(api_key=api_key)
     elif init_arg == "tavily_api_key":
         return tool_class(api_key=tavily_api_key)
+    elif init_arg == "serpapi_api_key":
+        return tool_class(api_key=serpapi_api_key)
     else:
         return tool_class()
 
@@ -164,21 +168,21 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
     # Get API keys
     fmp_api_key = os.environ.get("FMP_API_KEY")
     tavily_api_key = os.environ.get("TAVILY_API_KEY")
-    
+    serpapi_api_key = os.environ.get("SERPAPI_KEY")
+
     if not fmp_api_key:
         logger.warning("FMP_API_KEY not set - some tools may not work")
 
     if not tavily_api_key:
-        logger.info("TAVILY_API_KEY not set - web search will be disabled")
-    
-    # logger.info("=" * 70)
-    # logger.info("[TOOL LOADER] Starting tool registration...")
-    # logger.info("=" * 70)
-    
+        logger.info("TAVILY_API_KEY not set - Tavily web search will be disabled")
+
+    if not serpapi_api_key:
+        logger.info("SERPAPI_KEY not set - SerpAPI search will be disabled")
+
     # Register tools by category
     for category, tools in TOOL_DEFINITIONS.items():
         category_count = 0
-        
+
         for module_path, class_name, init_arg in tools:
             try:
                 tool = _create_tool_instance(
@@ -187,6 +191,7 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                     init_arg=init_arg,
                     api_key=fmp_api_key,
                     tavily_api_key=tavily_api_key,
+                    serpapi_api_key=serpapi_api_key,
                 )
                 
                 registry.register_tool(tool)
