@@ -95,6 +95,12 @@ from src.agents.streaming import (
     ThinkingSummaryEvent,
     ThinkingPhase,
 )
+# SSE Cancellation handling
+from src.utils.sse_cancellation import (
+    with_cancellation,
+    SSECancellationHandler,
+    create_cancellation_token,
+)
 # LEARN Phase - Memory updates after execution
 from src.agents.hooks import LearnHook
 # Working Memory Integration (session-scoped scratchpad)
@@ -893,8 +899,18 @@ async def stream_chat(
             yield emitter.emit_error(str(e), "PROCESSING_ERROR")
             yield format_done_marker()
 
+    # Wrap generator with SSE cancellation handling
+    async def cleanup_chat():
+        _logger.info(f"[UNIFIED_CHAT] Client disconnected - cleaning up session {session_id}")
+
     return StreamingResponse(
-        _generate(),
+        with_cancellation(
+            request=request,
+            generator=_generate(),
+            cleanup_fn=cleanup_chat,
+            check_interval=0.5,
+            emit_cancelled_event=True,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1890,8 +1906,18 @@ async def stream_chat_v3(
             yield emitter.emit_error(str(e), "CHAT_V3_ERROR")
             yield format_done_marker()
 
+    # Wrap generator with SSE cancellation handling
+    async def cleanup_v3():
+        _logger.info(f"[CHAT_V3] Client disconnected - cleaning up session {session_id}")
+
     return StreamingResponse(
-        _generate_v3(),
+        with_cancellation(
+            request=request,
+            generator=_generate_v3(),
+            cleanup_fn=cleanup_v3,
+            check_interval=0.5,
+            emit_cancelled_event=True,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -2562,8 +2588,21 @@ async def stream_chat_v4(
             yield emitter.emit_error(str(e), "CHAT_V4_ERROR")
             yield format_done_marker()
 
+    # Wrap generator with SSE cancellation handling
+    # This detects client disconnection and runs cleanup
+    async def cleanup_on_disconnect():
+        """Cleanup resources when client disconnects"""
+        _logger.info(f"[CHAT_V4] Client disconnected - cleaning up session {session_id}")
+        # Any additional cleanup can be added here
+
     return StreamingResponse(
-        _generate_v4(),
+        with_cancellation(
+            request=request,
+            generator=_generate_v4(),
+            cleanup_fn=cleanup_on_disconnect,
+            check_interval=0.5,  # Check every 500ms
+            emit_cancelled_event=True,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

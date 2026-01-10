@@ -60,6 +60,15 @@ from src.services.tool_search_service import (
     TOOL_SEARCH_DEFINITION,
 )
 
+# Graceful degradation for parallel tool execution
+from src.utils.graceful_degradation import (
+    execute_with_degradation,
+    DegradationConfig,
+    DegradationStrategy,
+    DegradationResult,
+    synthesize_partial_response,
+)
+
 
 # ============================================================================
 # DATA MODELS
@@ -1166,17 +1175,25 @@ IMPORTANT:
         flow_id: str,
         user_id: Optional[int],
         session_id: Optional[str],
+        min_required: int = 1,
+        use_degradation: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Execute tools in parallel with inferred arguments.
+        Execute tools in parallel with inferred arguments and graceful degradation.
 
         For tools requiring a 'symbol' parameter:
         - Expands to one call per symbol (e.g., getStockPrice for NVDA and AAPL)
         - Executes all calls in parallel
+        - Continues with partial results if some tools fail (graceful degradation)
 
         Args:
             tool_names: List of tool names to execute
             symbols: List of symbols from classification (may have multiple)
+            min_required: Minimum number of successful results required to proceed
+            use_degradation: Whether to use graceful degradation pattern
+
+        Returns:
+            List of tool results with degradation metadata if enabled
         """
 
         async def execute_single(
@@ -1259,8 +1276,12 @@ IMPORTANT:
             return_exceptions=True,
         )
 
-        # Process results
+        # Process results with graceful degradation
         processed = []
+        successful_count = 0
+        failed_count = 0
+        failed_tools = []
+
         for i, result in enumerate(results):
             tool_name, symbol = execution_tasks[i]
             if isinstance(result, Exception):
@@ -1270,11 +1291,74 @@ IMPORTANT:
                     "error": str(result),
                     "symbol": symbol,
                 })
+                failed_count += 1
+                failed_tools.append(f"{tool_name}({symbol})" if symbol else tool_name)
             else:
+                # Check if result indicates an error status
+                status = result.get("status", "success") if isinstance(result, dict) else "success"
+                if status in ("error", "timeout"):
+                    failed_count += 1
+                    failed_tools.append(f"{tool_name}({symbol})" if symbol else tool_name)
+                else:
+                    successful_count += 1
                 processed.append(result)
 
+        total_count = len(processed)
+
+        # Log execution summary
         self.logger.info(
-            f"[{flow_id}] Executed {len(processed)} tool calls for {len(tool_names)} tools, {len(symbols)} symbols"
+            f"[{flow_id}] Tool execution: {successful_count}/{total_count} succeeded, "
+            f"{failed_count} failed"
+        )
+
+        # Apply graceful degradation logic
+        if use_degradation and failed_count > 0:
+            # Check if we have enough successful results
+            if successful_count >= min_required:
+                # Partial success - add degradation metadata
+                self.logger.info(
+                    f"[{flow_id}] ✅ Graceful degradation: proceeding with "
+                    f"{successful_count}/{total_count} results (min_required={min_required})"
+                )
+
+                # Add degradation metadata to first result
+                if processed:
+                    processed[0]["_degradation"] = {
+                        "is_partial": True,
+                        "success_count": successful_count,
+                        "total_count": total_count,
+                        "failed_tools": failed_tools,
+                        "message": (
+                            f"⚠️ Some data sources unavailable ({failed_count}/{total_count}). "
+                            f"Showing partial results."
+                        ),
+                    }
+            else:
+                # Not enough successful results
+                self.logger.warning(
+                    f"[{flow_id}] ⚠️ Graceful degradation: only {successful_count}/{total_count} "
+                    f"succeeded, below min_required={min_required}"
+                )
+
+                # Add fallback metadata
+                if processed:
+                    processed[0]["_degradation"] = {
+                        "is_partial": False,
+                        "should_fallback": True,
+                        "success_count": successful_count,
+                        "total_count": total_count,
+                        "min_required": min_required,
+                        "failed_tools": failed_tools,
+                        "message": (
+                            f"Unable to retrieve sufficient data. "
+                            f"Only {successful_count}/{total_count} sources available, "
+                            f"need at least {min_required}."
+                        ),
+                    }
+
+        self.logger.info(
+            f"[{flow_id}] Executed {len(processed)} tool calls for "
+            f"{len(tool_names)} tools, {len(symbols)} symbols"
         )
 
         return processed

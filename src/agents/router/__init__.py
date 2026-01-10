@@ -13,6 +13,7 @@ from src.agents.router.llm_tool_router import (
     ExecutionStrategy,
     get_tool_router,
     reset_router,
+    calculate_adaptive_max_turns,
 )
 
 __all__ = [
@@ -22,4 +23,5 @@ __all__ = [
     "ExecutionStrategy",
     "get_tool_router",
     "reset_router",
+    "calculate_adaptive_max_turns",
 ]

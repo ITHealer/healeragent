@@ -50,6 +50,50 @@ class ExecutionStrategy(str, Enum):
     PARALLEL = "parallel"      # Planning + parallel execution
 
 
+def calculate_adaptive_max_turns(
+    complexity: Complexity,
+    symbols_count: int = 0,
+    tool_count: int = 0,
+) -> int:
+    """
+    Calculate adaptive max_turns based on query characteristics.
+
+    Formula:
+    - Base turns from complexity (SIMPLE=2, MEDIUM=4, COMPLEX=6)
+    - +2 turns if symbols_count > 3 (multi-symbol analysis)
+    - +1 turn if tool_count > 5 (many tools to coordinate)
+    - Maximum: 10 turns (prevent infinite loops)
+
+    Args:
+        complexity: Query complexity level
+        symbols_count: Number of symbols being analyzed
+        tool_count: Number of tools selected
+
+    Returns:
+        Calculated max_turns (2-10)
+    """
+    # Base turns from complexity
+    base_turns_map = {
+        Complexity.SIMPLE: 2,
+        Complexity.MEDIUM: 4,
+        Complexity.COMPLEX: 6,
+    }
+    base = base_turns_map.get(complexity, 4)
+
+    # Additional turns for multi-symbol queries
+    if symbols_count > 3:
+        base += 2
+    elif symbols_count > 1:
+        base += 1
+
+    # Additional turn for many tools
+    if tool_count > 5:
+        base += 1
+
+    # Cap at 10 turns maximum
+    return min(base, 10)
+
+
 @dataclass
 class RouterDecision:
     """
@@ -62,7 +106,7 @@ class RouterDecision:
         reasoning: Why these tools were selected
         confidence: Confidence score 0-1
         suggested_max_turns: Suggested max turns for agent loop
-        metadata: Additional metadata
+        metadata: Additional metadata (includes symbols_count for adaptive turns)
     """
     selected_tools: List[str]
     complexity: Complexity
@@ -73,8 +117,21 @@ class RouterDecision:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RouterDecision":
-        """Create from dict."""
+    def from_dict(
+        cls,
+        data: Dict[str, Any],
+        symbols_count: int = 0,
+    ) -> "RouterDecision":
+        """
+        Create from dict with adaptive max_turns calculation.
+
+        Args:
+            data: Dictionary with router output
+            symbols_count: Number of symbols for adaptive max_turns
+
+        Returns:
+            RouterDecision instance
+        """
         # Parse complexity
         complexity_str = data.get("complexity", "medium").lower()
         try:
@@ -89,21 +146,29 @@ class RouterDecision:
         except ValueError:
             strategy = ExecutionStrategy.ITERATIVE
 
-        # Determine max turns based on complexity
-        max_turns_map = {
-            Complexity.SIMPLE: 2,
-            Complexity.MEDIUM: 4,
-            Complexity.COMPLEX: 6,
-        }
+        # Get selected tools
+        selected_tools = data.get("selected_tools", [])
+
+        # Calculate adaptive max_turns
+        max_turns = calculate_adaptive_max_turns(
+            complexity=complexity,
+            symbols_count=symbols_count,
+            tool_count=len(selected_tools),
+        )
+
+        # Store symbols_count in metadata for reference
+        metadata = data.get("metadata", {})
+        metadata["symbols_count"] = symbols_count
+        metadata["adaptive_max_turns"] = True
 
         return cls(
-            selected_tools=data.get("selected_tools", []),
+            selected_tools=selected_tools,
             complexity=complexity,
             execution_strategy=strategy,
             reasoning=data.get("reasoning", ""),
             confidence=data.get("confidence", 0.9),
-            suggested_max_turns=max_turns_map.get(complexity, 4),
-            metadata=data.get("metadata", {}),
+            suggested_max_turns=max_turns,
+            metadata=metadata,
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -222,8 +287,9 @@ class LLMToolRouter(LoggerMixin):
             # Call LLM
             result = await self._call_llm(prompt)
 
-            # Parse result
-            decision = RouterDecision.from_dict(result)
+            # Parse result with adaptive max_turns based on symbols count
+            symbols_count = len(symbols) if symbols else 0
+            decision = RouterDecision.from_dict(result, symbols_count=symbols_count)
 
             # Validate tools exist
             decision.selected_tools = self._validate_tools(decision.selected_tools)

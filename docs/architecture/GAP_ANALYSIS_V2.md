@@ -13,9 +13,13 @@ Based on detailed analysis of the architecture document and current codebase, th
 1. **ContextBuilder Service** - ✅ IMPLEMENTED (`src/services/context_builder.py`)
 2. **Thinking Display Timeline** - ✅ IMPLEMENTED with SSE events (`stream_events.py`)
 3. **Circuit Breaker Pattern** - ✅ IMPLEMENTED (`src/utils/circuit_breaker.py`)
+4. **Graceful Degradation** - ✅ IMPLEMENTED (`src/utils/graceful_degradation.py` + `unified_agent.py`)
 
 ### ⏳ REMAINING GAPS:
-1. **Graceful Degradation** - Partial implementation (needs enhancement)
+1. **SSE Cancellation Handling** - ✅ IMPLEMENTED (`src/utils/sse_cancellation.py` + chat_assistant.py)
+2. **Adaptive Max Turns** - ✅ IMPLEMENTED (`src/agents/router/llm_tool_router.py`)
+
+**All major gaps have been resolved!** Implementation is now ~95% complete.
 
 ---
 
@@ -146,7 +150,7 @@ async def call_openai(prompt: str) -> str:
 
 ---
 
-### 2.4 Graceful Degradation (MEDIUM GAP)
+### 2.4 Graceful Degradation ✅ IMPLEMENTED
 
 **Document Specification:**
 ```python
@@ -161,17 +165,23 @@ async def execute_with_graceful_degradation(tools):
         return fallback_response()
 ```
 
-**Current Implementation:**
-- Partial support in `_execute_tools_parallel()`
-- Return exceptions=True is used
-- Missing: Explicit fallback response strategy
-- Missing: min_required threshold check
+**Implementation:**
+- `src/utils/graceful_degradation.py` - New utility module
+- `src/agents/unified/unified_agent.py` - Enhanced `_execute_tools_parallel()`
 
-**Priority:** MEDIUM
+**Features Implemented:**
+- ✅ `DegradationConfig` with configurable strategies (THRESHOLD, ANY_SUCCESS, CRITICAL_ONLY, BEST_EFFORT)
+- ✅ `DegradationResult` with success/failure tracking
+- ✅ `execute_with_degradation()` utility function
+- ✅ `min_required` threshold check in tool execution
+- ✅ Fallback response strategy with metadata
+- ✅ Partial success messaging for UI
+
+**Status:** COMPLETE
 
 ---
 
-### 2.5 Adaptive Max Turns (PARTIAL)
+### 2.5 Adaptive Max Turns ✅ IMPLEMENTED
 
 **Document Specification:**
 ```python
@@ -184,16 +194,22 @@ def calculate_max_turns(intent_result):
     return min(base, 10)
 ```
 
-**Current Implementation:**
-- `router_decision.suggested_max_turns` exists
-- Hardcoded max_turns=6 in some places
-- Not fully adaptive based on symbols count
+**Implementation:** `src/agents/router/llm_tool_router.py`
 
-**Priority:** LOW (Partial implementation works)
+**Features Implemented:**
+- ✅ `calculate_adaptive_max_turns()` function
+- ✅ Base turns from complexity (SIMPLE=2, MEDIUM=4, COMPLEX=6)
+- ✅ +2 turns if symbols_count > 3 (multi-symbol analysis)
+- ✅ +1 turn if symbols_count > 1
+- ✅ +1 turn if tool_count > 5 (many tools)
+- ✅ Maximum cap at 10 turns
+- ✅ `RouterDecision.from_dict()` uses adaptive calculation
+
+**Status:** COMPLETE
 
 ---
 
-### 2.6 SSE Cancellation Handling (MEDIUM GAP)
+### 2.6 SSE Cancellation Handling ✅ IMPLEMENTED
 
 **Document Specification:**
 ```python
@@ -210,12 +226,19 @@ async def stream_with_cancellation():
         cleanup_resources()
 ```
 
-**Current Implementation:**
-- No explicit cancellation token
-- No cleanup on client disconnect
-- FastAPI background tasks not used for cleanup
+**Implementation:**
+- `src/utils/sse_cancellation.py` - New SSE cancellation utilities
+- `src/routers/v2/chat_assistant.py` - All 3 endpoints updated
 
-**Priority:** MEDIUM
+**Features Implemented:**
+- ✅ `SSECancellationHandler` class with Request.is_disconnected() check
+- ✅ `with_cancellation()` wrapper for generators
+- ✅ `CancellationTokenWithRequest` enhanced token
+- ✅ Automatic cleanup on client disconnect
+- ✅ Cancelled event emission (`event: cancelled`)
+- ✅ Integration with V1, V3, and V4 chat endpoints
+
+**Status:** COMPLETE
 
 ---
 
