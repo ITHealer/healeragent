@@ -89,6 +89,7 @@ class StreamEventType(str, Enum):
 
     # Thinking/Reasoning Events (AI Agent)
     THINKING_START = "thinking_start"
+    THINKING_STEP = "thinking_step"  # For UI: { type: "thinking_step", step: { title, content } }
     THINKING_DELTA = "thinking_delta"
     THINKING_END = "thinking_end"
 
@@ -538,6 +539,63 @@ class StreamEventEmitter(LoggerMixin):
             "status": "started",
         }
         return self._emit(StreamEventType.THINKING_START, data, f"phase={phase}")
+
+    def emit_thinking_step(
+        self,
+        title: str,
+        content: str,
+        phase: str = "reasoning",
+    ) -> str:
+        """
+        Emit thinking step event for UI display.
+
+        Format: { type: "thinking_step", step: { title, content } }
+        """
+        data = {
+            "step": {
+                "title": title,
+                "content": content,
+            },
+            "phase": phase,
+        }
+        preview = content[:50] if len(content) > 50 else content
+        return self._emit(
+            StreamEventType.THINKING_STEP, data,
+            f"title=\"{title}\" content=\"{preview}...\""
+        )
+
+    def emit_reasoning(
+        self,
+        phase: str,
+        content: str,
+        action: str = "thought",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Emit reasoning event - maps to thinking_step for UI compatibility.
+
+        This method exists for backward compatibility.
+        Internally converts to thinking_step format.
+
+        Args:
+            phase: Current processing phase (classification, tool_selection, etc.)
+            content: The reasoning content
+            action: Action type (start, thought, complete)
+            metadata: Optional additional data
+
+        Returns:
+            SSE event string in thinking_step format
+        """
+        # Map to thinking_step format
+        title = f"{phase.replace('_', ' ').title()}"
+        if action and action != "thought":
+            title = f"{title}: {action}"
+
+        return self.emit_thinking_step(
+            title=title,
+            content=content,
+            phase=phase,
+        )
 
     def emit_thinking_delta(
         self,
