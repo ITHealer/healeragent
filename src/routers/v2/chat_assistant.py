@@ -2199,6 +2199,30 @@ async def stream_chat_v4(
                             _logger.info(f"[CHAT_V4] 📝 First content chunk received ({len(content)} chars)")
                         yield emitter.emit_content(content)
 
+                elif event_type == "thinking":
+                    # Handle think tool calls - emit as thinking step for frontend
+                    phase = event.get("phase", "analyzing")
+                    thought_content = event.get("content", "")
+
+                    if thought_content:
+                        # Add to thinking timeline
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.DATA_GATHERING.value,
+                            action=f"💭 Think: {phase.title()}",
+                            details=thought_content[:100] + "..." if len(thought_content) > 100 else thought_content,
+                        )
+                        for timeline_event in thinking_timeline.get_pending_events():
+                            yield timeline_event.to_sse()
+
+                        # Emit as separate thinking_step event for detailed display
+                        yield emitter.emit_thinking_step(
+                            title=f"Thinking ({phase})",
+                            content=thought_content,
+                            phase=phase,
+                        )
+
+                        _logger.info(f"[CHAT_V4] 💭 Think [{phase}]: {thought_content[:80]}...")
+
                 elif event_type == "max_turns_reached":
                     yield emitter.emit_progress(
                         phase="max_turns",

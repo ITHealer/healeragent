@@ -71,6 +71,48 @@ from src.utils.graceful_degradation import (
 
 
 # ============================================================================
+# THINK TOOL DEFINITION
+# ============================================================================
+# This is added to the tool list to allow LLM to externalize its reasoning.
+# Think tool does NOT cost extra API calls - it's just a placeholder for
+# the LLM to output structured reasoning that can be displayed to users.
+
+THINK_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "think",
+        "description": """Use this tool to think through complex problems step by step.
+
+WHEN TO USE:
+- BEFORE calling other tools: Plan your approach and analyze what data you need
+- AFTER receiving tool results: Analyze the data, identify key insights, decide next steps
+- Before giving final response: Synthesize all information, formulate recommendations
+
+This tool does NOT fetch new data - it's for organizing your reasoning.
+
+Example:
+{"thought": "User asks about NVDA investment. Need to check: 1) Valuation (P/E, P/S), 2) Growth rates, 3) Technical indicators. User profile shows growth investor preference, so emphasize growth metrics.", "reasoning_type": "planning"}""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "thought": {
+                    "type": "string",
+                    "description": "Your reasoning, analysis, or planning. Be specific about what you're thinking and why.",
+                },
+                "reasoning_type": {
+                    "type": "string",
+                    "enum": ["planning", "analyzing", "deciding", "reflecting"],
+                    "description": "Type of thinking: planning (before action), analyzing (after data), deciding (before response), reflecting (on errors/gaps)",
+                    "default": "analyzing",
+                },
+            },
+            "required": ["thought"],
+        },
+    },
+}
+
+
+# ============================================================================
 # DATA MODELS
 # ============================================================================
 
@@ -2119,14 +2161,14 @@ Respond naturally and helpfully."""
             # TOOL LOADING STRATEGY
             # ================================================================
             if enable_tool_search_mode:
-                # TOOL SEARCH MODE: Start with ONLY tool_search for token savings
+                # TOOL SEARCH MODE: Start with ONLY tool_search + think for token savings
                 # GPT must call tool_search to discover available tools
-                tools = [TOOL_SEARCH_DEFINITION]
+                tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION]
                 discovered_tool_names = set()  # No tools discovered yet
 
                 self.logger.info(
-                    f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with only tool_search "
-                    f"(~500 tokens vs ~{len(self.catalog.get_tool_names()) * 400:,} tokens)"
+                    f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with tool_search + think "
+                    f"(~600 tokens vs ~{len(self.catalog.get_tool_names()) * 400:,} tokens)"
                 )
 
                 if enable_reasoning:
@@ -2144,9 +2186,10 @@ Respond naturally and helpfully."""
                 all_tool_names = self.catalog.get_tool_names()
                 tools = self.catalog.get_openai_functions(all_tool_names)
                 tools.append(TOOL_SEARCH_DEFINITION)  # Also add tool_search
+                tools.append(THINK_TOOL_DEFINITION)   # Add think tool for explicit reasoning
                 discovered_tool_names = set(all_tool_names)
 
-                self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search)")
+                self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search, think)")
 
             # Build messages with all tools
             messages = self._build_agent_messages_all_tools(
@@ -2231,30 +2274,81 @@ Respond naturally and helpfully."""
                     }
                     return
 
-                # Emit tool calls
-                if enable_reasoning:
+                # ============================================================
+                # SEPARATE THINK TOOL CALLS FROM DATA TOOL CALLS
+                # Think tool is handled inline (no actual execution needed)
+                # ============================================================
+                think_calls = [tc for tc in tool_calls if tc.name == "think"]
+                data_tool_calls = [tc for tc in tool_calls if tc.name != "think"]
+
+                # Process think tool calls FIRST - emit thinking events
+                think_results = []
+                for tc in think_calls:
+                    thought = tc.arguments.get("thought", "")
+                    reasoning_type = tc.arguments.get("reasoning_type", "analyzing")
+
+                    # Log the thought
+                    self.logger.info(f"[{flow_id}] 💭 THINK [{reasoning_type}]: {thought[:100]}...")
+
+                    # Emit thinking event for frontend
                     yield {
-                        "type": "reasoning",
-                        "phase": "tool_selection",
-                        "action": "decision",
-                        "content": f"Calling {len(tool_calls)} tools: {', '.join(tc.name for tc in tool_calls)}",
+                        "type": "thinking",
+                        "phase": reasoning_type,
+                        "content": thought,
+                        "tool_call_id": tc.id,
                     }
 
-                yield {
-                    "type": "tool_calls",
-                    "tools": [
-                        {"name": tc.name, "arguments": tc.arguments}
-                        for tc in tool_calls
-                    ],
-                }
+                    # Create simple result (no actual execution needed)
+                    think_results.append({
+                        "status": "success",
+                        "data": {
+                            "thought": thought,
+                            "reasoning_type": reasoning_type,
+                            "acknowledged": True,
+                        },
+                        "message": f"Thought recorded ({reasoning_type})",
+                    })
 
-                # Execute tools
-                tool_results = await self._execute_tool_calls(
-                    tool_calls=tool_calls,
-                    flow_id=flow_id,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
+                # Emit tool calls (data tools only for cleaner display)
+                if data_tool_calls:
+                    if enable_reasoning:
+                        yield {
+                            "type": "reasoning",
+                            "phase": "tool_selection",
+                            "action": "decision",
+                            "content": f"Calling {len(data_tool_calls)} tools: {', '.join(tc.name for tc in data_tool_calls)}",
+                        }
+
+                    yield {
+                        "type": "tool_calls",
+                        "tools": [
+                            {"name": tc.name, "arguments": tc.arguments}
+                            for tc in data_tool_calls
+                        ],
+                    }
+
+                # Execute data tools only
+                if data_tool_calls:
+                    data_tool_results = await self._execute_tool_calls(
+                        tool_calls=data_tool_calls,
+                        flow_id=flow_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                else:
+                    data_tool_results = []
+
+                # Combine results in original order
+                tool_results = []
+                think_idx = 0
+                data_idx = 0
+                for tc in tool_calls:
+                    if tc.name == "think":
+                        tool_results.append(think_results[think_idx])
+                        think_idx += 1
+                    else:
+                        tool_results.append(data_tool_results[data_idx])
+                        data_idx += 1
 
                 total_tool_calls += len(tool_calls)
 
@@ -2434,14 +2528,38 @@ Intent: {intent_summary}
 
 ## TOOL EXECUTION GUIDELINES
 
-**You have access to {len(tool_names)} tools. Use your judgment to select the most relevant ones.**
+**You have access to {len(tool_names)} tools including a special "think" tool.**
 
-**IMPORTANT - ChatGPT-Style Agent Loop:**
-1. THINK: Analyze what information you need to answer the user's query
-2. ACT: Call the most relevant tools (don't call all tools - be selective)
-3. OBSERVE: Review tool results and decide if more data is needed
-4. REPEAT: Call additional tools only if necessary
-5. RESPOND: When you have enough data, generate your final response
+**IMPORTANT - ReAct Pattern (Reasoning + Acting):**
+1. **THINK FIRST**: Use the `think` tool to analyze the query and plan your approach
+2. **ACT**: Call the most relevant data tools based on your plan
+3. **THINK AGAIN**: After receiving data, use `think` to analyze results and decide next steps
+4. **REPEAT**: Continue until you have enough data
+5. **RESPOND**: Generate your final response with data-backed insights
+
+**🧠 THE THINK TOOL - USE IT!**
+
+The `think` tool lets you reason explicitly. Use it:
+- **BEFORE calling tools**: Plan what data you need and why
+- **AFTER receiving data**: Analyze results, identify patterns, decide if more data needed
+- **BEFORE final response**: Synthesize insights, formulate recommendations
+
+Example flow for "So sánh NVDA và AMD để đầu tư":
+```
+Turn 1: think(planning) → "User wants investment comparison. Need: valuation (P/E),
+        growth rates, technical momentum. User profile: growth investor."
+        + getKeyMetrics(NVDA, AMD)
+
+Turn 2: think(analyzing) → "NVDA P/E=65 vs AMD P/E=45. Higher valuation needs
+        growth justification. Will check revenue growth."
+        + getFinancialGrowth(NVDA, AMD)
+
+Turn 3: think(deciding) → "NVDA 120% growth justifies premium. For growth investor,
+        NVDA better fit. Check RSI for entry timing."
+        + getTechnicalIndicators(NVDA)
+
+Turn 4: Final response with data-backed, personalized recommendation
+```
 
 **Tool Selection Strategy:**
 - Start with essential tools (price, basic data)
