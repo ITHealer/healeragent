@@ -72,7 +72,7 @@ Based on detailed analysis of the architecture document and current codebase, th
 
 ## SECTION 2: GAPS AND MISSING FEATURES
 
-### 2.1 ContextBuilder Service ✅ IMPLEMENTED
+### 2.1 ContextBuilder Service ✅ IMPLEMENTED & INTEGRATED
 
 **Document Specification:**
 ```python
@@ -91,7 +91,12 @@ class ContextBuilder:
 - ✅ `to_system_prompt()` method for LLM prompt injection
 - ✅ Caching with TTL (30 seconds)
 
-**Status:** COMPLETE
+**Integration Points:**
+- ✅ `src/routers/v2/chat_assistant.py` - V4 chat flow uses ContextBuilder
+- ✅ Replaces manual context loading for consistency
+- ✅ Phase-specific configurations (INTENT_CLASSIFICATION, AGENT_LOOP, etc.)
+
+**Status:** COMPLETE & INTEGRATED
 
 ---
 
@@ -126,7 +131,7 @@ Thought for 2.0s
 
 ---
 
-### 2.3 Circuit Breaker Pattern ✅ IMPLEMENTED
+### 2.3 Circuit Breaker Pattern ✅ IMPLEMENTED & INTEGRATED
 
 **Implementation:** `src/utils/circuit_breaker.py`
 
@@ -139,6 +144,11 @@ Thought for 2.0s
 - ✅ `@with_circuit_breaker` decorator for easy integration
 - ✅ Predefined circuit names (CIRCUIT_LLM_OPENAI, etc.)
 
+**Integration Points:**
+- ✅ `src/helpers/llm_helper.py` - `generate_response()` and `stream_response()`
+- ✅ Per-provider circuit tracking (OpenAI, Anthropic, Google)
+- ✅ Automatic failure/success recording
+
 **Usage:**
 ```python
 @with_circuit_breaker("openai_api")
@@ -146,7 +156,7 @@ async def call_openai(prompt: str) -> str:
     ...
 ```
 
-**Status:** COMPLETE
+**Status:** COMPLETE & INTEGRATED
 
 ---
 

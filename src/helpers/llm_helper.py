@@ -431,6 +431,13 @@ from src.utils.config import settings
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.model_manager import model_manager
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
+from src.utils.circuit_breaker import (
+    get_circuit_breaker,
+    CircuitBreakerOpenError,
+    CIRCUIT_LLM_OPENAI,
+    CIRCUIT_LLM_ANTHROPIC,
+    CIRCUIT_LLM_GOOGLE,
+)
 
 
 # =============================================================================
@@ -593,7 +600,17 @@ class LLMGeneratorProvider(LoggerMixin):
             self.logger.error(f"Error getting LLM: {str(e)}")
             raise
 
-    async def generate_response(self, 
+    def _get_circuit_name(self, provider_type: str) -> str:
+        """Get circuit breaker name for provider type"""
+        provider_circuit_map = {
+            ProviderType.OPENAI: CIRCUIT_LLM_OPENAI,
+            ProviderType.ANTHROPIC: CIRCUIT_LLM_ANTHROPIC,
+            ProviderType.GOOGLE: CIRCUIT_LLM_GOOGLE,
+            ProviderType.GEMINI: CIRCUIT_LLM_GOOGLE,
+        }
+        return provider_circuit_map.get(provider_type, f"llm_{provider_type}")
+
+    async def generate_response(self,
                                 model_name: str,
                                 messages: List[Dict[str, str]],
                                 provider_type: str = ProviderType.OPENAI,
@@ -601,8 +618,8 @@ class LLMGeneratorProvider(LoggerMixin):
                                 enable_thinking: bool = True,
                                 **kwargs) -> Dict[str, Any]:
         """
-        Generate a response from the model
-        
+        Generate a response from the model with circuit breaker protection.
+
         Args:
             model_name: Name of the model to use
             messages: Messages to send to the model
@@ -610,16 +627,47 @@ class LLMGeneratorProvider(LoggerMixin):
             api_key: API key for paid providers
             enable_thinking: Whether to enable thinking mode (only works with models that support it)
             **kwargs: Additional parameters for the model
-            
+
         Returns:
             Dict[str, Any]: Response from the model
-        """
-        provider = await self.get_llm(model_name, provider_type, api_key)
 
-        return await provider.generate(messages, **kwargs)
+        Raises:
+            CircuitBreakerOpenError: If circuit breaker is open
+        """
+        # Get circuit breaker for this provider
+        circuit = get_circuit_breaker()
+        circuit_name = self._get_circuit_name(provider_type)
+
+        # Check if circuit allows request
+        if not circuit.allow_request(circuit_name):
+            retry_after = circuit.get_retry_after(circuit_name)
+            self.logger.warning(
+                f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name}, "
+                f"retry after {retry_after:.1f}s"
+            )
+            raise CircuitBreakerOpenError(circuit_name, retry_after)
+
+        try:
+            provider = await self.get_llm(model_name, provider_type, api_key)
+            result = await provider.generate(messages, **kwargs)
+
+            # Record success
+            circuit.record_success(circuit_name)
+            return result
+
+        except CircuitBreakerOpenError:
+            # Re-raise circuit breaker errors
+            raise
+        except Exception as e:
+            # Record failure and re-raise
+            circuit.record_failure(circuit_name, e)
+            self.logger.error(
+                f"[LLM_HELPER] LLM call failed for {circuit_name}: {e}"
+            )
+            raise
     
         
-    async def stream_response(self, 
+    async def stream_response(self,
                             model_name: str,
                             messages: List[Dict[str, str]],
                             provider_type: str = ProviderType.OPENAI,
@@ -628,8 +676,8 @@ class LLMGeneratorProvider(LoggerMixin):
                             enable_thinking: bool = True,
                             **kwargs) -> AsyncGenerator[str, None]:
         """
-        Stream response chunks from the model
-        
+        Stream response chunks from the model with circuit breaker protection.
+
         Args:
             model_name: Name of the model to use
             messages: Messages to send to the model
@@ -638,15 +686,47 @@ class LLMGeneratorProvider(LoggerMixin):
             clean_thinking: Whether to clean thinking sections from chunks
             enable_thinking: Whether to enable thinking mode
             **kwargs: Additional parameters for the model
-            
+
         Yields:
             str: Chunks of the response
+
+        Raises:
+            CircuitBreakerOpenError: If circuit breaker is open
         """
-        provider = await self.get_llm(model_name, provider_type, api_key)
-        
-        async for chunk in provider.stream(messages, **kwargs):
-            if chunk:
-                yield chunk
+        # Get circuit breaker for this provider
+        circuit = get_circuit_breaker()
+        circuit_name = self._get_circuit_name(provider_type)
+
+        # Check if circuit allows request
+        if not circuit.allow_request(circuit_name):
+            retry_after = circuit.get_retry_after(circuit_name)
+            self.logger.warning(
+                f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name} (stream), "
+                f"retry after {retry_after:.1f}s"
+            )
+            raise CircuitBreakerOpenError(circuit_name, retry_after)
+
+        try:
+            provider = await self.get_llm(model_name, provider_type, api_key)
+            had_output = False
+
+            async for chunk in provider.stream(messages, **kwargs):
+                if chunk:
+                    had_output = True
+                    yield chunk
+
+            # Record success only if we got output
+            if had_output:
+                circuit.record_success(circuit_name)
+
+        except CircuitBreakerOpenError:
+            raise
+        except Exception as e:
+            circuit.record_failure(circuit_name, e)
+            self.logger.error(
+                f"[LLM_HELPER] LLM stream failed for {circuit_name}: {e}"
+            )
+            raise
 
 
     async def stream_react_cot_response(

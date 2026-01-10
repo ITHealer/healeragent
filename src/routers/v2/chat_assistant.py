@@ -124,6 +124,13 @@ from src.agents.memory.recursive_summary import (
     get_recursive_summary_manager,
     RecursiveSummaryManager,
 )
+# ContextBuilder - Centralized context assembly
+from src.services.context_builder import (
+    get_context_builder,
+    ContextBuilder,
+    ContextPhase,
+    AssembledContext,
+)
 
 
 # Router instance
@@ -2165,30 +2172,36 @@ async def stream_chat_v4(
             )
             _logger.debug(f"[CHAT_V4] WorkingMemory initialized: {flow_id}")
 
-            # Get Working Memory symbols from previous turns (CRITICAL FOR CONTEXT)
-            wm_symbols = wm_integration.get_current_symbols()
+            # =================================================================
+            # Phase 1.5: UNIFIED CONTEXT LOADING via ContextBuilder
+            # Centralizes: Core Memory + Summary + Recent Messages + WM Symbols
+            # Replaces manual loading for consistency across all phases
+            # =================================================================
+            context_builder = get_context_builder()
+            assembled_context: AssembledContext = await context_builder.build_context(
+                session_id=session_id,
+                user_id=user_id,
+                phase=ContextPhase.INTENT_CLASSIFICATION.value,
+            )
+
+            # Extract components for backward compatibility
+            core_memory_context: Optional[str] = assembled_context.core_memory
+            conversation_summary: Optional[str] = assembled_context.summary
+            wm_symbols: List[str] = assembled_context.wm_symbols
+
+            # Log context summary
+            ctx_summary = assembled_context.get_context_summary()
+            _logger.info(
+                f"[CHAT_V4] ✅ ContextBuilder loaded: "
+                f"core_memory={ctx_summary['core_memory_chars']}chars, "
+                f"summary={ctx_summary['summary_chars']}chars, "
+                f"wm_symbols={ctx_summary['wm_symbols']}"
+            )
+
             if wm_symbols:
                 _logger.info(f"[CHAT_V4] Working Memory symbols from previous turns: {wm_symbols}")
 
-            # Load Core Memory for user profile context (portfolio, preferences)
-            core_memory_context: Optional[str] = None
-            try:
-                from src.agents.memory.core_memory import get_core_memory
-                core_memory = get_core_memory()
-                cm_data = await core_memory.load_core_memory(str(user_id))
-                human_block = cm_data.get("human", "")
-                if human_block and len(human_block) > 20:  # Include if has any profile
-                    core_memory_context = human_block
-                    _logger.info(f"[CHAT_V4] ✅ Loaded Core Memory: {len(human_block)} chars for user {user_id}")
-                else:
-                    _logger.info(f"[CHAT_V4] ⚠️ Core Memory empty or minimal for user {user_id}")
-            except Exception as cm_err:
-                _logger.warning(f"[CHAT_V4] Core Memory load failed (non-fatal): {cm_err}")
-
-            # =================================================================
-            # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
-            # This was missing in V4 - V3 has it via NormalModeChatHandler._load_context()
-            # =================================================================
+            # Load conversation history (separate from ContextBuilder for compaction)
             conversation_history = await _load_conversation_history(
                 session_id=session_id,
                 limit=10,  # Last 10 messages for context
@@ -2221,24 +2234,6 @@ async def stream_chat_v4(
                         progress_percent=15,
                         message=f"Compressed context: saved {compaction_result.tokens_saved:,} tokens",
                     )
-
-            # =================================================================
-            # Phase 1.7: Load Conversation Summary (CRITICAL FOR LONG SESSIONS!)
-            # Summary compresses old messages (1 to n-k) while recent messages (n-k to n)
-            # are kept raw in conversation_history. This is HYBRID CONTEXT LOADING.
-            # =================================================================
-            conversation_summary: Optional[str] = None
-            try:
-                summary_manager = get_recursive_summary_manager()
-                conversation_summary = await summary_manager.get_active_summary(session_id)
-                if conversation_summary:
-                    _logger.info(
-                        f"[CHAT_V4] ✅ Loaded Conversation Summary: {len(conversation_summary)} chars"
-                    )
-                else:
-                    _logger.debug(f"[CHAT_V4] No active summary for session {session_id[:8]}...")
-            except Exception as sum_err:
-                _logger.warning(f"[CHAT_V4] Summary load failed (non-fatal): {sum_err}")
 
             # =================================================================
             # Phase 2: Intent Classification (SINGLE LLM call)
