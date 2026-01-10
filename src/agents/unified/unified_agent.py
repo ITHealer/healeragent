@@ -1484,18 +1484,23 @@ IMPORTANT:
                 if isinstance(data, dict):
                     # Income Statement specific logging
                     if "revenue" in data:
+                        rev = data.get('revenue')
+                        net = data.get('net_income')
+                        eps = data.get('eps')
+                        rev_str = f"{rev:,.0f}" if isinstance(rev, (int, float)) else str(rev)
+                        net_str = f"{net:,.0f}" if isinstance(net, (int, float)) else str(net)
                         self.logger.info(
-                            f"[{flow_id}]   └─ revenue={data.get('revenue'):,.0f} | "
-                            f"net_income={data.get('net_income'):,.0f} | "
-                            f"eps={data.get('eps')}"
+                            f"[{flow_id}]   └─ revenue={rev_str} | "
+                            f"net_income={net_str} | eps={eps}"
                         )
                     # Log first statement if available
                     if "statements" in data and data["statements"]:
                         stmt = data["statements"][0]
+                        stmt_rev = stmt.get('revenue')
+                        rev_str = f"{stmt_rev:,.0f}" if isinstance(stmt_rev, (int, float)) else "N/A"
                         self.logger.info(
                             f"[{flow_id}]   └─ Latest: date={stmt.get('date')} | "
-                            f"period={stmt.get('period')} | "
-                            f"revenue={stmt.get('revenue'):,.0f if stmt.get('revenue') else 'N/A'}"
+                            f"period={stmt.get('period')} | revenue={rev_str}"
                         )
 
         return processed
