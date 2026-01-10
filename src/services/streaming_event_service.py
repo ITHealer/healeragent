@@ -730,6 +730,10 @@ async def with_heartbeat(
 
     Emits heartbeat if no event within interval to keep SSE connection alive.
 
+    IMPORTANT: This implementation does NOT cancel the inner operation when
+    emitting heartbeats - it uses asyncio.wait() instead of wait_for() to
+    preserve long-running LLM calls.
+
     Usage:
         async def my_generator():
             yield "event1"
@@ -741,43 +745,62 @@ async def with_heartbeat(
             yield event
     """
     import time
+    import logging
 
+    _logger = logging.getLogger(__name__)
     last_event_time = time.time()
     gen_exhausted = False
-    pending_event = None
+    pending_task: Optional[asyncio.Task] = None
 
     # Create async iterator from generator
     gen_iter = event_generator.__aiter__()
 
     while not gen_exhausted:
         try:
-            # Wait for next event with timeout
-            pending_event = await asyncio.wait_for(
-                gen_iter.__anext__(),
-                timeout=heartbeat_interval
-            )
-            last_event_time = time.time()
-            yield pending_event
+            # Create task for next event if not already pending
+            if pending_task is None:
+                pending_task = asyncio.create_task(gen_iter.__anext__())
 
-        except asyncio.TimeoutError:
-            # No event within interval - emit heartbeat
-            elapsed = time.time() - last_event_time
-            if elapsed >= heartbeat_interval:
+            # Wait for task with timeout, but DON'T cancel on timeout
+            done, pending = await asyncio.wait(
+                {pending_task},
+                timeout=heartbeat_interval,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if done:
+                # Task completed - get the result
+                try:
+                    event = pending_task.result()
+                    last_event_time = time.time()
+                    pending_task = None  # Reset for next iteration
+                    yield event
+                except StopAsyncIteration:
+                    gen_exhausted = True
+                    pending_task = None
+            else:
+                # Timeout - emit heartbeat but keep task running
+                elapsed = time.time() - last_event_time
+                _logger.debug(f"[HEARTBEAT] Emitting heartbeat after {elapsed:.1f}s")
                 yield emitter.emit_heartbeat()
                 last_event_time = time.time()
-
-        except StopAsyncIteration:
-            # Generator exhausted
-            gen_exhausted = True
+                # Don't reset pending_task - continue waiting for it
 
         except asyncio.CancelledError:
-            # Stream cancelled
+            # Stream cancelled - cancel pending task too
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+                try:
+                    await pending_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
             break
 
         except Exception as e:
             # Log error but continue
-            import logging
-            logging.getLogger(__name__).warning(f"[HEARTBEAT] Error: {e}")
+            _logger.warning(f"[HEARTBEAT] Error: {e}")
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
             break
 
 
