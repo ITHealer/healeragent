@@ -2053,6 +2053,8 @@ Respond naturally and helpfully."""
         max_turns: int = 6,
         enable_tool_search_mode: bool = False,
         working_memory_symbols: Optional[List[str]] = None,
+        enable_think_tool: bool = False,
+        enable_web_search: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run agent with ALL tools available (new architecture).
@@ -2073,6 +2075,10 @@ Respond naturally and helpfully."""
             working_memory_symbols: Symbols from previous turns (Working Memory).
                 These are MERGED with intent_result.validated_symbols to provide
                 context continuity for follow-up questions.
+            enable_think_tool: If True, add STRONG instruction to always use think tool
+                for explicit reasoning before and after tool calls.
+            enable_web_search: If True, FORCE inject webSearch/serpSearch tools
+                and add instruction to search for latest news/information.
 
         Yields:
             Stream events: reasoning, tool_calls, tool_results, content, done
@@ -2168,6 +2174,13 @@ Respond naturally and helpfully."""
                 tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION]
                 discovered_tool_names = set()  # No tools discovered yet
 
+                # FORCE INJECT: Web search tools when enabled
+                if enable_web_search:
+                    web_search_tools = self.catalog.get_openai_functions(["webSearch", "serpSearch"])
+                    tools.extend(web_search_tools)
+                    discovered_tool_names.update(["webSearch", "serpSearch"])
+                    self.logger.info(f"[{flow_id}] 🌐 FORCE INJECTED: webSearch, serpSearch (enable_web_search=True)")
+
                 self.logger.info(
                     f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with tool_search + think "
                     f"(~600 tokens vs ~{len(self.catalog.get_tool_names()) * 400:,} tokens)"
@@ -2193,6 +2206,12 @@ Respond naturally and helpfully."""
 
                 self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search, think)")
 
+                # Log when special modes are enabled
+                if enable_web_search:
+                    self.logger.info(f"[{flow_id}] 🌐 WEB SEARCH ENABLED: Strong instruction added to system prompt")
+                if enable_think_tool:
+                    self.logger.info(f"[{flow_id}] 🧠 THINK TOOL ENABLED: Strong instruction added to system prompt")
+
             # Build messages with all tools
             messages = self._build_agent_messages_all_tools(
                 query=query,
@@ -2205,6 +2224,8 @@ Respond naturally and helpfully."""
                 user_id=user_id,
                 images=images,
                 merged_symbols=merged_symbols,  # Pass merged symbols for context continuity
+                enable_think_tool=enable_think_tool,
+                enable_web_search=enable_web_search,
             )
 
             total_tool_calls = 0
@@ -2471,6 +2492,8 @@ IMPORTANT:
         user_id: Optional[int],
         images: Optional[List[Any]] = None,
         merged_symbols: Optional[List[str]] = None,
+        enable_think_tool: bool = False,
+        enable_web_search: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
@@ -2480,6 +2503,8 @@ IMPORTANT:
         Args:
             merged_symbols: Pre-merged symbols from intent_result + working_memory.
                             If provided, these override intent_result.validated_symbols.
+            enable_think_tool: If True, add STRONG instruction to ALWAYS use think tool.
+            enable_web_search: If True, add STRONG instruction to ALWAYS search web.
         """
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -2705,6 +2730,78 @@ Before finalizing, verify:
 4. Are there any unstated assumptions or unverifiable claims?
 5. Is the response length appropriate for query complexity?
 """
+
+        # ====================================================================
+        # DYNAMIC INSTRUCTIONS BASED ON FLAGS
+        # ====================================================================
+
+        # Add STRONG think tool instructions when enabled
+        if enable_think_tool:
+            think_tool_instruction = """
+
+## 🧠 MANDATORY: USE THE THINK TOOL (enable_think_tool=True)
+
+**⚠️ CRITICAL REQUIREMENT - YOU MUST USE THE THINK TOOL!**
+
+The `think` tool is MANDATORY for this conversation. You MUST:
+
+1. **ALWAYS START with think()**: Before calling ANY data tool, call `think` first to:
+   - Analyze what the user is asking
+   - Plan which tools you need to call
+   - Identify what data will answer the question
+
+2. **ALWAYS THINK AFTER DATA**: After receiving tool results, call `think` to:
+   - Analyze the data you received
+   - Identify key insights and patterns
+   - Decide if you need more data or can respond
+
+3. **THINK BEFORE RESPONDING**: Before generating your final response, call `think` to:
+   - Synthesize all the information
+   - Formulate your recommendations
+   - Structure your response
+
+**Example MANDATORY Pattern:**
+```
+Turn 1: think("Planning: User asks X. I need to call Y, Z tools.") → getStockPrice()
+Turn 2: think("Data received: Price is $X. Now analyzing...") → getTechnicalIndicators()
+Turn 3: think("Synthesizing: Price + indicators suggest...") → Final response
+```
+
+**DO NOT skip think() calls. This is not optional!**
+"""
+            system_prompt += think_tool_instruction
+
+        # Add STRONG web search instructions when enabled
+        if enable_web_search:
+            web_search_instruction = """
+
+## 🌐 MANDATORY: USE WEB SEARCH (enable_web_search=True)
+
+**⚠️ CRITICAL REQUIREMENT - YOU MUST SEARCH THE WEB!**
+
+Web search is MANDATORY for this conversation. You MUST:
+
+1. **ALWAYS call webSearch or serpSearch** in your first turn (or early turns):
+   - Search for latest news about the symbols/topics
+   - Search for recent analyst opinions and ratings
+   - Search for any recent events that affect the analysis
+
+2. **Include web sources in your response**:
+   - Cite the source name and URL for all web-derived information
+   - Include publication dates when available
+   - Prioritize recent and authoritative sources
+
+3. **Do NOT skip web search**: Even if you have financial data from other tools,
+   web search provides crucial context about recent events, sentiment, and news.
+
+**Example Search Queries:**
+- "NVDA stock news today January 2025"
+- "NVIDIA earnings announcement 2025"
+- "AMD vs NVDA analyst ratings 2025"
+
+**Both webSearch (Tavily) and serpSearch (Google) are available - use either or both.**
+"""
+            system_prompt += web_search_instruction
 
         messages = [{"role": "system", "content": system_prompt}]
 

@@ -2137,6 +2137,8 @@ async def stream_chat_v4(
                 max_turns=6,
                 enable_tool_search_mode=data.enable_tool_search_mode,  # Token savings
                 working_memory_symbols=wm_symbols,  # Symbols from previous turns
+                enable_think_tool=data.enable_think_tool,  # STRONG think tool instruction
+                enable_web_search=data.enable_web_search,  # FORCE inject web search tools
             ):
                 event_type = event.get("type", "unknown")
                 agent_event_count += 1
