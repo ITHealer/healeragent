@@ -602,11 +602,15 @@ class LLMGeneratorProvider(LoggerMixin):
 
     def _get_circuit_name(self, provider_type: str) -> str:
         """Get circuit breaker name for provider type"""
+        # Use string values for mapping since provider_type can be string or enum
+        # and ProviderType enum only has OPENAI and GEMINI
         provider_circuit_map = {
             ProviderType.OPENAI: CIRCUIT_LLM_OPENAI,
-            ProviderType.ANTHROPIC: CIRCUIT_LLM_ANTHROPIC,
-            ProviderType.GOOGLE: CIRCUIT_LLM_GOOGLE,
             ProviderType.GEMINI: CIRCUIT_LLM_GOOGLE,
+            "openai": CIRCUIT_LLM_OPENAI,
+            "anthropic": CIRCUIT_LLM_ANTHROPIC,
+            "google": CIRCUIT_LLM_GOOGLE,
+            "gemini": CIRCUIT_LLM_GOOGLE,
         }
         return provider_circuit_map.get(provider_type, f"llm_{provider_type}")
 
