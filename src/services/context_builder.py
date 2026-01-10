@@ -304,15 +304,23 @@ class ContextBuilder(LoggerMixin):
     ) -> None:
         """Load recent conversation messages"""
         try:
-            from src.db.repositories.chat_repository import ChatRepository
+            from src.database.repository.chat import ChatRepository
 
             chat_repo = ChatRepository()
-            messages = await chat_repo.get_conversation_history(
+            # get_chat_message_history_by_session_id returns List[Tuple[content, sender_role]]
+            # Note: This is a sync method, so we run it directly
+            messages_tuples = chat_repo.get_chat_message_history_by_session_id(
                 session_id=session_id,
                 limit=limit
             )
 
-            if messages:
+            if messages_tuples:
+                # Convert tuples to dict format for consistency
+                # Results are ordered DESC, so reverse for chronological order
+                messages = [
+                    {"role": sender_role, "content": content}
+                    for content, sender_role in reversed(messages_tuples)
+                ]
                 context.recent_messages = messages
                 context.history_loaded = True
                 self.logger.debug(f"[CONTEXT_BUILDER] History loaded: {len(messages)} messages")
