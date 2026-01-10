@@ -975,47 +975,7 @@ async def _stream_normal_mode(
 
     turn_count = 0
     tool_count = 0
-    thinking_start_time = None
-
-    # Emit reasoning events for classification phase
-    if enable_thinking:
-        thinking_start_time = dt.now()
-
-        # Classification start
-        yield emitter.emit_reasoning(
-            phase="classification",
-            content=f"Analyzing query: {query[:100]}..." if len(query) > 100 else f"Analyzing query: {query}",
-            action="start",
-        )
-
-        # Classification reasoning
-        if classification.reasoning:
-            yield emitter.emit_reasoning(
-                phase="classification",
-                content=classification.reasoning,
-                action="thought",
-            )
-
-        # Intent summary
-        if classification.intent_summary:
-            yield emitter.emit_reasoning(
-                phase="classification",
-                content=f"Intent: {classification.intent_summary}",
-                action="thought",
-            )
-
-        # Classification complete
-        yield emitter.emit_reasoning(
-            phase="classification",
-            content=f"Query type: {classification.query_type.value}, Symbols: {classification.symbols}",
-            action="complete",
-            metadata={
-                "query_type": classification.query_type.value,
-                "symbols": classification.symbols,
-                "categories": classification.tool_categories,
-                "requires_tools": classification.requires_tools,
-            }
-        )
+    thinking_start_time = dt.now() if enable_thinking else None
 
     # Build kwargs for handler (images is optional for backward compatibility)
     handler_kwargs = {
@@ -1046,92 +1006,25 @@ async def _stream_normal_mode(
                 stats["total_turns"] = turn_count  # Update stats
                 yield emitter.emit_turn_start(turn_count, 10)
 
-                # Emit reasoning for new turn
-                if enable_thinking:
-                    yield emitter.emit_reasoning(
-                        phase="tool_selection",
-                        content=f"Turn {turn_count}: Analyzing query and selecting appropriate tools...",
-                        action="start",
-                        metadata={"turn": turn_count}
-                    )
-
             elif event_type == "tool_calls":
                 tools = chunk.get("tools", [])
                 tool_count += len(tools)
                 stats["total_tool_calls"] = tool_count  # Update stats
                 yield emitter.emit_tool_calls(tools)
 
-                # Emit reasoning about tool decisions
-                if enable_thinking or enable_llm_events:
-                    for tool in tools:
-                        tool_name = tool.get("name", "unknown")
-                        yield emitter.emit_reasoning(
-                            phase="tool_selection",
-                            content=f"Using {tool_name} to gather required information",
-                            action="decision",
-                            metadata={
-                                "tool": tool_name,
-                                "params": tool.get("arguments", {}),
-                            }
-                        )
-
             elif event_type == "tool_results":
                 results = chunk.get("results", [])
                 yield emitter.emit_tool_results(results)
-
-                # Emit reasoning about tool results
-                if enable_thinking:
-                    success_count = sum(1 for r in results if r.get("success", True))
-                    yield emitter.emit_reasoning(
-                        phase="tool_analysis",
-                        content=f"Received {len(results)} tool results ({success_count} successful)",
-                        action="progress",
-                        metadata={"total": len(results), "success": success_count}
-                    )
 
             elif event_type == "content":
                 content = chunk.get("content", "")
                 if content:
                     yield emitter.emit_content(content)
 
-            elif event_type == "thinking":
-                # Convert legacy thinking events to unified reasoning
-                if enable_thinking:
-                    yield emitter.emit_reasoning(
-                        phase=chunk.get("phase", "reasoning"),
-                        content=chunk.get("content", ""),
-                        action="thought",
-                    )
-
-            elif event_type == "llm_thought":
-                # Convert legacy llm_thought to unified reasoning
-                if enable_thinking or enable_llm_events:
-                    yield emitter.emit_reasoning(
-                        phase="reasoning",
-                        content=chunk.get("thought", ""),
-                        action="thought",
-                        metadata={"context": chunk.get("context", "")}
-                    )
-
             elif event_type == "done":
                 # Extract charts from done event if present
                 if chunk.get("charts"):
                     stats["charts"] = chunk.get("charts")
-
-                # Emit synthesis complete
-                if enable_thinking and thinking_start_time:
-                    duration_ms = (dt.now() - thinking_start_time).total_seconds() * 1000
-                    yield emitter.emit_reasoning(
-                        phase="synthesis",
-                        content=f"Response complete: {turn_count} turns, {tool_count} tool calls",
-                        action="complete",
-                        progress=1.0,
-                        metadata={
-                            "turns": turn_count,
-                            "tool_calls": tool_count,
-                            "duration_ms": round(duration_ms, 0),
-                        }
-                    )
 
             else:
                 # Unknown event type, emit as content
@@ -1224,13 +1117,7 @@ async def _stream_deep_research(
         elif isinstance(event, ThinkingStartEvent):
             current_phase = event.data.get("phase", "thinking")
             thinking_start = dt.now()
-            # Emit unified reasoning event
-            yield emitter.emit_reasoning(
-                phase=current_phase,
-                content=event.data.get("message", f"Starting {current_phase}..."),
-                action="start",
-            )
-            # Also emit progress for UI progress bar
+            # Emit progress for UI progress bar
             progress = phase_progress.get(current_phase, 50)
             yield emitter.emit_progress(
                 phase=current_phase,
@@ -1239,24 +1126,12 @@ async def _stream_deep_research(
             )
 
         elif isinstance(event, ThinkingDeltaEvent):
-            content = event.data.get("chunk", event.data.get("content", ""))
-            if content and enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase=current_phase,
-                    content=content,
-                    action="progress",
-                )
+            # Skip - no longer emitting reasoning events
+            pass
 
         elif isinstance(event, ThinkingEndEvent):
-            duration = 0.0
-            if thinking_start:
-                duration = (dt.now() - thinking_start).total_seconds() * 1000
-            yield emitter.emit_reasoning(
-                phase=current_phase,
-                content=event.data.get("summary", f"Completed {current_phase}"),
-                action="complete",
-                metadata={"duration_ms": round(duration, 0)}
-            )
+            # Skip - no longer emitting reasoning events
+            pass
 
         elif isinstance(event, PlanningProgressEvent):
             yield emitter.emit_progress(
@@ -1282,14 +1157,6 @@ async def _stream_deep_research(
             yield emitter.emit_tool_calls([
                 {"name": tool_name, "arguments": event.data.get("arguments", {})}
             ])
-            # Emit reasoning about tool execution
-            if enable_thinking or enable_llm_events:
-                yield emitter.emit_reasoning(
-                    phase="tool_execution",
-                    content=f"Executing {tool_name}",
-                    action="decision",
-                    metadata={"tool": tool_name, "arguments": event.data.get("arguments", {})}
-                )
 
         elif isinstance(event, ToolProgressEvent):
             yield emitter.emit_progress(
@@ -1318,39 +1185,14 @@ async def _stream_deep_research(
                 yield emitter.emit_content(content)
 
         elif isinstance(event, LLMThoughtEvent):
-            # Convert to unified reasoning event
-            if enable_thinking or enable_llm_events:
-                yield emitter.emit_reasoning(
-                    phase="reasoning",
-                    content=event.data.get("thought", ""),
-                    action="thought",
-                    metadata={"context": event.data.get("context", "")}
-                )
+            # Skip - no longer emitting reasoning events
+            pass
 
         elif isinstance(event, LLMDecisionEvent):
-            # Convert to unified reasoning event
-            if enable_thinking or enable_llm_events:
-                yield emitter.emit_reasoning(
-                    phase="reasoning",
-                    content=event.data.get("decision", ""),
-                    action="decision",
-                    metadata={
-                        "action_type": event.data.get("action", ""),
-                        "confidence": event.data.get("confidence", 0.0),
-                    }
-                )
+            # Skip - no longer emitting reasoning events
+            pass
 
         elif isinstance(event, DoneEvent):
-            # Emit synthesis complete reasoning
-            if enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="synthesis",
-                    content=f"Deep Research complete: {tool_count} tools executed",
-                    action="complete",
-                    progress=1.0,
-                    metadata={"tool_count": tool_count}
-                )
-
             # Final progress
             yield emitter.emit_progress(
                 phase="complete",
@@ -1670,18 +1512,6 @@ async def stream_chat_v3(
                 classification_method=classification.classification_method,
             )
 
-            # Emit classification reasoning
-            if classification.reasoning and data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="classification",
-                    content=classification.reasoning,
-                    action="complete",
-                    metadata={
-                        "query_type": classification.query_type.value,
-                        "symbols": classification.symbols,
-                    },
-                )
-
             # Save classification to working memory (for cross-turn continuity)
             wm_integration.save_classification(
                 query_type=classification.query_type.value,
@@ -1703,13 +1533,6 @@ async def stream_chat_v3(
             # =================================================================
             # Phase 3: LLM Tool Router (2-phase tool selection)
             # =================================================================
-            if data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="tool_routing",
-                    content="Analyzing query to select optimal tools from catalog...",
-                    action="start",
-                )
-
             tool_router = _get_tool_router()
             router_decision = await tool_router.route(
                 query=query,
@@ -1721,20 +1544,6 @@ async def stream_chat_v3(
 
             stats["complexity"] = router_decision.complexity.value
             stats["selected_tools"] = router_decision.selected_tools
-
-            # Emit routing decision
-            yield emitter.emit_reasoning(
-                phase="tool_routing",
-                content=router_decision.reasoning,
-                action="decision",
-                metadata={
-                    "selected_tools": router_decision.selected_tools,
-                    "complexity": router_decision.complexity.value,
-                    "strategy": router_decision.execution_strategy.value,
-                    "confidence": router_decision.confidence,
-                    "max_turns": router_decision.suggested_max_turns,
-                },
-            )
 
             _logger.info(
                 f"[CHAT_V3:ROUTE] tools={router_decision.selected_tools} | "
@@ -1767,16 +1576,7 @@ async def stream_chat_v3(
             ):
                 event_type = event.get("type", "unknown")
 
-                if event_type == "reasoning":
-                    # Forward reasoning events
-                    yield emitter.emit_reasoning(
-                        phase=event.get("phase", "execution"),
-                        content=event.get("content", ""),
-                        action=event.get("action", "thought"),
-                        metadata=event.get("metadata"),
-                    )
-
-                elif event_type == "turn_start":
+                if event_type == "turn_start":
                     turn = event.get("turn", 1)
                     stats["total_turns"] = turn
                     yield emitter.emit_turn_start(
@@ -1821,26 +1621,6 @@ async def stream_chat_v3(
             # Phase 5: Done
             # =================================================================
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-
-            # Final reasoning summary
-            if data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="synthesis",
-                    content=(
-                        f"Complete: {stats['total_turns']} turns, "
-                        f"{stats['total_tool_calls']} tool calls, "
-                        f"complexity={stats['complexity']}"
-                    ),
-                    action="complete",
-                    progress=1.0,
-                    metadata={
-                        "turns": stats["total_turns"],
-                        "tool_calls": stats["total_tool_calls"],
-                        "complexity": stats["complexity"],
-                        "selected_tools": stats["selected_tools"],
-                        "duration_ms": round(elapsed_ms, 0),
-                    },
-                )
 
             # =================================================================
             # LEARN Phase: Update memory after successful execution
@@ -2311,20 +2091,6 @@ async def stream_chat_v4(
 
             stats["complexity"] = intent_result.complexity.value
 
-            # Emit classification reasoning
-            if intent_result.reasoning and data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="intent_classification",
-                    content=intent_result.reasoning,
-                    action="complete",
-                    metadata={
-                        "intent": intent_result.intent_summary,
-                        "symbols": intent_result.validated_symbols,
-                        "complexity": intent_result.complexity.value,
-                        "market_type": intent_result.market_type.value,
-                    },
-                )
-
             # Save classification to working memory (for cross-turn continuity)
             wm_integration.save_classification(
                 query_type=intent_result.query_type,
@@ -2347,13 +2113,6 @@ async def stream_chat_v4(
             )
             for timeline_event in thinking_timeline.get_pending_events():
                 yield timeline_event.to_sse()
-
-            if data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="agent_start",
-                    content=f"Starting agent with ALL {len(unified_agent.catalog.get_tool_names())} tools available",
-                    action="start",
-                )
 
             # Stream events from Agent with ALL tools
             # CRITICAL: Pass conversation_history for memory/context!
@@ -2379,15 +2138,7 @@ async def stream_chat_v4(
             ):
                 event_type = event.get("type", "unknown")
 
-                if event_type == "reasoning":
-                    yield emitter.emit_reasoning(
-                        phase=event.get("phase", "execution"),
-                        content=event.get("content", ""),
-                        action=event.get("action", "thought"),
-                        metadata=event.get("metadata"),
-                    )
-
-                elif event_type == "turn_start":
+                if event_type == "turn_start":
                     turn = event.get("turn", 1)
                     stats["total_turns"] = turn
                     yield emitter.emit_turn_start(
@@ -2474,28 +2225,6 @@ async def stream_chat_v4(
             # Emit final thinking summary (ChatGPT-style "Thought for Xs")
             thinking_summary_event = thinking_timeline.get_summary_event()
             yield thinking_summary_event.to_sse()
-
-            # Final reasoning summary
-            if data.enable_thinking:
-                yield emitter.emit_reasoning(
-                    phase="synthesis",
-                    content=(
-                        f"Complete: {stats['total_turns']} turns, "
-                        f"{stats['total_tool_calls']} tool calls, "
-                        f"complexity={stats['complexity']}"
-                    ),
-                    action="complete",
-                    progress=1.0,
-                    metadata={
-                        "turns": stats["total_turns"],
-                        "tool_calls": stats["total_tool_calls"],
-                        "complexity": stats["complexity"],
-                        "symbols": intent_result.validated_symbols,
-                        "duration_ms": round(elapsed_ms, 0),
-                        "thinking_duration_s": thinking_timeline.get_elapsed_seconds(),
-                        "thinking_steps": thinking_timeline.get_steps_count(),
-                    },
-                )
 
             # =================================================================
             # LEARN Phase: Update memory after successful execution
