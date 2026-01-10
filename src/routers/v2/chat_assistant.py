@@ -89,6 +89,11 @@ from src.agents.streaming import (
     ErrorEvent,
     LLMThoughtEvent,
     LLMDecisionEvent,
+    # Thinking Timeline (ChatGPT-style "Thought for Xs" display)
+    ThinkingTimeline,
+    ThinkingTimelineEvent,
+    ThinkingSummaryEvent,
+    ThinkingPhase,
 )
 # LEARN Phase - Memory updates after execution
 from src.agents.hooks import LearnHook
@@ -2099,6 +2104,12 @@ async def stream_chat_v4(
             "compaction_result": None,
         }
 
+        # =================================================================
+        # THINKING TIMELINE: Track thought process for UI display
+        # ChatGPT-style "Thought for Xs" with timeline of steps
+        # =================================================================
+        thinking_timeline = ThinkingTimeline()
+
         try:
             # =================================================================
             # Phase 0: Process images (if any)
@@ -2208,7 +2219,27 @@ async def stream_chat_v4(
             # =================================================================
             yield emitter.emit_classifying()
 
+            # Timeline: Start classification
+            thinking_timeline.add_step(
+                phase=ThinkingPhase.CLASSIFICATION.value,
+                action="Analyzing query...",
+            )
+
+            # Emit timeline event for UI
+            for timeline_event in thinking_timeline.get_pending_events():
+                yield timeline_event.to_sse()
+
             intent_classifier = _get_intent_classifier()
+
+            # Timeline: LLM call for classification
+            thinking_timeline.add_step(
+                phase=ThinkingPhase.CLASSIFICATION.value,
+                action="LLM Call: Intent Classification",
+                is_llm_call=True,
+            )
+            for timeline_event in thinking_timeline.get_pending_events():
+                yield timeline_event.to_sse()
+
             intent_result = await intent_classifier.classify(
                 query=query,
                 ui_context=data.ui_context.model_dump() if data.ui_context else None,
@@ -2217,6 +2248,17 @@ async def stream_chat_v4(
                 core_memory_context=core_memory_context,  # User profile context!
                 conversation_summary=conversation_summary,  # Older messages (compressed)
             )
+
+            # Timeline: Classification complete with results
+            symbols_display = ", ".join(intent_result.validated_symbols) if intent_result.validated_symbols else "none"
+            thinking_timeline.add_step(
+                phase=ThinkingPhase.SYMBOL_DETECTION.value,
+                action="Detected symbols",
+                details=symbols_display,
+                success=True,
+            )
+            for timeline_event in thinking_timeline.get_pending_events():
+                yield timeline_event.to_sse()
 
             # Emit classification result (using intent result)
             yield emitter.emit_classified(
@@ -2260,6 +2302,15 @@ async def stream_chat_v4(
             # Phase 3: Agent Execution with ALL Tools
             # =================================================================
             unified_agent = _get_unified_agent()
+
+            # Timeline: Agent starting with tools
+            thinking_timeline.add_step(
+                phase=ThinkingPhase.TOOL_SELECTION.value,
+                action="Agent starting with all tools",
+                details=f"{len(unified_agent.catalog.get_tool_names())} tools available",
+            )
+            for timeline_event in thinking_timeline.get_pending_events():
+                yield timeline_event.to_sse()
 
             if data.enable_thinking:
                 yield emitter.emit_reasoning(
@@ -2311,11 +2362,41 @@ async def stream_chat_v4(
                 elif event_type == "tool_calls":
                     tools = event.get("tools", [])
                     stats["total_tool_calls"] += len(tools)
+
+                    # Timeline: Add step for each tool call
+                    for tool in tools:
+                        tool_name = tool.get("name", "unknown")
+                        tool_args = tool.get("arguments", {})
+                        symbol = tool_args.get("symbol", "")
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.TOOL_EXECUTION.value,
+                            action=f"Tool: {tool_name}",
+                            is_tool_call=True,
+                            details=f"({symbol})" if symbol else None,
+                        )
+                    for timeline_event in thinking_timeline.get_pending_events():
+                        yield timeline_event.to_sse()
+
                     yield emitter.emit_tool_calls(tools)
 
                 elif event_type == "tool_results":
                     results = event.get("results", [])
                     stats["tool_results"].extend(results)
+
+                    # Timeline: Update tool results with success/failure
+                    for result in results:
+                        tool_name = result.get("tool", "unknown")
+                        success = result.get("success", False)
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.DATA_GATHERING.value,
+                            action=f"Result: {tool_name}",
+                            is_tool_call=True,
+                            details="success" if success else "failed",
+                            success=success,
+                        )
+                    for timeline_event in thinking_timeline.get_pending_events():
+                        yield timeline_event.to_sse()
+
                     yield emitter.emit_tool_results(results)
 
                 elif event_type == "content":
@@ -2346,6 +2427,18 @@ async def stream_chat_v4(
             # =================================================================
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
 
+            # Timeline: Synthesis step
+            thinking_timeline.add_step(
+                phase=ThinkingPhase.SYNTHESIS.value,
+                action="Response generation complete",
+                details=f"{stats['total_turns']} turns, {stats['total_tool_calls']} tools",
+                success=True,
+            )
+
+            # Emit final thinking summary (ChatGPT-style "Thought for Xs")
+            thinking_summary_event = thinking_timeline.get_summary_event()
+            yield thinking_summary_event.to_sse()
+
             # Final reasoning summary
             if data.enable_thinking:
                 yield emitter.emit_reasoning(
@@ -2363,6 +2456,8 @@ async def stream_chat_v4(
                         "complexity": stats["complexity"],
                         "symbols": intent_result.validated_symbols,
                         "duration_ms": round(elapsed_ms, 0),
+                        "thinking_duration_s": thinking_timeline.get_elapsed_seconds(),
+                        "thinking_steps": thinking_timeline.get_steps_count(),
                     },
                 )
 
