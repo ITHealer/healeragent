@@ -725,26 +725,57 @@ async def with_heartbeat(
     """
     Wrap an event generator with heartbeat support.
 
-    Emits heartbeat if no event within interval.
-    """
-    last_event_time = datetime.now()
+    Emits heartbeat if no event within interval to keep SSE connection alive.
 
-    async def heartbeat_task():
-        nonlocal last_event_time
-        while True:
-            await asyncio.sleep(heartbeat_interval)
-            elapsed = (datetime.now() - last_event_time).total_seconds()
+    Usage:
+        async def my_generator():
+            yield "event1"
+            await asyncio.sleep(20)  # Long operation
+            yield "event2"
+
+        # Heartbeat will be emitted during the 20s wait
+        async for event in with_heartbeat(my_generator(), emitter):
+            yield event
+    """
+    import time
+
+    last_event_time = time.time()
+    gen_exhausted = False
+    pending_event = None
+
+    # Create async iterator from generator
+    gen_iter = event_generator.__aiter__()
+
+    while not gen_exhausted:
+        try:
+            # Wait for next event with timeout
+            pending_event = await asyncio.wait_for(
+                gen_iter.__anext__(),
+                timeout=heartbeat_interval
+            )
+            last_event_time = time.time()
+            yield pending_event
+
+        except asyncio.TimeoutError:
+            # No event within interval - emit heartbeat
+            elapsed = time.time() - last_event_time
             if elapsed >= heartbeat_interval:
                 yield emitter.emit_heartbeat()
-                last_event_time = datetime.now()
+                last_event_time = time.time()
 
-    # Use merge pattern with timeout
-    try:
-        async for event in event_generator:
-            last_event_time = datetime.now()
-            yield event
-    except asyncio.CancelledError:
-        pass
+        except StopAsyncIteration:
+            # Generator exhausted
+            gen_exhausted = True
+
+        except asyncio.CancelledError:
+            # Stream cancelled
+            break
+
+        except Exception as e:
+            # Log error but continue
+            import logging
+            logging.getLogger(__name__).warning(f"[HEARTBEAT] Error: {e}")
+            break
 
 
 # ============================================================================

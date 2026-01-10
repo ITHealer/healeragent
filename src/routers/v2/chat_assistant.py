@@ -67,6 +67,7 @@ from src.services.streaming_event_service import (
     format_sse_event,
     format_done_marker,
     create_error_event,
+    with_heartbeat,  # Heartbeat for SSE keep-alive
 )
 from src.agents.streaming import (
     StreamingChatHandler,
@@ -910,10 +911,17 @@ async def stream_chat(
     async def cleanup_chat():
         _logger.info(f"[UNIFIED_CHAT] Client disconnected - cleaning up session {session_id}")
 
+    # Wrap with heartbeat then cancellation handling
+    generator_with_heartbeat = with_heartbeat(
+        event_generator=_generate(),
+        emitter=emitter,
+        heartbeat_interval=15.0,
+    )
+
     return StreamingResponse(
         with_cancellation(
             request=request,
-            generator=_generate(),
+            generator=generator_with_heartbeat,
             cleanup_fn=cleanup_chat,
             check_interval=0.5,
             emit_cancelled_event=True,
@@ -1917,10 +1925,17 @@ async def stream_chat_v3(
     async def cleanup_v3():
         _logger.info(f"[CHAT_V3] Client disconnected - cleaning up session {session_id}")
 
+    # Wrap with heartbeat then cancellation handling
+    generator_with_heartbeat = with_heartbeat(
+        event_generator=_generate_v3(),
+        emitter=emitter,
+        heartbeat_interval=15.0,
+    )
+
     return StreamingResponse(
         with_cancellation(
             request=request,
-            generator=_generate_v3(),
+            generator=generator_with_heartbeat,
             cleanup_fn=cleanup_v3,
             check_interval=0.5,
             emit_cancelled_event=True,
@@ -2590,10 +2605,18 @@ async def stream_chat_v4(
         _logger.info(f"[CHAT_V4] Client disconnected - cleaning up session {session_id}")
         # Any additional cleanup can be added here
 
+    # Wrap with heartbeat (15s interval) then cancellation handling
+    # Order: _generate_v4() -> with_heartbeat() -> with_cancellation()
+    generator_with_heartbeat = with_heartbeat(
+        event_generator=_generate_v4(),
+        emitter=emitter,
+        heartbeat_interval=15.0,  # Emit heartbeat every 15s if no activity
+    )
+
     return StreamingResponse(
         with_cancellation(
             request=request,
-            generator=_generate_v4(),
+            generator=generator_with_heartbeat,
             cleanup_fn=cleanup_on_disconnect,
             check_interval=0.5,  # Check every 500ms
             emit_cancelled_event=True,
