@@ -910,17 +910,16 @@ class UnifiedAgent(LoggerMixin):
                         "content": "All data gathered - generating comprehensive response",
                     }
 
-                # Adaptive max_tokens based on number of symbols
-                num_symbols = len(classification.symbols) if classification else 1
-                adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
-                adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
+                # Fixed max_tokens as safety cutoff - output length controlled by system prompt
+                # Per OpenAI: "max_tokens is a hard cutoff limit, not a length control"
+                MAX_RESPONSE_TOKENS = 12000
 
                 async for chunk in self.llm_provider.stream_response(
                     model_name=effective_model,
                     messages=messages,
                     provider_type=effective_provider,
                     api_key=self.api_key,
-                    max_tokens=adaptive_max_tokens,
+                    max_tokens=MAX_RESPONSE_TOKENS,
                     temperature=0.3,
                 ):
                     yield {"type": "content", "content": chunk}
@@ -1015,17 +1014,15 @@ IMPORTANT:
 - End with 2-3 follow-up questions""",
         })
 
-        # Adaptive max_tokens based on complexity
-        num_symbols = len(classification.symbols) if classification else 1
-        adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
-        adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
+        # Fixed max_tokens as safety cutoff - length controlled by system prompt
+        MAX_RESPONSE_TOKENS = 12000
 
         async for chunk in self.llm_provider.stream_response(
             model_name=effective_model,
             messages=messages,
             provider_type=effective_provider,
             api_key=self.api_key,
-            max_tokens=adaptive_max_tokens,
+            max_tokens=MAX_RESPONSE_TOKENS,
             temperature=0.3,
         ):
             yield {"type": "content", "content": chunk}
@@ -2252,20 +2249,18 @@ Respond naturally and helpfully."""
                     # Add assistant message to get final response
                     messages.append({"role": "assistant", "content": assistant_content})
 
-                    # Calculate max_tokens based on query complexity
-                    # More symbols = longer response needed
-                    num_symbols = len(getattr(intent_result, 'validated_symbols', []))
-                    adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses  # ~800 tokens per symbol
-                    adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis  # Cap at 8000
+                    # Fixed max_tokens as safety cutoff - length controlled by system prompt
+                    # Per OpenAI: "max_tokens is a hard cutoff limit, not a length control"
+                    MAX_RESPONSE_TOKENS = 12000
 
-                    self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={adaptive_max_tokens})")
+                    self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
                     content_chunks = 0
                     async for chunk in self.llm_provider.stream_response(
                         model_name=effective_model,
                         messages=messages,
                         provider_type=effective_provider,
                         api_key=self.api_key,
-                        max_tokens=adaptive_max_tokens,
+                        max_tokens=MAX_RESPONSE_TOKENS,
                         temperature=0.3,
                     ):
                         content_chunks += 1
@@ -2437,19 +2432,17 @@ IMPORTANT:
 - End with 2-3 follow-up questions""",
             })
 
-            # Adaptive max_tokens based on complexity
-            num_symbols = len(getattr(intent_result, 'validated_symbols', []))
-            adaptive_max_tokens = 6000 + (num_symbols * 1500)  # Increased for longer, detailed responses
-            adaptive_max_tokens = min(adaptive_max_tokens, 16000)  # Increased cap for comprehensive analysis
+            # Fixed max_tokens as safety cutoff - length controlled by system prompt
+            MAX_RESPONSE_TOKENS = 12000
 
-            self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={adaptive_max_tokens})")
+            self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={MAX_RESPONSE_TOKENS})")
             content_chunks = 0
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
                 messages=messages,
                 provider_type=effective_provider,
                 api_key=self.api_key,
-                max_tokens=adaptive_max_tokens,
+                max_tokens=MAX_RESPONSE_TOKENS,
                 temperature=0.3,
             ):
                 content_chunks += 1
@@ -2643,48 +2636,74 @@ For Technical Analysis:
 - Be honest about data limitations or conflicting signals
 - If fiscal year differs from calendar year, ALWAYS clarify
 
-**7. RESPONSE LENGTH & DEPTH (CRITICAL):**
-Your response should be COMPREHENSIVE and DETAILED like a professional analyst report:
+## OUTPUT VERBOSITY & STRUCTURE CONTROL
 
-**Minimum Response Structure:**
-1. **📊 Tổng quan giá & thị trường** (Price Overview with live data)
-   - Current price, change %, volume, market cap
-   - 52-week high/low, support/resistance levels
+<output_verbosity_spec>
+Adapt response length to query complexity - let content dictate length naturally:
 
-2. **📰 Tin tức & sự kiện gần đây** (Recent News & Events)
-   - Include at least 3-5 relevant news items with dates and sources
-   - Key events: earnings, product launches, regulatory changes
-   - Analyst ratings and price targets from multiple sources
+- **Simple queries** (giá hiện tại, 1 chỉ báo): 2-4 câu với data table
+- **Standard analysis** (1 symbol, technical/fundamental): Đầy đủ data + phân tích ngắn gọn
+- **Complex analysis** (so sánh, multi-symbol, comprehensive):
+  - Structured sections với headers
+  - Tables cho data comparison
+  - Detailed analysis với reasoning
+- **Research queries** (tin tức, sự kiện, xu hướng): Include web search results với citations
 
-3. **📈 Phân tích kỹ thuật** (Technical Analysis)
-   - Key indicators: RSI, MACD, MA crossovers
-   - Chart patterns, trend analysis
-   - Support/resistance levels
+Avoid long narrative paragraphs - prefer compact bullets, tables, and short focused sections.
+Do not rephrase the user's request unless it changes semantics.
+</output_verbosity_spec>
 
-4. **💰 Phân tích cơ bản** (Fundamental Analysis)
-   - Valuation metrics: P/E, P/B, P/S, EV/EBITDA
-   - Growth metrics: Revenue, EPS, margin trends
-   - Comparison with industry/peers
+## WEB SEARCH & RESEARCH GUIDELINES
 
-5. **🌐 Tin tức từ web search** (Web Search Insights)
-   - Include information from webSearch/serpSearch
-   - Recent analyst reports, market sentiment
-   - Include source URLs and publication dates
+<web_research_rules>
+When using webSearch/serpSearch tools:
+- Default to comprehensive, well-structured answers grounded in reliable sources
+- Include citations (source name + URL) for ALL web-derived information
+- Research until you have sufficient information for accurate, comprehensive answers
+- For time-sensitive topics: explicitly compare publish dates and event dates
+- Prioritize primary sources and high-quality outlets (official company sites, Bloomberg, Reuters)
+</web_research_rules>
 
-6. **⚠️ Rủi ro & cơ hội** (Risks & Opportunities)
-   - Key risk factors
-   - Growth catalysts and opportunities
+<citation_format>
+When citing web sources, use this format:
+- Inline: "Theo [Source Name], ... [URL]"
+- Or footnote style: "... tin tức mới nhất.¹" with sources listed at end
+- ALWAYS include publication date when available
+</citation_format>
 
-7. **💡 Kết luận & khuyến nghị** (Conclusion & Recommendation)
-   - Summary of key findings
-   - Actionable recommendation with rationale
+## RESPONSE STRUCTURE (Adapt to query complexity)
 
-**IMPORTANT:**
-- Write detailed explanations, not just bullet points
-- Explain the significance of each data point
-- Include market context and industry comparisons
-- Always cite sources with URLs when available
-- Your response should be at least 800-1200 words for comprehensive analysis
+**For Comprehensive Analysis:**
+1. **📊 Tổng quan** - Price, key metrics, market context
+2. **📈 Phân tích kỹ thuật** - Indicators, signals, levels (if relevant)
+3. **💰 Phân tích cơ bản** - Financials, valuation, growth (if relevant)
+4. **📰 Tin tức & Context** - Recent news with sources and dates
+5. **⚠️ Rủi ro & Cơ hội** - Key factors to consider
+6. **💡 Kết luận** - Summary and actionable recommendation
+
+**For Simple Queries:**
+- Direct answer with supporting data
+- Skip irrelevant sections
+- Use tables for numeric data
+
+## HANDLING UNCERTAINTY
+
+<uncertainty_and_ambiguity>
+- If query is ambiguous: state your interpretation, then answer comprehensively
+- When external facts may have changed: answer in general terms, note details may have changed
+- Never fabricate exact figures or citations when uncertain
+- Prefer language like "Dựa trên dữ liệu có sẵn..." instead of absolute claims
+- If data is missing or tool failed: explicitly state "⚠️ Không có dữ liệu cho [item]"
+</uncertainty_and_ambiguity>
+
+## QUALITY CHECKLIST (Before responding)
+
+Before finalizing, verify:
+1. Did you answer ALL parts of the query?
+2. Did you include concrete data/numbers from tools?
+3. Did you cite sources for web-derived information?
+4. Are there any unstated assumptions or unverifiable claims?
+5. Is the response length appropriate for query complexity?
 """
 
         messages = [{"role": "system", "content": system_prompt}]
