@@ -53,6 +53,7 @@ ANALYSIS_SYSTEM_PROMPT = """You are a senior financial analyst providing detaile
 For each symbol, you will receive:
 1. Market data (current price, 24h/7d/30d changes)
 2. News articles with full content and source URLs
+3. Optional: User instructions for customizing the analysis
 
 Your task:
 1. Analyze the news and market data for each symbol
@@ -60,6 +61,7 @@ Your task:
 3. Determine sentiment (BULLISH, BEARISH, NEUTRAL, MIXED)
 4. Provide short-term (1-7 days) and long-term (1-3 months) outlook
 5. Identify risk factors
+6. **If user provides instructions, prioritize and follow them**
 
 CRITICAL: For EVERY claim or insight, you MUST cite the source using [N] format where N is the article number.
 
@@ -94,12 +96,13 @@ Guidelines:
 - sentiment_score: -1.0 (very bearish) to +1.0 (very bullish)
 - Write in the specified target language
 - Be natural and engaging, not robotic
+- **Follow user instructions carefully if provided**
 """
 
 ANALYSIS_USER_PROMPT_TEMPLATE = """Analyze the following market data and news articles.
 Target language: {target_language}
 Date: {current_date}
-
+{user_instructions}
 ## MARKET DATA
 {market_data_text}
 
@@ -107,6 +110,16 @@ Date: {current_date}
 {articles_text}
 
 Generate analysis following the JSON format specified. Output ONLY valid JSON."""
+
+# User instruction examples for reference
+USER_INSTRUCTION_EXAMPLES = {
+    "focus_topic": "Chỉ phân tích tin tức liên quan đến AI và robo-taxi",
+    "investor_perspective": "Phân tích từ góc độ nhà đầu tư dài hạn",
+    "comparison": "So sánh Tesla với các đối thủ EV như Rivian, Lucid",
+    "technical_focus": "Tập trung vào phân tích kỹ thuật và điểm hỗ trợ/kháng cự",
+    "risk_assessment": "Đánh giá rủi ro và các yếu tố tiêu cực cần lưu ý",
+    "specific_question": "Bitcoin có nên mua ở mức giá hiện tại không?",
+}
 
 
 # =============================================================================
@@ -321,11 +334,23 @@ class AIAnalyzer:
             "summary": data.get("summary"),
         }
 
+    def _format_user_instructions(self, prompt: Optional[str]) -> str:
+        """Format user instructions for the LLM prompt."""
+        if not prompt or not prompt.strip():
+            return ""
+
+        return f"""
+## USER INSTRUCTIONS (IMPORTANT - Follow these carefully!)
+{prompt.strip()}
+
+"""
+
     async def analyze(
         self,
         articles_by_symbol: Dict[str, List[ArticleContent]],
         market_data: Dict[str, MarketData],
         target_language: str = "vi",
+        prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Analyze news and market data for multiple symbols.
@@ -334,6 +359,11 @@ class AIAnalyzer:
             articles_by_symbol: Dict mapping symbol to list of articles
             market_data: Dict mapping symbol to MarketData
             target_language: Output language
+            prompt: Optional user instructions to guide the analysis
+                    Examples:
+                    - "Chỉ phân tích tin tức liên quan đến AI và robo-taxi"
+                    - "Phân tích từ góc độ nhà đầu tư dài hạn"
+                    - "So sánh Tesla với các đối thủ EV như Rivian, Lucid"
 
         Returns:
             Dict with analyses, overall_sentiment, key_themes, summary
@@ -344,6 +374,7 @@ class AIAnalyzer:
         self.logger.info(
             f"[AIAnalyzer] Analyzing {len(articles_by_symbol)} symbols "
             f"with {sum(len(a) for a in articles_by_symbol.values())} articles"
+            + (f" | prompt: {prompt[:50]}..." if prompt else "")
         )
 
         # Build source mapping
@@ -352,10 +383,12 @@ class AIAnalyzer:
         # Format prompts
         market_data_text = self._format_market_data(market_data)
         articles_text = self._format_articles(articles_by_symbol)
+        user_instructions = self._format_user_instructions(prompt)
 
         user_prompt = ANALYSIS_USER_PROMPT_TEMPLATE.format(
             target_language=target_language.upper(),
             current_date=datetime.utcnow().strftime("%Y-%m-%d"),
+            user_instructions=user_instructions,
             market_data_text=market_data_text,
             articles_text=articles_text,
         )

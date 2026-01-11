@@ -20,11 +20,13 @@ import uuid
 
 class TaskType(str, Enum):
     """Types of analysis tasks."""
+    NEWS_ANALYSIS = "news_analysis"          # Deep news analysis with insights
+    MARKET_SUMMARY = "market_summary"        # Quick market overview
     STOCK_PERFORMANCE = "stock_performance"  # Stock price & news analysis
     CRYPTO_ANALYSIS = "crypto_analysis"      # Crypto market analysis
     TECH_NEWS = "tech_news"                  # Tech industry news digest
     MARKET_OVERVIEW = "market_overview"      # General market overview
-    CUSTOM = "custom"                        # Custom analysis prompt
+    CUSTOM = "custom"                        # Fully custom analysis
 
 
 class TaskStatus(str, Enum):
@@ -66,12 +68,12 @@ class TaskRequest(BaseModel):
     Example:
     {
         "request_id": 1792,
-        "symbols": ["TSLA", "BTC", "NVDA", "PLTR", "ETH"],
-        "task_type": "stock_performance",
+        "symbols": ["TSLA", "BTC", "NVDA"],
+        "task_type": "news_analysis",
         "target_language": "vi",
+        "prompt": "Phân tích từ góc độ nhà đầu tư dài hạn, tập trung vào AI và robo-taxi",
         "callback_url": "https://api.example.com/webhooks/task-complete",
-        "priority": 10,
-        "scheduled_at": "2026-01-11T13:49:00Z"
+        "priority": 10
     }
     """
     # BE reference
@@ -97,9 +99,20 @@ class TaskRequest(BaseModel):
         default="vi",
         description="Output language: en, vi, zh, ja, ko"
     )
-    custom_prompt: Optional[str] = Field(
+
+    # User instructions/prompt (like Grok Tasks "Hướng dẫn")
+    prompt: Optional[str] = Field(
         default=None,
-        description="Custom analysis prompt (for task_type=custom)"
+        max_length=2000,
+        description="""Custom instructions to guide the AI analysis.
+        Examples:
+        - "Chỉ phân tích tin tức liên quan đến AI và robo-taxi"
+        - "Phân tích từ góc độ nhà đầu tư dài hạn"
+        - "So sánh Tesla với các đối thủ EV như Rivian, Lucid"
+        - "Tập trung vào phân tích kỹ thuật và điểm hỗ trợ/kháng cự"
+        - "Đánh giá rủi ro và các yếu tố tiêu cực cần lưu ý"
+        - "Bitcoin có nên mua ở mức giá hiện tại không?"
+        """
     )
 
     # Callback
@@ -275,6 +288,7 @@ class TaskResult(BaseModel):
     title: str = Field(..., description="Report title in target language")
     generated_at: datetime = Field(default_factory=datetime.utcnow)
     target_language: str
+    prompt: Optional[str] = Field(None, description="User instructions used for this analysis")
 
     # Symbol analyses
     analyses: List[SymbolAnalysis] = Field(

@@ -362,6 +362,7 @@ class TaskWorker:
                     articles_by_symbol=articles_by_symbol,
                     market_data=market_data,
                     target_language=request.target_language,
+                    prompt=request.prompt,
                 ),
                 timeout=self.TIMEOUT_ANALYSIS,
             )
@@ -604,6 +605,7 @@ class TaskWorker:
         articles_by_symbol: Dict[str, List[ArticleContent]],
         market_data: Dict[str, Any],
         target_language: str,
+        prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run AI analysis on extracted articles.
@@ -612,6 +614,7 @@ class TaskWorker:
             articles_by_symbol: Dict mapping symbol to articles
             market_data: Market data for symbols
             target_language: Target language for analysis
+            prompt: Optional user instructions to guide the analysis
 
         Returns:
             Analysis result with per-symbol analyses
@@ -625,6 +628,7 @@ class TaskWorker:
                 articles_by_symbol=articles_by_symbol,
                 market_data=market_data,
                 target_language=target_language,
+                prompt=prompt,
             )
             return result
 

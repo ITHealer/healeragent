@@ -72,6 +72,25 @@ class TaskSubmitRequest(BaseModel):
         default="vi",
         description="Target language for output (vi, en, etc.)",
     )
+
+    # User instructions (like Grok Tasks "Hướng dẫn")
+    prompt: Optional[str] = Field(
+        default=None,
+        max_length=2000,
+        description="""Custom instructions to guide the AI analysis (Hướng dẫn).
+        Examples:
+        - "Chỉ phân tích tin tức liên quan đến AI và robo-taxi"
+        - "Phân tích từ góc độ nhà đầu tư dài hạn"
+        - "So sánh Tesla với các đối thủ EV như Rivian, Lucid"
+        - "Tập trung vào phân tích kỹ thuật và điểm hỗ trợ/kháng cự"
+        - "Đánh giá rủi ro và các yếu tố tiêu cực cần lưu ý"
+        """,
+        examples=[
+            "Phân tích từ góc độ nhà đầu tư dài hạn, tập trung vào AI và robo-taxi",
+            "So sánh hiệu suất với các đối thủ cạnh tranh",
+        ],
+    )
+
     callback_url: Optional[str] = Field(
         default=None,
         description="Webhook URL to receive results when complete",
@@ -100,6 +119,7 @@ class TaskSubmitRequest(BaseModel):
                     "symbols": ["TSLA", "BTC", "NVDA"],
                     "task_type": "news_analysis",
                     "target_language": "vi",
+                    "prompt": "Phân tích từ góc độ nhà đầu tư dài hạn, tập trung vào AI",
                     "callback_url": "https://api.example.com/api/v1/user-task/submit-generation-result",
                     "priority": 50,
                 }
@@ -179,17 +199,19 @@ async def submit_task(request: TaskSubmitRequest) -> TaskSubmitResponseAPI:
             symbols=request.symbols,
             task_type=task_type,
             target_language=request.target_language,
+            prompt=request.prompt,  # User instructions (Hướng dẫn)
             callback_url=request.callback_url,
             priority=request.priority,
-            options=request.options or {},
         )
 
         # Submit to queue
         result = await queue.submit_task(internal_request)
 
+        # Log with prompt info if provided
+        prompt_info = f" | prompt: {request.prompt[:50]}..." if request.prompt else ""
         logger.info(
             f"[TaskAPI] Task submitted: {result.job_id} | "
-            f"request_id={request.request_id} | symbols={request.symbols}"
+            f"request_id={request.request_id} | symbols={request.symbols}{prompt_info}"
         )
 
         return TaskSubmitResponseAPI(
