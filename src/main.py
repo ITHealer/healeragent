@@ -281,6 +281,24 @@ async def app_lifespan(app: FastAPI):
     else:
         logger.info("Task worker disabled (ENABLE_TASK_WORKER=false)")
 
+    # -------------------------------------------------------------------------
+    # 7. Start URL Reader Worker (Background URL Processing)
+    # -------------------------------------------------------------------------
+    url_reader_worker = None
+    if env_bool("ENABLE_URL_READER_WORKER", True):
+        logger.info("Starting URL reader worker for content processing...")
+        try:
+            from src.news_aggregator.services.url_reader_worker import start_url_reader_worker
+            num_workers = int(os.getenv("URL_READER_WORKER_COUNT", "2"))
+            url_reader_worker = await start_url_reader_worker(num_workers=num_workers)
+            logger.info(f"[URL READER WORKER] Started with {num_workers} workers")
+        except Exception as e:
+            logger.warning(f"[URL READER WORKER] Failed to start: {e}")
+            logger.warning("URL reader processing will not be available")
+            url_reader_worker = None
+    else:
+        logger.info("URL reader worker disabled (ENABLE_URL_READER_WORKER=false)")
+
     yield # Application START accepting requests HERE
     
 
@@ -319,7 +337,17 @@ async def app_lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Task worker shutdown error: {e}")
 
-    # 4. Close Redis LLM client
+    # 4. Stop URL Reader Worker
+    if url_reader_worker is not None:
+        logger.info("Stopping URL reader worker...")
+        try:
+            from src.news_aggregator.services.url_reader_worker import stop_url_reader_worker
+            await stop_url_reader_worker()
+            logger.info("URL reader worker stopped")
+        except Exception as e:
+            logger.warning(f"URL reader worker shutdown error: {e}")
+
+    # 5. Close Redis LLM client
     logger.info("Closing Redis LLM client...")
     try:
         from src.helpers.redis_cache import close_redis_llm_client
@@ -327,7 +355,7 @@ async def app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Redis LLM client close error: {e}")
 
-    # 5. Shutdown logging system
+    # 6. Shutdown logging system
     logger.info('event=app-shutdown message="All connections are closed."')
     shutdown_logging()
 

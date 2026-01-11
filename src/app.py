@@ -74,6 +74,9 @@ class IncludeAPIRouter(object):
         # Task system routers (API v1)
         from src.routers.tasks import router as router_tasks
 
+        # URL Reader Jobs router
+        from src.routers.url_reader_jobs import router as router_url_reader_jobs
+
         # =============================================================================
         # CONFIGURE MAIN ROUTER AND INCLUDE ALL SUB-ROUTERS  
         # =============================================================================
@@ -129,6 +132,7 @@ class IncludeAPIRouter(object):
         router.include_router(router_chat_assistant, tags=["TOL Chat - Assistant - V2"])
         router.include_router(router_cookies, tags=["TOL Cookies - Cookie Management"])
         router.include_router(router_content_processor, tags=['TOL - Content Summarizer'])
+        router.include_router(router_url_reader_jobs, tags=['TOL URL Reader - Background Jobs'])
         router.include_router(router_news_agent, tags=['TOL News Aggregator - Tavily News Agent'])
         router.include_router(router_news_aggregator, tags=['TOL News Aggregator - News Aggregator'])
         router.include_router(router_text_translator, tags=['TOL Translator - Text Translation'])
