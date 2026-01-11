@@ -195,6 +195,16 @@ class UnifiedAgent(LoggerMixin):
     # Default tool timeout
     DEFAULT_TOOL_TIMEOUT = 5.0
 
+    # Slow tools with longer timeouts (seconds)
+    SLOW_TOOL_TIMEOUTS = {
+        "webSearch": 90.0,      # Web search can take 60+ seconds
+        "serpSearch": 30.0,     # SerpAPI search
+        "getIncomeStatement": 15.0,  # Financial data may be slow
+        "getBalanceSheet": 15.0,
+        "getCashFlow": 15.0,
+        "getFinancialRatios": 15.0,
+    }
+
     def __init__(
         self,
         model_name: Optional[str] = None,
@@ -1258,13 +1268,18 @@ IMPORTANT:
                     symbols=[symbol] if symbol else symbols,
                 )
 
+                # Use per-tool timeout for slow tools
+                tool_timeout = self.SLOW_TOOL_TIMEOUTS.get(
+                    tool_name, self.DEFAULT_TOOL_TIMEOUT
+                )
+
                 self.logger.debug(
-                    f"[{flow_id}] Executing {tool_name} with args: {args}"
+                    f"[{flow_id}] Executing {tool_name} with args: {args} (timeout={tool_timeout}s)"
                 )
 
                 result = await asyncio.wait_for(
                     self.registry.execute_tool(tool_name=tool_name, params=args),
-                    timeout=self.DEFAULT_TOOL_TIMEOUT,
+                    timeout=tool_timeout,
                 )
 
                 if isinstance(result, ToolOutput):
@@ -1283,7 +1298,7 @@ IMPORTANT:
                 return {
                     "tool_name": tool_name,
                     "status": "timeout",
-                    "error": f"Tool timed out after {self.DEFAULT_TOOL_TIMEOUT}s",
+                    "error": f"Tool timed out after {tool_timeout}s",
                     "symbol": symbol,
                 }
             except Exception as e:
@@ -1433,9 +1448,14 @@ IMPORTANT:
                 # ============================================================
                 # REGULAR TOOL EXECUTION
                 # ============================================================
+                # Use per-tool timeout for slow tools
+                tool_timeout = self.SLOW_TOOL_TIMEOUTS.get(
+                    tc.name, self.DEFAULT_TOOL_TIMEOUT
+                )
+
                 result = await asyncio.wait_for(
                     self.registry.execute_tool(tool_name=tc.name, params=tc.arguments),
-                    timeout=self.DEFAULT_TOOL_TIMEOUT,
+                    timeout=tool_timeout,
                 )
 
                 if isinstance(result, ToolOutput):
@@ -1453,7 +1473,7 @@ IMPORTANT:
                 return {
                     "tool_name": tc.name,
                     "status": "timeout",
-                    "error": f"Timeout after {self.DEFAULT_TOOL_TIMEOUT}s",
+                    "error": f"Timeout after {tool_timeout}s",
                 }
             except Exception as e:
                 return {
