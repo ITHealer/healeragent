@@ -67,9 +67,12 @@ class IncludeAPIRouter(object):
         from src.routers.v2.equity_forecast import router as router_equity_forecast
         from src.routers.smc_analysis import router as router_smc_analysis
         
-        # Data provider routers 
+        # Data provider routers
         from src.routers.v2.data_providers.fmp.company_search import router as router_company_search
         from src.routers.v2.data_providers.fmp.symbol_directory import router as router_symbol_directory
+
+        # Task system routers (API v1)
+        from src.routers.tasks import router as router_tasks
 
         # =============================================================================
         # CONFIGURE MAIN ROUTER AND INCLUDE ALL SUB-ROUTERS  
@@ -137,7 +140,18 @@ class IncludeAPIRouter(object):
         router.include_router(router_company_search, tags=["TOL Data Provider - FMP"])
         router.include_router(router_symbol_directory, tags=["TOL Data Provider - FMP"])
 
-        return router
+        # =============================================================================
+        # API V1 - TASK SYSTEM
+        # =============================================================================
+        router_v1 = APIRouter(prefix='/api/v1')
+        router_v1.include_router(router_tasks, tags=["Task System - News Analysis"])
+
+        # Return combined routers
+        main_router = APIRouter()
+        main_router.include_router(router)  # v2 endpoints
+        main_router.include_router(router_v1)  # v1 endpoints
+
+        return main_router
         
 
 # Instance creation
