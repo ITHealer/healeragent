@@ -217,13 +217,13 @@ class TaskWorker:
         if self._fmp_provider:
             await self._fmp_provider.close()
 
-        if self._content_extractor:
+        if self._content_extractor and hasattr(self._content_extractor, 'close'):
             await self._content_extractor.close()
 
-        if self._market_data:
+        if self._market_data and hasattr(self._market_data, 'close'):
             await self._market_data.close()
 
-        if self._callback_service:
+        if self._callback_service and hasattr(self._callback_service, 'close'):
             await self._callback_service.close()
 
         await close_task_queue()
