@@ -40,6 +40,7 @@ from src.news_aggregator.schemas.task import (
     SymbolType,
     TaskResult,
 )
+from src.utils.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -158,24 +159,52 @@ class AIAnalyzer:
 
     Produces structured analysis reports with citations
     similar to Grok Tasks output format.
+
+    Model and provider configuration is loaded from environment variables:
+    - AGENT_MODEL: Model name (default: gpt-4o-mini)
+    - AGENT_PROVIDER: Provider type (default: openai)
+    - OPENAI_API_KEY / GEMINI_API_KEY / OPENROUTER_API_KEY: API keys
     """
 
     def __init__(
         self,
-        model_name: str = "gpt-4.1-mini",
-        provider_type: str = "openai",
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
     ):
         """
         Initialize AI analyzer.
 
         Args:
-            model_name: LLM model to use
-            provider_type: LLM provider (openai, ollama, etc.)
+            model_name: LLM model to use. Falls back to AGENT_MODEL env var.
+            provider_type: LLM provider (openai, ollama, gemini, openrouter).
+                          Falls back to AGENT_PROVIDER env var.
         """
-        self.model_name = model_name
-        self.provider_type = provider_type
+        # Load from settings if not provided
+        self.model_name = model_name or settings.AGENT_MODEL or "gpt-4o-mini"
+        self.provider_type = provider_type or settings.AGENT_PROVIDER or "openai"
         self.logger = logger
         self._llm_provider = None
+
+        self.logger.info(
+            f"[AIAnalyzer] Initialized with model={self.model_name}, "
+            f"provider={self.provider_type}"
+        )
+
+    def _get_api_key(self) -> Optional[str]:
+        """Get API key based on provider type."""
+        provider = self.provider_type.lower()
+
+        if provider == "openai":
+            return settings.OPENAI_API_KEY or None
+        elif provider == "gemini" or provider == "google":
+            return settings.GEMINI_API_KEY or None
+        elif provider == "openrouter":
+            return settings.OPENROUTER_API_KEY or None
+        elif provider == "ollama":
+            return None  # Ollama doesn't need API key
+        else:
+            # Try to find matching API key
+            return getattr(settings, f"{provider.upper()}_API_KEY", None)
 
     def _get_llm_provider(self):
         """Lazy load LLM provider."""
@@ -403,10 +432,14 @@ class AIAnalyzer:
                 {"role": "user", "content": user_prompt},
             ]
 
+            # Get API key for the configured provider
+            api_key = self._get_api_key()
+
             response_data = await llm_provider.generate_response(
                 model_name=self.model_name,
                 messages=messages,
                 provider_type=self.provider_type,
+                api_key=api_key,
             )
 
             # Extract text content from response
@@ -460,10 +493,19 @@ _ai_analyzer: Optional[AIAnalyzer] = None
 
 
 def get_ai_analyzer(
-    model_name: str = "gpt-4.1-mini",
-    provider_type: str = "openai",
+    model_name: Optional[str] = None,
+    provider_type: Optional[str] = None,
 ) -> AIAnalyzer:
-    """Get AI analyzer instance."""
+    """
+    Get AI analyzer singleton instance.
+
+    Args:
+        model_name: Optional model name override. Falls back to AGENT_MODEL env var.
+        provider_type: Optional provider override. Falls back to AGENT_PROVIDER env var.
+
+    Returns:
+        AIAnalyzer instance configured from settings or overrides.
+    """
     global _ai_analyzer
     if _ai_analyzer is None:
         _ai_analyzer = AIAnalyzer(model_name=model_name, provider_type=provider_type)

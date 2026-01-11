@@ -9,10 +9,9 @@ Provides:
 - Historical prices for change calculations (24h, 7d, 30d)
 - Support for stocks, crypto, ETFs, forex
 
-Endpoints used:
-- /stable/quote?symbol=TSLA,NVDA,PLTR
-- /stable/historical-price-full/{symbol}?timeseries=30
-- /stable/crypto/quote?symbol=BTCUSD,ETHUSD
+FMP API Endpoints used (v3):
+- GET /api/v3/quote/TSLA,NVDA?apikey=... (stock/crypto quotes)
+- GET /api/v3/historical-price-full/TSLA?timeseries=30&apikey=... (historical)
 
 Usage:
     service = MarketDataService()
@@ -156,6 +155,8 @@ class MarketDataService:
         """
         Get quotes for stock symbols.
 
+        FMP API v3 quote endpoint: /api/v3/quote/TSLA,NVDA?apikey=...
+
         Args:
             symbols: List of stock symbols
 
@@ -168,7 +169,8 @@ class MarketDataService:
         symbols_str = ",".join(symbols)
         self.logger.debug(f"[MarketData] Fetching stock quotes: {symbols_str}")
 
-        data = await self._fetch_endpoint("quote", {"symbol": symbols_str})
+        # FMP v3 quote endpoint: symbols in path, not query param
+        data = await self._fetch_endpoint(f"quote/{symbols_str}", use_v3=True)
 
         if not data or not isinstance(data, list):
             return {}
@@ -185,6 +187,8 @@ class MarketDataService:
         """
         Get quotes for crypto symbols.
 
+        FMP API v3 quote endpoint: /api/v3/quote/BTCUSD,ETHUSD?apikey=...
+
         Args:
             symbols: List of crypto symbols (e.g., BTC, ETH, BTCUSD)
 
@@ -194,13 +198,14 @@ class MarketDataService:
         if not symbols:
             return {}
 
-        # Normalize crypto symbols
+        # Normalize crypto symbols (BTC -> BTCUSD)
         normalized = [self._normalize_crypto_symbol(s) for s in symbols]
         symbols_str = ",".join(normalized)
 
         self.logger.debug(f"[MarketData] Fetching crypto quotes: {symbols_str}")
 
-        data = await self._fetch_endpoint("crypto/quote", {"symbol": symbols_str})
+        # FMP v3 quote endpoint works for crypto too (same as stocks)
+        data = await self._fetch_endpoint(f"quote/{symbols_str}", use_v3=True)
 
         if not data or not isinstance(data, list):
             return {}
