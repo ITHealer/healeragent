@@ -45,6 +45,7 @@ class IncludeAPIRouter(object):
         # Trading service routers
         from src.routers.trading_agents import router as router_trading_agents
         from src.routers.hedge_fund_multi_agent import router as router_multi_agent
+        from src.routers.character_agent_chat import router as router_character_agent_chat
         from src.routers.content_processor import router as router_content_processor
         from src.routers.news_agent import router as router_news_agent
         from src.routers.news_aggregator import router as router_news_aggregator
@@ -118,6 +119,7 @@ class IncludeAPIRouter(object):
         # Trading service routers
         router.include_router(router_trading_agents, tags=['Tool - Trading Agent'])
         router.include_router(router_multi_agent, tags=['Chat - AI Character Multi-Agent'])
+        router.include_router(router_character_agent_chat, tags=['Chat - Character Agent'])
         
         # Data provider routers
         router.include_router(get_data_provider_fmp, tags=["Data Provider - FMP"])

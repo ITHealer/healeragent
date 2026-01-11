@@ -2198,6 +2198,7 @@ Respond naturally and helpfully."""
         working_memory_symbols: Optional[List[str]] = None,
         enable_think_tool: bool = False,
         enable_web_search: bool = False,
+        system_prompt_override: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Run agent with ALL tools available (new architecture).
@@ -2222,6 +2223,9 @@ Respond naturally and helpfully."""
                 for explicit reasoning before and after tool calls.
             enable_web_search: If True, FORCE inject webSearch/serpSearch tools
                 and add instruction to search for latest news/information.
+            system_prompt_override: If provided, replace the default skill-based
+                system prompt with this custom prompt. Used for character agents
+                to inject investment personas while keeping tool guidelines.
 
         Yields:
             Stream events: reasoning, tool_calls, tool_results, content, done
@@ -2369,6 +2373,7 @@ Respond naturally and helpfully."""
                 merged_symbols=merged_symbols,  # Pass merged symbols for context continuity
                 enable_think_tool=enable_think_tool,
                 enable_web_search=enable_web_search,
+                system_prompt_override=system_prompt_override,  # Character persona override
             )
 
             total_tool_calls = 0
@@ -2711,6 +2716,7 @@ IMPORTANT:
         merged_symbols: Optional[List[str]] = None,
         enable_think_tool: bool = False,
         enable_web_search: bool = False,
+        system_prompt_override: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
@@ -2722,6 +2728,9 @@ IMPORTANT:
                             If provided, these override intent_result.validated_symbols.
             enable_think_tool: If True, add STRONG instruction to ALWAYS use think tool.
             enable_web_search: If True, add STRONG instruction to ALWAYS search web.
+            system_prompt_override: If provided, use this as the base system prompt
+                (character persona) instead of skill-based prompt. Tool guidelines
+                will still be appended for proper tool usage.
         """
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -2734,9 +2743,14 @@ IMPORTANT:
         validated_symbols = merged_symbols if merged_symbols is not None else getattr(intent_result, 'validated_symbols', [])
         intent_summary = getattr(intent_result, 'intent_summary', '')
 
-        # Select skill for domain-specific prompt
-        skill = self.skill_registry.select_skill(market_type)
-        skill_prompt = skill.get_full_prompt()
+        # Select base prompt: use override for character agents, otherwise skill-based
+        if system_prompt_override:
+            # Character agent mode: use the character persona as base prompt
+            base_prompt = system_prompt_override
+        else:
+            # Standard mode: use skill-based prompt
+            skill = self.skill_registry.select_skill(market_type)
+            base_prompt = skill.get_full_prompt()
 
         # Build context hints - be EXPLICIT about which symbols to analyze
         symbols_hint = ""
@@ -2755,7 +2769,7 @@ IMPORTANT:
         # Build tool list for reference
         tool_names = [t.get("function", {}).get("name", "") for t in tools if t.get("function")]
 
-        system_prompt = f"""{skill_prompt}
+        system_prompt = f"""{base_prompt}
 
 ---
 ## RUNTIME CONTEXT
@@ -3048,6 +3062,81 @@ Web search is MANDATORY for this conversation. You MUST:
             messages.append({"role": "user", "content": query})
 
         return messages
+
+    async def run_with_all_tools(
+        self,
+        query: str,
+        intent_result: Any,
+        session_id: Optional[str] = None,
+        user_id: Optional[int] = None,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        system_language: str = "en",
+        core_memory: Optional[str] = None,
+        conversation_summary: Optional[str] = None,
+        model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
+        max_turns: int = 6,
+        working_memory_symbols: Optional[List[str]] = None,
+        system_prompt_override: Optional[str] = None,
+    ) -> "AgentRunResult":
+        """
+        Non-streaming version of run_stream_with_all_tools.
+
+        Collects all stream events and returns a consolidated result.
+        Useful for non-streaming API endpoints.
+
+        Args:
+            query: User query
+            intent_result: IntentResult from IntentClassifier
+            system_prompt_override: Optional character persona prompt override
+
+        Returns:
+            AgentRunResult with response, total_turns, total_tool_calls
+        """
+        full_response = []
+        total_turns = 0
+        total_tool_calls = 0
+
+        async for event in self.run_stream_with_all_tools(
+            query=query,
+            intent_result=intent_result,
+            session_id=session_id,
+            user_id=user_id,
+            conversation_history=conversation_history,
+            system_language=system_language,
+            core_memory=core_memory,
+            conversation_summary=conversation_summary,
+            model_name=model_name,
+            provider_type=provider_type,
+            max_turns=max_turns,
+            working_memory_symbols=working_memory_symbols,
+            system_prompt_override=system_prompt_override,
+        ):
+            event_type = event.get("type", "")
+
+            if event_type == "content":
+                content = event.get("content", "")
+                full_response.append(content)
+            elif event_type == "content_delta":
+                content = event.get("content", "")
+                full_response.append(content)
+            elif event_type == "done":
+                total_turns = event.get("total_turns", total_turns)
+                total_tool_calls = event.get("total_tool_calls", total_tool_calls)
+
+        return AgentRunResult(
+            response="".join(full_response),
+            total_turns=total_turns,
+            total_tool_calls=total_tool_calls,
+        )
+
+
+@dataclass
+class AgentRunResult:
+    """Result from non-streaming agent run."""
+    response: str
+    total_turns: int
+    total_tool_calls: int
 
 
 # ============================================================================
