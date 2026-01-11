@@ -2020,16 +2020,26 @@ For Technical Analysis:
         source_citation_instructions = ""
         if has_web_search:
             source_citation_instructions = """
-## SOURCE CITATION REQUIREMENTS
+## ⚠️ MANDATORY SOURCE CITATION (CRITICAL - DO NOT SKIP!)
 
-When using information from webSearch results:
-- MUST include a "## Nguồn tham khảo / Sources" section at the END of your response
-- List all relevant sources as clickable markdown links: [Title](URL)
-- Only cite sources you actually used in your analysis
-- Format example:
-  ## Nguồn tham khảo
-  - [Article Title 1](https://example.com/article1)
-  - [Article Title 2](https://example.com/article2)
+You MUST include ALL web search citations in your response:
+
+1. **IN YOUR ANALYSIS**: When citing web search info, reference by number: "Theo [1], ..." or "According to [1], ..."
+
+2. **AT THE END**: ALWAYS add this section with ALL URLs from webSearch:
+```
+---
+## 📚 Nguồn tham khảo / Sources
+- [1] [Article Title](https://full-url-here.com)
+- [2] [Article Title](https://full-url-here.com)
+...
+```
+
+**RULES:**
+- Include EVERY citation URL from webSearch results
+- Use the EXACT URLs provided - do not modify or shorten them
+- Make URLs clickable: [Title](URL) format
+- This section is MANDATORY when webSearch was used
 """
 
         # Count symbols for adaptive response length guidance
@@ -2083,7 +2093,7 @@ For each symbol analyzed, include:
 **LANGUAGE:**
 - Respond in {system_language.upper()}
 - Be natural and engaging, avoid robotic/template language
-{"- Include source citations at the end if web search was used" if has_web_search else ""}
+{"- ⚠️ CRITICAL: You MUST include the '## Nguồn tham khảo' section with ALL webSearch URLs at the END" if has_web_search else ""}
 """
 
         messages = [{"role": "system", "content": system_prompt}]

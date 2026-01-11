@@ -353,10 +353,41 @@ class WebSearchTool(BaseTool):
                 f"source={result_data.get('source', 'unknown')}"
             )
 
+            # ============================================================
+            # DEBUG: Log full web search result for debugging
+            # ============================================================
+            self.logger.info(f"[webSearch] ========== FULL RESULT ==========")
+            self.logger.info(f"[webSearch] Query: {result_data.get('query', '')}")
+            self.logger.info(f"[webSearch] Source: {result_data.get('source', '')}")
+            self.logger.info(f"[webSearch] Search Time: {result_data.get('search_time_ms', 0)}ms")
+
+            # Log answer
+            answer = result_data.get("answer", "")
+            if answer:
+                self.logger.info(f"[webSearch] ANSWER ({len(answer)} chars):")
+                # Log answer in chunks to avoid truncation
+                for i in range(0, min(len(answer), 3000), 500):
+                    self.logger.info(f"[webSearch]   {answer[i:i+500]}")
+
+            # Log citations with URLs
+            citations = result_data.get("citations", [])
+            self.logger.info(f"[webSearch] CITATIONS ({len(citations)}):")
+            for i, c in enumerate(citations, 1):
+                self.logger.info(
+                    f"[webSearch]   [{i}] {c.get('title', 'No title')[:80]}"
+                )
+                self.logger.info(f"[webSearch]       URL: {c.get('url', 'No URL')}")
+
+            self.logger.info(f"[webSearch] ================================")
+
+            # Create formatted context
+            formatted_ctx = self._create_llm_context(result_data)
+            self.logger.info(f"[webSearch] Formatted context length: {len(formatted_ctx)} chars")
+
             return create_success_output(
                 tool_name="webSearch",
                 data=result_data,
-                formatted_context=self._create_llm_context(result_data),
+                formatted_context=formatted_ctx,
                 metadata={
                     "query": query[:100],
                     "execution_time_ms": int(execution_time),
