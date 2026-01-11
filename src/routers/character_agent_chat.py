@@ -52,6 +52,12 @@ from src.services.streaming_event_service import (
     StreamEventEmitter,
     StreamEventType,
     format_done_marker,
+    with_heartbeat,
+)
+
+# SSE Cancellation handling
+from src.utils.sse_cancellation import (
+    with_cancellation,
 )
 
 # Memory
@@ -538,10 +544,10 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
                     results = event.get("results", [])
                     yield emitter.emit_tool_results(results)
 
-                elif event_type == "content_delta":
+                elif event_type == "content":
                     content = event.get("content", "")
                     full_response.append(content)
-                    yield emitter.emit_content_delta(content)
+                    yield emitter.emit_content(content)
 
                 elif event_type == "thinking":
                     if data.enable_thinking:
@@ -575,14 +581,32 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
                     "response_time_ms": response_time_ms,
                 }
             )
+            yield format_done_marker()
 
         except Exception as e:
             _logger.error(f"[CHARACTER_CHAT] Error: {e}", exc_info=True)
             yield emitter.emit_error(str(e))
             yield format_done_marker()
 
+    # Cleanup function for SSE cancellation
+    async def cleanup_on_disconnect():
+        _logger.info(f"[CHARACTER_CHAT] Client disconnected - session {session_id}")
+
+    # Wrap with heartbeat (15s interval) then cancellation handling
+    generator_with_heartbeat = with_heartbeat(
+        event_generator=_generate_stream(),
+        emitter=emitter,
+        heartbeat_interval=15.0,
+    )
+
     return StreamingResponse(
-        _generate_stream(),
+        with_cancellation(
+            request=request,
+            generator=generator_with_heartbeat,
+            cleanup_fn=cleanup_on_disconnect,
+            check_interval=0.5,
+            emit_cancelled_event=True,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
