@@ -397,12 +397,24 @@ class AIAnalyzer:
             # Call LLM
             llm_provider = self._get_llm_provider()
 
-            response = await llm_provider.generate_response(
-                query=user_prompt,
-                system_prompt=ANALYSIS_SYSTEM_PROMPT,
-                model=self.model_name,
+            # Build messages in the format expected by LLMGeneratorProvider
+            messages = [
+                {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            response_data = await llm_provider.generate_response(
+                model_name=self.model_name,
+                messages=messages,
                 provider_type=self.provider_type,
             )
+
+            # Extract text content from response
+            # Response format depends on provider, but typically has 'content' or 'text'
+            if isinstance(response_data, dict):
+                response = response_data.get("content") or response_data.get("text") or str(response_data)
+            else:
+                response = str(response_data)
 
             if not response:
                 return {"analyses": [], "error": "Empty LLM response"}

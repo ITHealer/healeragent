@@ -54,9 +54,14 @@ class MarketDataService:
     - Stock quotes (TSLA, NVDA, AAPL, etc.)
     - Crypto quotes (BTC, ETH, etc.)
     - Historical data for change calculations
+
+    Note: FMP uses different URL patterns for different endpoints:
+    - /stable/ for quotes: https://financialmodelingprep.com/stable/quote
+    - /api/v3/ for historical: https://financialmodelingprep.com/api/v3/historical-price-full
     """
 
     BASE_URL = "https://financialmodelingprep.com/stable"
+    BASE_URL_V3 = "https://financialmodelingprep.com/api/v3"  # For historical data
     DEFAULT_TIMEOUT = 30.0
 
     def __init__(self, api_key: Optional[str] = None, timeout: float = None):
@@ -112,6 +117,7 @@ class MarketDataService:
         self,
         endpoint: str,
         params: Dict[str, Any] = None,
+        use_v3: bool = False,
     ) -> Optional[Any]:
         """
         Fetch data from FMP endpoint.
@@ -119,6 +125,7 @@ class MarketDataService:
         Args:
             endpoint: API endpoint path
             params: Query parameters
+            use_v3: Use /api/v3/ base URL (required for historical endpoints)
 
         Returns:
             JSON response or None on error
@@ -127,7 +134,8 @@ class MarketDataService:
             return None
 
         client = await self._get_client()
-        url = f"{self.BASE_URL}/{endpoint}"
+        base_url = self.BASE_URL_V3 if use_v3 else self.BASE_URL
+        url = f"{base_url}/{endpoint}"
 
         # Add API key to params
         params = params or {}
@@ -230,7 +238,8 @@ class MarketDataService:
         else:
             endpoint = f"historical-price-full/{symbol}"
 
-        data = await self._fetch_endpoint(endpoint, {"timeseries": days})
+        # Historical data requires /api/v3/ endpoint (not /stable/)
+        data = await self._fetch_endpoint(endpoint, {"timeseries": days}, use_v3=True)
 
         if not data:
             return []

@@ -377,15 +377,27 @@ class TaskWorker:
             # Build task result
             processing_time_ms = int((time.time() - start_time) * 1000)
 
+            # Generate report title
+            title = await self._ai_analyzer.generate_report_title(
+                symbols=request.symbols,
+                target_language=request.target_language,
+            )
+
             task_result = TaskResult(
                 job_id=job_id,
                 request_id=request.request_id,
-                success=True,
+                status=TaskStatus.COMPLETED,
+                created_at=datetime.utcnow(),
+                started_at=datetime.utcnow(),
+                completed_at=datetime.utcnow(),
+                processing_time_ms=processing_time_ms,
+                title=title,
+                target_language=request.target_language,
+                prompt=request.prompt,
                 analyses=analysis_result.get("analyses", []),
-                overall_sentiment=analysis_result.get("overall_sentiment"),
+                overall_sentiment=analysis_result.get("overall_sentiment") or "MIXED",
                 key_themes=analysis_result.get("key_themes", []),
                 summary=analysis_result.get("summary"),
-                processing_time_ms=processing_time_ms,
             )
 
             # Update status to completed
