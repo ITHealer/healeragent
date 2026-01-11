@@ -69,8 +69,8 @@ from src.utils.graceful_degradation import (
     synthesize_partial_response,
 )
 
-# OpenAI Native Web Search Tool
-from src.agents.tools.web.openai_web_search import OpenAIWebSearchTool
+# Web Search Tool (OpenAI primary, Tavily fallback)
+from src.agents.tools.web.web_search import WebSearchTool
 
 # News tools that should trigger auto web search
 NEWS_TOOL_NAMES = {
@@ -1579,7 +1579,7 @@ IMPORTANT:
                 "error": str(e),
             }
 
-    async def _execute_openai_web_search(
+    async def _execute_auto_web_search(
         self,
         query: str,
         symbols: List[str],
@@ -1587,11 +1587,15 @@ IMPORTANT:
         enable_streaming: bool = True,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Execute OpenAI native web search with SSE streaming events.
+        Execute web search with SSE streaming events.
+
+        Uses WebSearchTool which has:
+        - PRIMARY: OpenAI Responses API with web_search (gpt-5-mini)
+        - FALLBACK: Tavily API (when OpenAI fails)
 
         This method:
         1. Builds a search query from user query and symbols
-        2. Calls OpenAI's Responses API with web_search tool
+        2. Calls WebSearchTool.execute_streaming()
         3. Yields SSE events for UI progress display
         4. Returns search results with citations
 
@@ -1605,8 +1609,8 @@ IMPORTANT:
             Dict events: web_search_start, web_search_progress, web_search_complete
         """
         try:
-            # Initialize OpenAI Web Search Tool
-            web_search_tool = OpenAIWebSearchTool()
+            # Initialize Web Search Tool (OpenAI primary, Tavily fallback)
+            web_search_tool = WebSearchTool()
 
             # Build search query with symbols context
             if symbols:
@@ -1616,17 +1620,8 @@ IMPORTANT:
                 search_query = f"{query} latest news"
 
             self.logger.info(
-                f"[{flow_id}] 🌐 OpenAI Web Search: '{search_query[:60]}...'"
+                f"[{flow_id}] 🌐 Auto Web Search: '{search_query[:60]}...'"
             )
-
-            # Emit start event
-            if enable_streaming:
-                yield {
-                    "type": "web_search_start",
-                    "query": search_query[:100],
-                    "model": web_search_tool.model,
-                    "timestamp": datetime.now().isoformat(),
-                }
 
             # Use streaming execution for progress events
             search_data = None
@@ -1637,76 +1632,44 @@ IMPORTANT:
             ):
                 event_type = event.get("type", "")
 
-                if event_type == "search_start":
+                # Forward SSE events for UI
+                if event_type == "web_search_start":
                     self.logger.info(f"[{flow_id}] 🔍 Web search started")
-
-                elif event_type == "search_action":
-                    action = event.get("action", "searching")
-                    queries = event.get("queries", [])
-                    self.logger.info(
-                        f"[{flow_id}] 🔍 Web search action: {action} | queries={queries[:2]}"
-                    )
-
                     if enable_streaming:
-                        yield {
-                            "type": "web_search_progress",
-                            "action": action,
-                            "message": event.get("message", f"Searching: {action}"),
-                            "queries": queries[:3],
-                        }
+                        yield event
 
-                elif event_type == "search_complete":
-                    search_data = event.get("data", {})
-                    citation_count = event.get("citation_count", 0)
+                elif event_type == "web_search_progress":
+                    action = event.get("action", "searching")
+                    self.logger.info(f"[{flow_id}] 🔍 Web search: {action}")
+                    if enable_streaming:
+                        yield event
+
+                elif event_type == "web_search_complete":
+                    data = event.get("data", {})
+                    citation_count = data.get("citation_count", 0)
+                    source = data.get("source", "unknown")
                     exec_time = event.get("execution_time_ms", 0)
 
                     self.logger.info(
                         f"[{flow_id}] ✅ Web search complete: {citation_count} citations "
-                        f"({int(exec_time)}ms)"
+                        f"(source={source}, {int(exec_time)}ms)"
                     )
+                    if enable_streaming:
+                        yield event
 
-                elif event_type == "search_error":
+                elif event_type == "web_search_error":
                     error = event.get("error", "Unknown error")
                     self.logger.error(f"[{flow_id}] ❌ Web search error: {error}")
-
                     if enable_streaming:
-                        yield {
-                            "type": "web_search_error",
-                            "error": error,
-                        }
-                    return
+                        yield event
 
-            # Emit complete event with results
-            if search_data and enable_streaming:
-                yield {
-                    "type": "web_search_complete",
-                    "data": {
-                        "answer": search_data.get("answer", "")[:1000],  # Truncate for SSE
-                        "citation_count": len(search_data.get("citations", [])),
-                        "citations": [
-                            {
-                                "title": c.get("title", "")[:100],
-                                "url": c.get("url", ""),
-                            }
-                            for c in search_data.get("citations", [])[:5]
-                        ],
-                    },
-                    "formatted_context": web_search_tool._create_llm_context(search_data)
-                        if search_data else None,
-                }
-
-            # Yield final result for message context
-            yield {
-                "type": "web_search_result",
-                "tool_name": "openaiWebSearch",
-                "status": "success",
-                "data": search_data,
-                "formatted_context": web_search_tool._create_llm_context(search_data)
-                    if search_data else None,
-            }
+                elif event_type == "web_search_result":
+                    # Final result - capture for LLM context
+                    search_data = event
+                    yield event
 
         except Exception as e:
-            self.logger.error(f"[{flow_id}] OpenAI web search error: {e}", exc_info=True)
+            self.logger.error(f"[{flow_id}] Auto web search error: {e}", exc_info=True)
 
             if enable_streaming:
                 yield {
@@ -1716,7 +1679,7 @@ IMPORTANT:
 
             yield {
                 "type": "web_search_result",
-                "tool_name": "openaiWebSearch",
+                "tool_name": "webSearch",
                 "status": "error",
                 "error": str(e),
             }
@@ -2551,11 +2514,11 @@ Respond naturally and helpfully."""
 
                 # ============================================================
                 # AUTO WEB SEARCH: When news tools are called OR enable_web_search=True
-                # Uses OpenAI's native web_search for better accuracy and citations
+                # Uses WebSearchTool (OpenAI primary, Tavily fallback)
                 # ============================================================
                 called_tool_names = {tc.name for tc in data_tool_calls}
                 news_tools_called = called_tool_names & NEWS_TOOL_NAMES
-                web_search_already_called = "openaiWebSearch" in called_tool_names or "webSearch" in called_tool_names
+                web_search_already_called = "webSearch" in called_tool_names or "serpSearch" in called_tool_names
 
                 should_auto_search = (
                     (enable_web_search or news_tools_called) and
@@ -2570,9 +2533,9 @@ Respond naturally and helpfully."""
                         f"news_tools={news_tools_called}"
                     )
 
-                    # Execute OpenAI web search with SSE events
+                    # Execute web search with SSE events (OpenAI primary, Tavily fallback)
                     web_search_result = None
-                    async for ws_event in self._execute_openai_web_search(
+                    async for ws_event in self._execute_auto_web_search(
                         query=query,
                         symbols=merged_symbols,
                         flow_id=flow_id,
@@ -2601,7 +2564,7 @@ Respond naturally and helpfully."""
                                 "id": web_search_tc_id,
                                 "type": "function",
                                 "function": {
-                                    "name": "openaiWebSearch",
+                                    "name": "webSearch",
                                     "arguments": json.dumps({"query": query}),
                                 },
                             }],
@@ -2611,7 +2574,7 @@ Respond naturally and helpfully."""
                             "role": "tool",
                             "tool_call_id": web_search_tc_id,
                             "content": json.dumps({
-                                "tool_name": "openaiWebSearch",
+                                "tool_name": "webSearch",
                                 "status": "success",
                                 "data": web_search_result.get("data", {}),
                                 "formatted_context": web_search_result.get("formatted_context", ""),
@@ -2824,8 +2787,8 @@ Then add based on query type:
 - Comparison: Get same tools for all symbols
 
 **CRITICAL - Always Include External Context:**
-- Use `openaiWebSearch` (PRIMARY) for latest market sentiment, analyst ratings, and recent news
-- Fallback: `webSearch` (Tavily) or `serpSearch` (Google) if OpenAI search unavailable
+- Use `webSearch` for latest market sentiment, analyst ratings, and recent news
+- webSearch uses OpenAI (primary) or Tavily (fallback) automatically
 - Include source URLs and publication dates in your response with proper citations
 - Web search results include verified citations - display them to user
 - NOTE: When news tools are called, web search is AUTO-triggered for additional context
@@ -2910,9 +2873,10 @@ Do not rephrase the user's request unless it changes semantics.
 ## WEB SEARCH & RESEARCH GUIDELINES
 
 <web_research_rules>
-**OpenAI Web Search Integration (PRIMARY):**
-- Use `openaiWebSearch` tool for latest news, events, and market information
-- OpenAI web search returns verified citations with URLs - always include them
+**Web Search Integration:**
+- Use `webSearch` tool for latest news, events, and market information
+- webSearch uses OpenAI web search (primary) with Tavily fallback
+- Returns verified citations with URLs - always include them in your response
 - Web search is AUTO-triggered when news tools are called for additional context
 - When `enable_web_search=true`, web search runs automatically on first turn
 
