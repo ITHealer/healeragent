@@ -22,6 +22,14 @@ from src.jobs.symbol_directory_monthly_sync import (
     run_symbol_directory_sync_now
 )
 
+# ============================================================
+# Production Logging System - Initialize FIRST
+# ============================================================
+from src.core.logging import setup_logging, get_logger, shutdown_logging, LoggingMiddleware
+
+# Initialize logging system before anything else
+setup_logging()
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -92,6 +100,9 @@ def get_application(lifespan: Any = None):
     )
 
     _app.add_middleware(SessionMiddleware, secret_key=secret_key)
+
+    # Add production logging middleware (request tracing + API logging)
+    _app.add_middleware(LoggingMiddleware)
 
     return _app
 
@@ -288,7 +299,9 @@ async def app_lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Redis LLM client close error: {e}")
 
+    # 4. Shutdown logging system
     logger.info('event=app-shutdown message="All connections are closed."')
+    shutdown_logging()
 
 
 # Create FastAPI application object
