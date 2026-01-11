@@ -557,6 +557,9 @@ class WebSearchTool(BaseTool):
         use_finance_domains: bool,
     ) -> Optional[Dict[str, Any]]:
         """Synchronous OpenAI search (runs in thread pool)."""
+        import time
+        start_time = time.time()
+
         try:
             client = self._get_openai_client()
             if not client:
@@ -592,8 +595,11 @@ class WebSearchTool(BaseTool):
                 input=query,
             )
 
-            # Parse response
-            return self._parse_openai_response(response, query)
+            # Calculate elapsed time
+            elapsed_ms = int((time.time() - start_time) * 1000)
+
+            # Parse response with timing
+            return self._parse_openai_response(response, query, elapsed_ms=elapsed_ms)
 
         except AttributeError as e:
             self.logger.error(f"[webSearch] OpenAI Responses API not available: {e}")
@@ -603,7 +609,7 @@ class WebSearchTool(BaseTool):
             self.logger.error(f"[webSearch] OpenAI API error: {e}")
             raise  # Re-raise to trigger fallback
 
-    def _parse_openai_response(self, response, query: str) -> Dict[str, Any]:
+    def _parse_openai_response(self, response, query: str, elapsed_ms: int = 0) -> Dict[str, Any]:
         """Parse OpenAI Responses API response."""
         result = {
             "query": query,
@@ -612,6 +618,7 @@ class WebSearchTool(BaseTool):
             "citations": [],
             "results": [],
             "search_actions": [],
+            "search_time_ms": elapsed_ms,  # Required field
             "timestamp": datetime.now().isoformat(),
         }
 

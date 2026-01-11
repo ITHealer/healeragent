@@ -192,17 +192,13 @@ class UnifiedAgent(LoggerMixin):
     - Memory integration (Working Memory, Core Memory)
     """
 
-    # Default tool timeout
-    DEFAULT_TOOL_TIMEOUT = 5.0
+    # Default tool timeout (increased for stability)
+    DEFAULT_TOOL_TIMEOUT = 90.0
 
     # Slow tools with longer timeouts (seconds)
     SLOW_TOOL_TIMEOUTS = {
-        "webSearch": 90.0,      # Web search can take 60+ seconds
-        "serpSearch": 30.0,     # SerpAPI search
-        "getIncomeStatement": 15.0,  # Financial data may be slow
-        "getBalanceSheet": 15.0,
-        "getCashFlow": 15.0,
-        "getFinancialRatios": 15.0,
+        "webSearch": 180.0,     # Web search can take 60+ seconds with OpenAI Responses API
+        "serpSearch": 120.0,    # SerpAPI search
     }
 
     def __init__(
