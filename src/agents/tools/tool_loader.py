@@ -112,11 +112,15 @@ TOOL_DEFINITIONS = {
     ],
 
     # ========================================================================
-    # WEB TOOLS (2) - Web Search (Tavily + SerpAPI)
+    # WEB TOOLS (3) - Web Search
+    # - OpenAIWebSearchTool: PRIMARY (uses OpenAI's native web_search)
+    # - WebSearchTool: FALLBACK (Tavily)
+    # - SerpSearchTool: FALLBACK (SerpAPI/Google)
     # ========================================================================
     "web": [
-        ("src.agents.tools.web", "WebSearchTool", "tavily_api_key"),
-        ("src.agents.tools.web", "SerpSearchTool", "serpapi_api_key"),
+        ("src.agents.tools.web", "OpenAIWebSearchTool", "openai_api_key"),  # PRIMARY
+        ("src.agents.tools.web", "WebSearchTool", "tavily_api_key"),         # Fallback
+        ("src.agents.tools.web", "SerpSearchTool", "serpapi_api_key"),       # Fallback
     ],
 
 }
@@ -137,6 +141,7 @@ def _create_tool_instance(
     api_key: Optional[str],
     tavily_api_key: Optional[str] = None,
     serpapi_api_key: Optional[str] = None,
+    openai_api_key: Optional[str] = None,
 ):
     """Create tool instance with optional init argument"""
     tool_class = _import_tool_class(module_path, class_name)
@@ -147,6 +152,8 @@ def _create_tool_instance(
         return tool_class(api_key=tavily_api_key)
     elif init_arg == "serpapi_api_key":
         return tool_class(api_key=serpapi_api_key)
+    elif init_arg == "openai_api_key":
+        return tool_class(api_key=openai_api_key)
     else:
         return tool_class()
 
@@ -169,15 +176,19 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
     fmp_api_key = os.environ.get("FMP_API_KEY")
     tavily_api_key = os.environ.get("TAVILY_API_KEY")
     serpapi_api_key = os.environ.get("SERPAPI_KEY")
+    openai_api_key = os.environ.get("OPENAI_API_KEY")
 
     if not fmp_api_key:
         logger.warning("FMP_API_KEY not set - some tools may not work")
 
+    if not openai_api_key:
+        logger.warning("OPENAI_API_KEY not set - OpenAI web search will be disabled")
+
     if not tavily_api_key:
-        logger.info("TAVILY_API_KEY not set - Tavily web search will be disabled")
+        logger.info("TAVILY_API_KEY not set - Tavily web search (fallback) disabled")
 
     if not serpapi_api_key:
-        logger.info("SERPAPI_KEY not set - SerpAPI search will be disabled")
+        logger.info("SERPAPI_KEY not set - SerpAPI search (fallback) disabled")
 
     # Register tools by category
     for category, tools in TOOL_DEFINITIONS.items():
@@ -192,6 +203,7 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                     api_key=fmp_api_key,
                     tavily_api_key=tavily_api_key,
                     serpapi_api_key=serpapi_api_key,
+                    openai_api_key=openai_api_key,
                 )
                 
                 registry.register_tool(tool)
