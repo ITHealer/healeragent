@@ -99,8 +99,10 @@ RUN set -eux; \
     sed -i -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
            -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' /etc/apt/sources.list
 
-# Place it after other pip install commands, before running the app
-RUN python3 -m playwright install --with-deps chromium
+# Install Playwright browsers for both standalone playwright and crawl4ai
+# Note: crawl4ai has its own browser management that needs separate setup
+RUN python3 -m playwright install --with-deps chromium && \
+    crawl4ai-setup || echo "crawl4ai-setup not available, skipping"
 
 # Copy application code
 COPY . .
