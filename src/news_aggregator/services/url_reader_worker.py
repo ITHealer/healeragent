@@ -51,6 +51,7 @@ from src.news_aggregator.services.callback_service import (
     CallbackService,
     get_callback_service,
 )
+from src.utils.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -169,20 +170,34 @@ class URLReaderWorker:
 
         await close_url_reader_queue()
 
-    def _get_content_processor(self, model_name: str, provider_type: str):
-        """Get or create content processor with caching."""
+    def _get_content_processor(self, model_name: str = None, provider_type: str = None):
+        """
+        Get or create content processor with caching.
+
+        Args:
+            model_name: LLM model name. Defaults to URL_READER_MODEL from config.
+            provider_type: LLM provider. Defaults to URL_READER_PROVIDER from config.
+        """
         try:
             from src.media.handlers.content_processor_manager import processor_manager
             from src.providers.provider_factory import ProviderType
+
+            # Use config defaults if not specified
+            model_name = model_name or settings.URL_READER_MODEL
+            provider_type = provider_type or settings.URL_READER_PROVIDER
 
             # Get API key based on provider
             api_key = None
             if provider_type.lower() == ProviderType.OLLAMA:
                 api_key = None
             elif provider_type.lower() == ProviderType.OPENAI:
-                api_key = os.getenv("OPENAI_API_KEY")
+                api_key = settings.OPENAI_API_KEY
             elif provider_type.lower() == ProviderType.GEMINI:
-                api_key = os.getenv("GEMINI_API_KEY")
+                api_key = settings.GEMINI_API_KEY
+
+            self.logger.debug(
+                f"[URLReaderWorker] Using model={model_name}, provider={provider_type}"
+            )
 
             processor = processor_manager.get_processor(
                 model_name=model_name,

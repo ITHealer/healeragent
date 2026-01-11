@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     MEMORY_MODEL: str = Field("gpt-4.1-nano", env='MEMORY_MODEL')
     MEMORY_PROVIDER: str = Field("openai", env='MEMORY_PROVIDER')
 
+    # URL Reader Model (background job for URL content processing)
+    URL_READER_MODEL: str = Field("gpt-4.1-nano", env='URL_READER_MODEL')
+    URL_READER_PROVIDER: str = Field("openai", env='URL_READER_PROVIDER')
+
+    # Task Worker Model (news analysis background job)
+    TASK_WORKER_MODEL: str = Field("gpt-4.1-nano", env='TASK_WORKER_MODEL')
+    TASK_WORKER_PROVIDER: str = Field("openai", env='TASK_WORKER_PROVIDER')
+
 # Avoid having to re-read the .env file and create the Settings object every time you access it
 @lru_cache()
 def get_settings():

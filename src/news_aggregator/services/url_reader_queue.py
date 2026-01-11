@@ -30,7 +30,11 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import redis.asyncio as redis
+# Redis client - compatible with both aioredis and redis.asyncio
+try:
+    import aioredis as redis
+except ImportError:
+    import redis.asyncio as redis
 
 from src.news_aggregator.schemas.url_reader_job import (
     URLReaderJobRequest,
