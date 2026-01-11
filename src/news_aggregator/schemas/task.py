@@ -366,6 +366,20 @@ class CallbackPayload(BaseModel):
         populate_by_name = True
 
 
+class CallbackStatus(BaseModel):
+    """
+    Status of callback delivery attempt.
+
+    Used to track webhook delivery success/failure.
+    """
+    success: bool = Field(..., description="Whether callback was delivered successfully")
+    request_id: int = Field(..., description="Original request ID")
+    status_code: Optional[int] = Field(None, description="HTTP status code from callback")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    attempts: int = Field(0, description="Number of delivery attempts")
+    sent_at: Optional[datetime] = Field(None, description="When callback was sent")
+
+
 # =============================================================================
 # Internal Processing Models
 # =============================================================================
