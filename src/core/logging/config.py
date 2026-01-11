@@ -43,6 +43,7 @@ from src.core.logging.handlers import (
     ensure_log_directories,
     create_category_handler,
     create_error_handler,
+    create_smart_routing_handler,
     cleanup_old_logs,
 )
 
@@ -167,20 +168,14 @@ def setup_logging(
 
         root_logger.addHandler(console_handler)
 
-    # Create file handlers for each category
-    for category in CATEGORIES:
-        if category == "error":
-            # Error handler is special - receives from all loggers
-            continue
-
-        handler = create_category_handler(
-            category=category,
-            level=logging.DEBUG,  # Capture all levels in files
-            use_json=use_json_format,
-            retention_days=config["retention_days"],
-        )
-        # Don't add to root - we'll add to specific loggers
-        _configured_loggers[f"_handler_{category}"] = handler
+    # Create smart routing handler that auto-routes ALL logs to correct category
+    # This means existing code using logging.getLogger(__name__) will work automatically
+    smart_handler = create_smart_routing_handler(
+        use_json=use_json_format,
+        retention_days=config["retention_days"],
+        level=logging.DEBUG,  # Capture all levels in files
+    )
+    root_logger.addHandler(smart_handler)
 
     # Create error handler (captures ERROR+ from all loggers)
     error_handler = create_error_handler(
@@ -232,9 +227,13 @@ def get_logger(
     """
     Get a configured logger.
 
+    The SmartRoutingHandler on root logger automatically routes logs to the
+    correct category file based on logger name. The category parameter is
+    optional and only used for explicit overrides.
+
     Args:
         name: Logger name (e.g., module name). If None, uses "app"
-        category: Force a specific category. If None, auto-detected from name
+        category: Force a specific category prefix. If None, auto-detected from name
 
     Returns:
         Configured logger that writes to the appropriate category file
@@ -243,7 +242,7 @@ def get_logger(
         get_logger("api.users")  → logs to api/
         get_logger("agent.tools")  → logs to agent/
         get_logger()  → logs to app/
-        get_logger("mymodule", category="agent")  → logs to agent/
+        get_logger("mymodule", category="agent")  → logs to agent/ (via name prefix)
     """
     if not _logging_initialized:
         setup_logging()
@@ -251,28 +250,20 @@ def get_logger(
     if name is None:
         name = "app"
 
-    # Determine category
-    if category is None:
-        category = _get_category_for_logger(name)
+    # If category is specified, prefix the name for correct routing
+    # SmartRoutingHandler routes based on logger name keywords
+    if category and category not in name.lower():
+        name = f"{category}.{name}"
 
     # Check cache
-    cache_key = f"{category}:{name}"
-    if cache_key in _configured_loggers:
-        return _configured_loggers[cache_key]
+    if name in _configured_loggers:
+        return _configured_loggers[name]
 
-    # Get or create logger
+    # Get or create logger - SmartRoutingHandler on root will auto-route
     logger = logging.getLogger(name)
 
-    # Get the category handler
-    handler_key = f"_handler_{category}"
-    if handler_key in _configured_loggers:
-        handler = _configured_loggers[handler_key]
-        # Only add if not already present
-        if handler not in logger.handlers:
-            logger.addHandler(handler)
-
     # Cache and return
-    _configured_loggers[cache_key] = logger
+    _configured_loggers[name] = logger
     return logger
 
 

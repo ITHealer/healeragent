@@ -222,3 +222,106 @@ def create_error_handler(
     handler.setLevel(logging.ERROR)
     handler.addFilter(ErrorMirrorFilter())
     return handler
+
+
+class SmartRoutingHandler(logging.Handler):
+    """
+    Smart handler that routes logs to appropriate category files based on logger name.
+
+    This handler is added to the root logger and automatically routes all log
+    messages to the correct category file (app, api, agent, performance) based
+    on the logger name.
+
+    This means ANY code using logging.getLogger(__name__) will automatically
+    have their logs routed to the correct category without code changes.
+    """
+
+    # Keywords for category detection
+    AGENT_KEYWORDS = ["agent", "tool", "memory", "skill", "unified", "validation"]
+    API_KEYWORDS = ["api", "router", "endpoint", "http", "uvicorn", "fastapi"]
+    PERF_KEYWORDS = ["perf", "metric", "timing", "duration", "performance"]
+
+    def __init__(
+        self,
+        use_json: bool = False,
+        retention_days: int = 15,
+        level: int = logging.DEBUG,
+    ):
+        super().__init__(level)
+        self.use_json = use_json
+        self.retention_days = retention_days
+
+        # Create handlers for each category (lazy initialization)
+        self._category_handlers: dict[str, DailyRotatingFileHandler] = {}
+
+    def _get_category_handler(self, category: str) -> DailyRotatingFileHandler:
+        """Get or create handler for a category."""
+        if category not in self._category_handlers:
+            self._category_handlers[category] = DailyRotatingFileHandler(
+                category=category,
+                retention_days=self.retention_days,
+                use_json=self.use_json,
+            )
+        return self._category_handlers[category]
+
+    def _detect_category(self, logger_name: str) -> str:
+        """Detect category from logger name."""
+        name_lower = logger_name.lower()
+
+        # Check for agent-related loggers
+        if any(kw in name_lower for kw in self.AGENT_KEYWORDS):
+            return "agent"
+
+        # Check for API-related loggers
+        if any(kw in name_lower for kw in self.API_KEYWORDS):
+            return "api"
+
+        # Check for performance-related loggers
+        if any(kw in name_lower for kw in self.PERF_KEYWORDS):
+            return "performance"
+
+        # Default to app
+        return "app"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Route log record to appropriate category handler."""
+        try:
+            category = self._detect_category(record.name)
+            handler = self._get_category_handler(category)
+            handler.emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def close(self) -> None:
+        """Close all category handlers."""
+        for handler in self._category_handlers.values():
+            handler.close()
+        self._category_handlers.clear()
+        super().close()
+
+
+def create_smart_routing_handler(
+    use_json: bool = False,
+    retention_days: int = 15,
+    level: int = logging.DEBUG,
+) -> SmartRoutingHandler:
+    """
+    Create a smart routing handler for automatic category routing.
+
+    This handler automatically routes ALL logs to the appropriate category
+    file based on the logger name. Add this to the root logger to enable
+    automatic routing for existing code.
+
+    Args:
+        use_json: Use JSON format
+        retention_days: Days to retain logs
+        level: Minimum log level
+
+    Returns:
+        Configured SmartRoutingHandler
+    """
+    return SmartRoutingHandler(
+        use_json=use_json,
+        retention_days=retention_days,
+        level=level,
+    )
