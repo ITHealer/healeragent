@@ -38,19 +38,30 @@ class GetTitleResponse(BaseModel):
     updated_at: Optional[datetime]
 
 
-# Prompt template to generate title
-TITLE_GENERATION_PROMPT = """
-Based on the following conversation, generate a concise title (up to 50 characters).
-Match the language of the conversation.
+# Prompt template to generate title - follows ChatGPT/Claude best practices
+TITLE_GENERATION_PROMPT = """<task>
+Generate a concise chat title (max 50 characters) from the conversation below.
+</task>
 
-Conversation:
+<conversation>
 {conversation}
+</conversation>
 
-Instructions:
-- Focus on the main topic or question
-- Be specific and descriptive
-- Return ONLY the title without quotes or explanation
-"""
+<rules>
+1. Match the language of the conversation (Vietnamese → Vietnamese title, etc.)
+2. Focus on the main topic or question
+3. Be specific and descriptive
+4. For financial queries: include symbol if mentioned (e.g., "Phân tích NVDA", "BTC price analysis")
+5. Return ONLY the title - no quotes, no explanation, no prefix
+</rules>
+
+<examples>
+Conversation about AAPL stock → "Phân tích cổ phiếu Apple"
+Conversation about Bitcoin → "Bitcoin price prediction"
+General market discussion → "Thị trường hôm nay"
+</examples>
+
+Title:"""
 
 async def get_db():
     """Get database session"""

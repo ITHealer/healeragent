@@ -782,42 +782,69 @@ Generate {k} diverse, relevant questions:"""
             return self._get_fallback_questions_v2(k, question_type, user_level)
     
     def _get_system_prompt_v2(self, question_type: str) -> str:
-        """Get system prompt based on question type"""
-        
-        base_prompt = """You are a financial market assistant helping users ask relevant questions about stocks, crypto, and market analysis.
-Your task is to generate insightful questions that users can ask based on recent market news and events."""
-        
+        """
+        Get system prompt based on question type.
+
+        Follows ChatGPT/Claude best practices:
+        - Identity anchoring
+        - XML structure
+        - Clear role definition
+        """
+
         type_specific = {
-            QuestionType.TECHNICAL: """
-Focus on technical analysis questions including:
+            QuestionType.TECHNICAL: """<focus>
+Technical analysis questions:
 - Price movements and chart patterns
 - Technical indicators (RSI, MACD, Moving Averages)
 - Support and resistance levels
-- Trading volume and momentum""",
-            
-            QuestionType.CRYPTO: """
-Focus on cryptocurrency analysis questions including:
+- Trading volume and momentum
+</focus>""",
+
+            QuestionType.CRYPTO: """<focus>
+Cryptocurrency analysis questions:
 - Crypto price movements and market cap
 - DeFi and blockchain technology trends
 - Bitcoin dominance and altcoin performance
-- Crypto regulatory news and adoption""",
-            
-            QuestionType.FUNDAMENTAL: """
-Focus on fundamental analysis questions including:
+- Regulatory news and adoption
+</focus>""",
+
+            QuestionType.FUNDAMENTAL: """<focus>
+Fundamental analysis questions:
 - Financial statements and earnings
 - Company valuations (P/E, P/B ratios)
 - Revenue growth and profitability
-- Industry comparisons and market position""",
-            
-            QuestionType.SENTIMENT: """
-Focus on market sentiment questions including:
-- News impact on stock prices
+- Industry comparisons and market position
+</focus>""",
+
+            QuestionType.SENTIMENT: """<focus>
+Market sentiment questions:
+- News impact on prices
 - Social media trends and investor sentiment
-- Market fear and greed indicators
-- Analyst ratings and institutional moves"""
+- Fear and greed indicators
+- Analyst ratings and institutional moves
+</focus>"""
         }
-        
-        return base_prompt + type_specific.get(question_type, "")
+
+        return f"""<identity>
+You are HealerAgent Question Generator, a financial market assistant.
+Created by ToponeLogic.
+</identity>
+
+<role>
+Generate insightful, actionable questions that users can ask based on:
+- Recent market news and events
+- User's expertise level
+- Asset type (stock or crypto)
+</role>
+
+{type_specific.get(question_type, "")}
+
+<output_rules>
+- Questions must be specific and actionable
+- Include relevant symbols when appropriate
+- Match complexity to user level
+- Return ONLY the requested JSON format
+</output_rules>"""
     
 #     def _create_prompt_v2(
 #         self,
@@ -1336,57 +1363,80 @@ Focus on market sentiment questions including:
         k: int,
         user_level: UserLevel
     ) -> List[Dict[str, str]]:
-        """Build prompt using summary and latest message"""
-        
+        """
+        Build prompt using summary and latest message.
+
+        Follows ChatGPT/Claude best practices:
+        - XML structure
+        - Clear priority ordering
+        - Specific output format
+        """
+
         latest_msg = context.get("latest_message", {})
         summary = context.get("conversation_summary", "")
-        
-        system_prompt = """You are an intelligent financial assistant that generates highly relevant follow-up questions.
-    You have access to both a conversation summary and the latest message.
-    Your goal is to generate questions that:
-    1. Address unresolved points from the conversation
-    2. Naturally follow from the latest response
-    3. Help users explore topics they've shown interest in
-    4. Anticipate their next information needs"""
-        
-        user_prompt = f"""Generate {k} follow-up questions based on this context:
 
-    USER LEVEL: {user_level.value}
+        system_prompt = """<identity>
+You are HealerAgent, an intelligent financial assistant that generates relevant follow-up questions.
+Created by ToponeLogic.
+</identity>
 
-    CONVERSATION SUMMARY (from previous 5 messages):
-    {summary if summary else "No previous conversation"}
+<role>
+Generate questions that:
+1. Address unresolved points from the conversation
+2. Naturally follow from the latest response
+3. Help users explore topics they've shown interest in
+4. Anticipate their next information needs
+</role>
 
-    KEY POINTS DISCUSSED:
-    {', '.join(context.get('key_points', [])) if context.get('key_points') else 'None'}
+<output_format>
+Return ONLY a valid JSON array (no markdown, no explanation):
+[{"question": "...", "category": "...", "relevance_reason": "..."}]
+</output_format>"""
 
-    UNRESOLVED QUESTIONS:
-    {', '.join(context.get('unresolved_points', [])) if context.get('unresolved_points') else 'None'}
+        user_prompt = f"""<task>
+Generate {k} follow-up questions based on the context below.
+</task>
 
-    LATEST MESSAGE:
-    Role: {latest_msg.get('role', 'unknown')}
-    Content: {latest_msg.get('content', '')[:500]}
+<user_context>
+Level: {user_level.value}
+</user_context>
 
-    CONTEXT INSIGHTS:
-    - Symbols discussed: {', '.join(context.get('mentioned_symbols', [])[:5])}
-    - Topics covered: {', '.join(context.get('combined_topics', []))}
-    - Metrics mentioned: {', '.join(context.get('mentioned_metrics', []))}
+<conversation_summary>
+{summary if summary else "No previous conversation"}
+</conversation_summary>
 
-    Generate {k} questions that:
-    1. First priority: Address any unresolved points
-    2. Second: Build on the latest message content
-    3. Third: Explore topics from the summary that need clarification
-    4. Match {user_level.value} expertise level
-    5. Are specific and immediately actionable
+<key_points>
+{', '.join(context.get('key_points', [])) if context.get('key_points') else 'None'}
+</key_points>
 
-    Output JSON array only:
-    [
-    {{
-        "question": "specific question text",
-        "category": "technical|fundamental|sentiment|market|strategy",
-        "relevance_reason": "why this follows from the conversation"
-    }}
-    ]"""
-        
+<unresolved_questions>
+{', '.join(context.get('unresolved_points', [])) if context.get('unresolved_points') else 'None'}
+</unresolved_questions>
+
+<latest_message>
+Role: {latest_msg.get('role', 'unknown')}
+Content: {latest_msg.get('content', '')[:500]}
+</latest_message>
+
+<context_insights>
+Symbols: {', '.join(context.get('mentioned_symbols', [])[:5])}
+Topics: {', '.join(context.get('combined_topics', []))}
+Metrics: {', '.join(context.get('mentioned_metrics', []))}
+</context_insights>
+
+<priority_order>
+1. Address unresolved points (highest priority)
+2. Build on latest message content
+3. Explore topics needing clarification
+4. Match {user_level.value} expertise level
+5. Must be specific and actionable
+</priority_order>
+
+<output>
+Return JSON array with {k} questions:
+[{{"question": "specific question", "category": "technical|fundamental|sentiment|market|strategy", "relevance_reason": "why this follows"}}]
+</output>"""
+
         return [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
