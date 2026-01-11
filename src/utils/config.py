@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     # URL Reader Model (background job for URL content processing)
     URL_READER_MODEL: str = Field("gpt-4.1-nano", env='URL_READER_MODEL')
     URL_READER_PROVIDER: str = Field("openai", env='URL_READER_PROVIDER')
+    URL_READER_CONCURRENT_URLS: int = Field(3, env='URL_READER_CONCURRENT_URLS')
+    URL_READER_TIMEOUT_PER_URL: int = Field(120, env='URL_READER_TIMEOUT_PER_URL')
 
     # Task Worker Model (news analysis background job)
     TASK_WORKER_MODEL: str = Field("gpt-4.1-nano", env='TASK_WORKER_MODEL')

@@ -6,13 +6,14 @@ Background worker that processes URL reader jobs from the Redis queue.
 
 Pipeline:
 1. Pop job from Redis priority queue (BZPOPMAX)
-2. Process each URL using ContentProcessor
+2. Process URLs concurrently using ContentProcessor (with semaphore limit)
 3. Store result and update status
 4. Send callback to BE .NET
 
 Features:
 - Graceful shutdown handling
 - Per-URL error handling (job continues even if some URLs fail)
+- Concurrent URL processing with configurable concurrency
 - Progress tracking
 - Configurable concurrent workers
 - Non-blocking URL processing
@@ -27,6 +28,7 @@ Environment Variables:
     URL_READER_WORKER_COUNT: Number of concurrent workers (default: 2)
     URL_READER_TIMEOUT_PER_URL: Timeout per URL in seconds (default: 60)
     URL_READER_CALLBACK_TIMEOUT: Timeout for callback (default: 60)
+    URL_READER_CONCURRENT_URLS: Max concurrent URLs per job (default: 3)
 """
 
 import asyncio
@@ -34,7 +36,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from src.news_aggregator.schemas.url_reader_job import (
     URLReaderJobRequest,
@@ -68,9 +70,12 @@ class URLReaderWorker:
     DEFAULT_NUM_WORKERS = 2
     POP_TIMEOUT = 30.0  # Seconds to wait for jobs
 
-    # Timeouts (can be overridden via env vars)
-    TIMEOUT_PER_URL = int(os.getenv("URL_READER_TIMEOUT_PER_URL", "60"))
+    # Timeouts (use config with fallback to env vars)
+    TIMEOUT_PER_URL = settings.URL_READER_TIMEOUT_PER_URL
     CALLBACK_TIMEOUT = int(os.getenv("URL_READER_CALLBACK_TIMEOUT", "60"))
+
+    # Concurrent URL processing (within a single job)
+    CONCURRENT_URLS = settings.URL_READER_CONCURRENT_URLS
 
     def __init__(
         self,
@@ -254,7 +259,7 @@ class URLReaderWorker:
         request: URLReaderJobRequest,
     ) -> None:
         """
-        Process a single URL reader job.
+        Process a single URL reader job with concurrent URL processing.
 
         Args:
             worker_id: Worker identifier
@@ -263,10 +268,6 @@ class URLReaderWorker:
         """
         start_time = time.time()
         created_at = datetime.utcnow()
-
-        results: List[URLProcessResult] = []
-        successful_count = 0
-        failed_count = 0
 
         try:
             # Get content processor
@@ -278,63 +279,29 @@ class URLReaderWorker:
             if not processor:
                 raise RuntimeError("Failed to initialize content processor")
 
-            # Process each URL
             total_urls = len(request.urls)
-            for i, url in enumerate(request.urls):
-                url_start_time = time.time()
 
-                self.logger.info(
-                    f"[URLWorker-{worker_id}] [{job_id}] Processing URL {i+1}/{total_urls}: {url[:60]}..."
-                )
+            # Process URLs concurrently with semaphore limit
+            self.logger.info(
+                f"[URLWorker-{worker_id}] [{job_id}] Processing {total_urls} URLs "
+                f"(concurrency={self.CONCURRENT_URLS})"
+            )
 
-                try:
-                    # Process single URL with timeout
-                    url_result = await asyncio.wait_for(
-                        self._process_single_url(
-                            processor=processor,
-                            url=url,
-                            target_language=request.target_language,
-                            include_original=request.include_original,
-                        ),
-                        timeout=self.TIMEOUT_PER_URL,
-                    )
+            results = await self._process_urls_concurrent(
+                worker_id=worker_id,
+                job_id=job_id,
+                processor=processor,
+                urls=request.urls,
+                target_language=request.target_language,
+                include_original=request.include_original,
+            )
 
-                    url_processing_time = int((time.time() - url_start_time) * 1000)
-                    url_result.processing_time_ms = url_processing_time
+            # Count results
+            successful_count = sum(1 for r in results if r.status == "success")
+            failed_count = sum(1 for r in results if r.status != "success")
 
-                    if url_result.status == "success":
-                        successful_count += 1
-                    else:
-                        failed_count += 1
-
-                    results.append(url_result)
-
-                except asyncio.TimeoutError:
-                    failed_count += 1
-                    results.append(URLProcessResult(
-                        url=url,
-                        status="error",
-                        error=f"URL processing timeout after {self.TIMEOUT_PER_URL}s",
-                        processing_time_ms=int((time.time() - url_start_time) * 1000),
-                    ))
-                    self.logger.warning(
-                        f"[URLWorker-{worker_id}] [{job_id}] URL timeout: {url[:60]}"
-                    )
-
-                except Exception as e:
-                    failed_count += 1
-                    results.append(URLProcessResult(
-                        url=url,
-                        status="error",
-                        error=str(e),
-                        processing_time_ms=int((time.time() - url_start_time) * 1000),
-                    ))
-                    self.logger.error(
-                        f"[URLWorker-{worker_id}] [{job_id}] URL error: {url[:60]} - {e}"
-                    )
-
-                # Update progress
-                await self._queue.update_progress(job_id, i + 1)
+            # Update final progress
+            await self._queue.update_progress(job_id, total_urls)
 
             # Build job result
             processing_time_ms = int((time.time() - start_time) * 1000)
@@ -387,6 +354,12 @@ class URLReaderWorker:
                 exc_info=True,
             )
 
+            # Use safe defaults if variables not yet defined
+            _locals = locals()
+            _results = _locals.get('results', [])
+            _successful = _locals.get('successful_count', 0)
+            _failed = _locals.get('failed_count', len(request.urls))
+
             # Create failed result
             job_result = URLReaderJobResult(
                 job_id=job_id,
@@ -397,9 +370,9 @@ class URLReaderWorker:
                 completed_at=datetime.utcnow(),
                 processing_time_ms=processing_time_ms,
                 total_urls=len(request.urls),
-                successful_count=successful_count,
-                failed_count=failed_count + (len(request.urls) - len(results)),
-                results=results,
+                successful_count=_successful,
+                failed_count=_failed,
+                results=_results,
                 error=error_msg,
             )
 
@@ -418,6 +391,114 @@ class URLReaderWorker:
                     request=request,
                     result=job_result,
                 )
+
+    async def _process_urls_concurrent(
+        self,
+        worker_id: int,
+        job_id: str,
+        processor,
+        urls: List[str],
+        target_language: Optional[str],
+        include_original: bool,
+    ) -> List[URLProcessResult]:
+        """
+        Process multiple URLs concurrently with semaphore limit.
+
+        Args:
+            worker_id: Worker identifier for logging
+            job_id: Job ID for logging
+            processor: ContentProcessor instance
+            urls: List of URLs to process
+            target_language: Target language for summary
+            include_original: Whether to include original content
+
+        Returns:
+            List of URLProcessResult in original order
+        """
+        semaphore = asyncio.Semaphore(self.CONCURRENT_URLS)
+        results: Dict[int, URLProcessResult] = {}
+
+        async def process_with_semaphore(index: int, url: str) -> Tuple[int, URLProcessResult]:
+            """Process a single URL with semaphore control."""
+            async with semaphore:
+                url_start_time = time.time()
+
+                self.logger.info(
+                    f"[URLWorker-{worker_id}] [{job_id}] Processing URL {index+1}/{len(urls)}: {url[:60]}..."
+                )
+
+                try:
+                    # Process single URL with timeout
+                    url_result = await asyncio.wait_for(
+                        self._process_single_url(
+                            processor=processor,
+                            url=url,
+                            target_language=target_language,
+                            include_original=include_original,
+                        ),
+                        timeout=self.TIMEOUT_PER_URL,
+                    )
+
+                    url_processing_time = int((time.time() - url_start_time) * 1000)
+                    url_result.processing_time_ms = url_processing_time
+
+                    status_emoji = "✓" if url_result.status == "success" else "✗"
+                    self.logger.info(
+                        f"[URLWorker-{worker_id}] [{job_id}] {status_emoji} URL {index+1} done | "
+                        f"time={url_processing_time}ms"
+                    )
+
+                    return index, url_result
+
+                except asyncio.TimeoutError:
+                    self.logger.warning(
+                        f"[URLWorker-{worker_id}] [{job_id}] URL {index+1} timeout: {url[:60]}"
+                    )
+                    return index, URLProcessResult(
+                        url=url,
+                        status="error",
+                        error=f"URL processing timeout after {self.TIMEOUT_PER_URL}s",
+                        processing_time_ms=int((time.time() - url_start_time) * 1000),
+                    )
+
+                except Exception as e:
+                    self.logger.error(
+                        f"[URLWorker-{worker_id}] [{job_id}] URL {index+1} error: {url[:60]} - {e}"
+                    )
+                    return index, URLProcessResult(
+                        url=url,
+                        status="error",
+                        error=str(e),
+                        processing_time_ms=int((time.time() - url_start_time) * 1000),
+                    )
+
+        # Create tasks for all URLs
+        tasks = [
+            process_with_semaphore(i, url)
+            for i, url in enumerate(urls)
+        ]
+
+        # Run all tasks concurrently and gather results
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Build ordered results list
+        ordered_results: List[URLProcessResult] = []
+        for item in completed:
+            if isinstance(item, Exception):
+                # Handle unexpected exceptions from gather
+                self.logger.error(f"[URLWorker-{worker_id}] [{job_id}] Unexpected error: {item}")
+                ordered_results.append(URLProcessResult(
+                    url="unknown",
+                    status="error",
+                    error=str(item),
+                ))
+            else:
+                index, result = item
+                results[index] = result
+
+        # Return results in original order
+        return [results.get(i, URLProcessResult(url=urls[i], status="error", error="Not processed"))
+                for i in range(len(urls))]
 
     async def _process_single_url(
         self,
