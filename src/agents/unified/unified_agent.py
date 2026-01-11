@@ -1624,11 +1624,12 @@ IMPORTANT:
             )
 
             # Use streaming execution for progress events
+            # Don't filter domains - let the model decide sources based on query
             search_data = None
             async for event in web_search_tool.execute_streaming(
                 query=search_query,
                 max_results=5,
-                use_finance_domains=True,
+                use_finance_domains=False,  # Let model decide sources
             ):
                 event_type = event.get("type", "")
 

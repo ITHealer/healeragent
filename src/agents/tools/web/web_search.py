@@ -181,9 +181,9 @@ class WebSearchTool(BaseTool):
                 ToolParameter(
                     name="use_finance_domains",
                     type="boolean",
-                    description="Filter to finance-specific domains (default: true)",
+                    description="Filter to finance-specific domains. Default: false (model decides sources automatically based on query)",
                     required=False,
-                    default=True,
+                    default=False,
                 ),
             ],
             returns={
@@ -222,7 +222,7 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         max_results: int = 5,
-        use_finance_domains: bool = True,
+        use_finance_domains: bool = False,  # Default: let model decide sources
         search_depth: str = "advanced",  # For Tavily compatibility
         time_range: str = "week",  # For Tavily compatibility
         **kwargs,
@@ -237,7 +237,7 @@ class WebSearchTool(BaseTool):
         Args:
             query: Search query string
             max_results: Maximum number of results (1-10)
-            use_finance_domains: Filter to finance domains (OpenAI only)
+            use_finance_domains: Filter to finance domains (default: False - model decides)
             search_depth: "basic" or "advanced" (Tavily only)
             time_range: Time range for results (Tavily only)
 
@@ -377,7 +377,7 @@ class WebSearchTool(BaseTool):
         self,
         query: str,
         max_results: int = 5,
-        use_finance_domains: bool = True,
+        use_finance_domains: bool = False,  # Default: let model decide sources
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Execute web search with streaming events for SSE.
@@ -391,7 +391,7 @@ class WebSearchTool(BaseTool):
         Args:
             query: Search query string
             max_results: Maximum number of sources
-            use_finance_domains: Filter to finance domains
+            use_finance_domains: Filter to finance domains (default: False - model decides)
 
         Yields:
             Dict events for SSE streaming
@@ -562,16 +562,28 @@ class WebSearchTool(BaseTool):
             if not client:
                 return None
 
-            # Build web search tool config
+            # Check if Responses API is available (requires openai>=1.60.0 or newer)
+            if not hasattr(client, "responses"):
+                self.logger.warning(
+                    "[webSearch] OpenAI Responses API not available. "
+                    "Upgrade openai library: pip install openai>=1.68.0"
+                )
+                return None
+
+            # Build web search tool config - let model decide sources by default
             web_search_config: Dict[str, Any] = {
                 "type": "web_search",
             }
 
-            # Add domain filtering
-            if use_finance_domains:
+            # Only add domain filtering if explicitly requested
+            # By default, let the model decide appropriate sources
+            if use_finance_domains and self.DEFAULT_FINANCE_DOMAINS:
                 web_search_config["filters"] = {
                     "allowed_domains": self.DEFAULT_FINANCE_DOMAINS
                 }
+                self.logger.info("[webSearch] Using finance domain filter")
+            else:
+                self.logger.info("[webSearch] No domain filter - model will decide sources")
 
             # Make API call using Responses API
             response = client.responses.create(
@@ -583,6 +595,10 @@ class WebSearchTool(BaseTool):
             # Parse response
             return self._parse_openai_response(response, query)
 
+        except AttributeError as e:
+            self.logger.error(f"[webSearch] OpenAI Responses API not available: {e}")
+            self.logger.info("[webSearch] Please upgrade: pip install openai>=1.68.0")
+            raise
         except Exception as e:
             self.logger.error(f"[webSearch] OpenAI API error: {e}")
             raise  # Re-raise to trigger fallback
