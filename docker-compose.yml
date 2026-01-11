@@ -53,6 +53,24 @@ services:
       timeout: 5s
       retries: 10
 
+  # =========================================================================
+  # Redis Web UI - RedisInsight
+  # Access at: http://localhost:5540
+  # =========================================================================
+  redis_insight:
+    image: redis/redisinsight:latest
+    container_name: redis_insight_dev
+    restart: unless-stopped
+    networks:
+      - public-network
+    ports:
+      - "5540:5540"
+    volumes:
+      - redis_insight_data:/data
+    depends_on:
+      redis_stock_dev:
+        condition: service_healthy
+
   backend_dev:
     build:
       dockerfile: Dockerfile
@@ -89,6 +107,20 @@ services:
       - HF_HOME=/app/hf_cache
       - SCHEDULER_MODE=standalone
       - SCHEDULER_PROCESS=false
+      # =======================================================================
+      # Task Worker Configuration (News Analysis Task System)
+      # =======================================================================
+      - ENABLE_TASK_WORKER=true
+      - TASK_WORKER_COUNT=2
+      # Redis connection for task queue
+      - REDIS_HOST=redis_stock_dev
+      - REDIS_PORT=6380
+      # Task timeout settings (seconds) - adjust based on your needs
+      - TASK_TIMEOUT_NEWS=60
+      - TASK_TIMEOUT_EXTRACT=120
+      - TASK_TIMEOUT_MARKET=30
+      - TASK_TIMEOUT_ANALYSIS=180
+      - TASK_TIMEOUT_CALLBACK=60
 
   scheduler_worker:
     build:
@@ -114,11 +146,14 @@ services:
       - HF_HOME=/app/hf_cache
       - SCHEDULER_MODE=standalone
       - SCHEDULER_PROCESS=true
+      - REDIS_HOST=redis_stock_dev
+      - REDIS_PORT=6380
 
 volumes:
   stock_qdrant_data_dev:
   stock_pg_data_dev:
   redis_data_dev:
+  redis_insight_data:
 
 networks:
   public-network:

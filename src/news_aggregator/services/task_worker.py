@@ -17,18 +17,28 @@ Features:
 - Per-task error handling with callback
 - Configurable concurrent workers
 - Task status tracking
+- Per-phase timeout configuration
+- Detailed phase logging
 
 Usage:
     worker = TaskWorker(num_workers=2)
     await worker.start()
     # ... on shutdown ...
     await worker.stop()
+
+Environment Variables:
+    TASK_WORKER_COUNT: Number of concurrent workers (default: 2)
+    TASK_TIMEOUT_NEWS: Timeout for news fetching (default: 60s)
+    TASK_TIMEOUT_EXTRACT: Timeout for content extraction (default: 120s)
+    TASK_TIMEOUT_MARKET: Timeout for market data (default: 30s)
+    TASK_TIMEOUT_ANALYSIS: Timeout for AI analysis (default: 180s)
+    TASK_TIMEOUT_CALLBACK: Timeout for callback (default: 60s)
 """
 
+import os
 import time
 import asyncio
 import logging
-import signal
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +60,7 @@ from src.news_aggregator.services.task_queue import (
     close_task_queue,
 )
 from src.news_aggregator.services.content_extractor import (
-    ContentExtractorService,
+    ContentExtractor,
     get_content_extractor,
 )
 from src.news_aggregator.services.market_data import (
@@ -58,7 +68,7 @@ from src.news_aggregator.services.market_data import (
     get_market_data_service,
 )
 from src.news_aggregator.services.ai_analyzer import (
-    AIAnalyzerService,
+    AIAnalyzer,
     get_ai_analyzer,
 )
 from src.news_aggregator.services.callback_service import (
@@ -76,9 +86,17 @@ class TaskWorker:
     Pulls tasks from Redis queue and executes the full analysis pipeline.
     """
 
+    # Default configuration
     DEFAULT_NUM_WORKERS = 2
     POP_TIMEOUT = 30.0  # Seconds to wait for tasks
     MAX_NEWS_PER_SYMBOL = 10  # Max news articles per symbol
+
+    # Per-phase timeouts (can be overridden via env vars)
+    TIMEOUT_NEWS = int(os.getenv("TASK_TIMEOUT_NEWS", "60"))
+    TIMEOUT_EXTRACT = int(os.getenv("TASK_TIMEOUT_EXTRACT", "120"))
+    TIMEOUT_MARKET = int(os.getenv("TASK_TIMEOUT_MARKET", "30"))
+    TIMEOUT_ANALYSIS = int(os.getenv("TASK_TIMEOUT_ANALYSIS", "180"))
+    TIMEOUT_CALLBACK = int(os.getenv("TASK_TIMEOUT_CALLBACK", "60"))
 
     def __init__(
         self,
@@ -99,9 +117,9 @@ class TaskWorker:
         # Services (initialized in start())
         self._queue: Optional[TaskQueueService] = None
         self._fmp_provider: Optional[FMPNewsProvider] = None
-        self._content_extractor: Optional[ContentExtractorService] = None
+        self._content_extractor: Optional[ContentExtractor] = None
         self._market_data: Optional[MarketDataService] = None
-        self._ai_analyzer: Optional[AIAnalyzerService] = None
+        self._ai_analyzer: Optional[AIAnalyzer] = None
         self._callback_service: Optional[CallbackService] = None
 
         # Worker state
@@ -116,6 +134,11 @@ class TaskWorker:
             return
 
         self.logger.info(f"[TaskWorker] Starting with {self.num_workers} workers...")
+        self.logger.info(
+            f"[TaskWorker] Timeouts - news:{self.TIMEOUT_NEWS}s, "
+            f"extract:{self.TIMEOUT_EXTRACT}s, market:{self.TIMEOUT_MARKET}s, "
+            f"analysis:{self.TIMEOUT_ANALYSIS}s, callback:{self.TIMEOUT_CALLBACK}s"
+        )
 
         # Initialize services
         await self._initialize_services()
@@ -226,7 +249,7 @@ class TaskWorker:
                 job_id, request = result
                 self.logger.info(
                     f"[Worker-{worker_id}] Processing task {job_id} | "
-                    f"symbols={request.symbols}"
+                    f"symbols={request.symbols} | request_id={request.request_id}"
                 )
 
                 # Process the task
@@ -257,31 +280,97 @@ class TaskWorker:
             request: Task request with symbols and options
         """
         start_time = time.time()
+        phase_times = {}
 
         try:
-            # Phase 1: Fetch news for symbols
-            news_by_symbol = await self._fetch_news_for_symbols(request.symbols)
+            # ===== PHASE 1: Fetch news for symbols =====
+            phase_start = time.time()
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 1: Fetching news "
+                f"(timeout={self.TIMEOUT_NEWS}s)"
+            )
+
+            news_by_symbol = await asyncio.wait_for(
+                self._fetch_news_for_symbols(request.symbols),
+                timeout=self.TIMEOUT_NEWS,
+            )
+            phase_times["fetch_news"] = int((time.time() - phase_start) * 1000)
+
+            total_news = sum(len(v) for v in news_by_symbol.values())
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 1 complete: "
+                f"{total_news} articles | {phase_times['fetch_news']}ms"
+            )
 
             if not any(news_by_symbol.values()):
-                self.logger.warning(f"[Worker-{worker_id}] No news found for task {job_id}")
-                # Still proceed to create result with empty analyses
-
-            # Phase 2: Extract full article content
-            articles_by_symbol = await self._extract_articles(news_by_symbol)
-
-            # Phase 3: Fetch market data
-            market_data = {}
-            if self._market_data:
-                market_data = await self._market_data.get_market_data(
-                    symbols=request.symbols,
-                    include_historical=True,
+                self.logger.warning(
+                    f"[Worker-{worker_id}] [{job_id}] No news found - "
+                    f"proceeding with empty result"
                 )
 
-            # Phase 4: Run AI analysis
-            analysis_result = await self._run_analysis(
-                articles_by_symbol=articles_by_symbol,
-                market_data=market_data,
-                target_language=request.target_language,
+            # ===== PHASE 2: Extract full article content =====
+            phase_start = time.time()
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 2: Extracting content "
+                f"(timeout={self.TIMEOUT_EXTRACT}s)"
+            )
+
+            articles_by_symbol = await asyncio.wait_for(
+                self._extract_articles(news_by_symbol),
+                timeout=self.TIMEOUT_EXTRACT,
+            )
+            phase_times["extract_content"] = int((time.time() - phase_start) * 1000)
+
+            total_extracted = sum(len(v) for v in articles_by_symbol.values())
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 2 complete: "
+                f"{total_extracted} extracted | {phase_times['extract_content']}ms"
+            )
+
+            # ===== PHASE 3: Fetch market data =====
+            phase_start = time.time()
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 3: Fetching market data "
+                f"(timeout={self.TIMEOUT_MARKET}s)"
+            )
+
+            market_data = {}
+            if self._market_data:
+                market_data = await asyncio.wait_for(
+                    self._market_data.get_market_data(
+                        symbols=request.symbols,
+                        include_historical=True,
+                    ),
+                    timeout=self.TIMEOUT_MARKET,
+                )
+            phase_times["fetch_market"] = int((time.time() - phase_start) * 1000)
+
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 3 complete: "
+                f"{len(market_data)} symbols | {phase_times['fetch_market']}ms"
+            )
+
+            # ===== PHASE 4: Run AI analysis =====
+            phase_start = time.time()
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 4: Running AI analysis "
+                f"(timeout={self.TIMEOUT_ANALYSIS}s)"
+            )
+
+            analysis_result = await asyncio.wait_for(
+                self._run_analysis(
+                    articles_by_symbol=articles_by_symbol,
+                    market_data=market_data,
+                    target_language=request.target_language,
+                ),
+                timeout=self.TIMEOUT_ANALYSIS,
+            )
+            phase_times["ai_analysis"] = int((time.time() - phase_start) * 1000)
+
+            num_analyses = len(analysis_result.get("analyses", []))
+            self.logger.info(
+                f"[Worker-{worker_id}] [{job_id}] Phase 4 complete: "
+                f"{num_analyses} analyses | {phase_times['ai_analysis']}ms"
             )
 
             # Build task result
@@ -306,23 +395,64 @@ class TaskWorker:
             )
 
             self.logger.info(
-                f"[Worker-{worker_id}] Task {job_id} completed | "
-                f"{len(task_result.analyses)} analyses | {processing_time_ms}ms"
+                f"[Worker-{worker_id}] [{job_id}] Task COMPLETED | "
+                f"analyses={num_analyses} | total_time={processing_time_ms}ms | "
+                f"phases={phase_times}"
             )
 
-            # Phase 5: Send callback
+            # ===== PHASE 5: Send callback =====
             if request.callback_url:
-                callback_status = await self._callback_service.send_callback(
-                    callback_url=request.callback_url,
-                    request_id=request.request_id,
-                    result=task_result,
+                phase_start = time.time()
+                self.logger.info(
+                    f"[Worker-{worker_id}] [{job_id}] Phase 5: Sending callback "
+                    f"to {request.callback_url}"
                 )
 
-                if not callback_status.success:
-                    self.logger.error(
-                        f"[Worker-{worker_id}] Callback failed for {job_id}: "
-                        f"{callback_status.error}"
+                callback_status = await asyncio.wait_for(
+                    self._callback_service.send_callback(
+                        callback_url=request.callback_url,
+                        request_id=request.request_id,
+                        result=task_result,
+                    ),
+                    timeout=self.TIMEOUT_CALLBACK,
+                )
+                phase_times["callback"] = int((time.time() - phase_start) * 1000)
+
+                if callback_status.success:
+                    self.logger.info(
+                        f"[Worker-{worker_id}] [{job_id}] Callback SUCCESS | "
+                        f"{phase_times['callback']}ms | attempts={callback_status.attempts}"
                     )
+                else:
+                    self.logger.error(
+                        f"[Worker-{worker_id}] [{job_id}] Callback FAILED: "
+                        f"{callback_status.error} | attempts={callback_status.attempts}"
+                    )
+
+        except asyncio.TimeoutError as e:
+            # Handle timeout
+            processing_time_ms = int((time.time() - start_time) * 1000)
+            error_msg = f"Task timeout after {processing_time_ms}ms (phase_times={phase_times})"
+
+            self.logger.error(
+                f"[Worker-{worker_id}] [{job_id}] TIMEOUT: {error_msg}"
+            )
+
+            # Update status to failed
+            await self._queue.update_status(
+                job_id=job_id,
+                status=TaskStatus.FAILED,
+                error=error_msg,
+            )
+
+            # Send error callback
+            if request.callback_url and self._callback_service:
+                await self._callback_service.send_error_callback(
+                    callback_url=request.callback_url,
+                    request_id=request.request_id,
+                    error_message=error_msg,
+                    job_id=job_id,
+                )
 
         except Exception as e:
             # Handle task failure
@@ -330,7 +460,8 @@ class TaskWorker:
             error_msg = str(e)
 
             self.logger.error(
-                f"[Worker-{worker_id}] Task {job_id} failed: {error_msg}",
+                f"[Worker-{worker_id}] [{job_id}] FAILED: {error_msg} | "
+                f"time={processing_time_ms}ms | phases={phase_times}",
                 exc_info=True,
             )
 
@@ -408,7 +539,7 @@ class TaskWorker:
 
             # Log results
             for symbol, news_list in result.items():
-                self.logger.info(f"[TaskWorker] Found {len(news_list)} news for {symbol}")
+                self.logger.debug(f"[TaskWorker] Found {len(news_list)} news for {symbol}")
 
         except Exception as e:
             self.logger.error(f"[TaskWorker] News fetch error: {e}")
@@ -460,7 +591,7 @@ class TaskWorker:
                 )
                 result[symbol] = articles
 
-                self.logger.info(f"[TaskWorker] Extracted {len(articles)} articles for {symbol}")
+                self.logger.debug(f"[TaskWorker] Extracted {len(articles)} articles for {symbol}")
 
             except Exception as e:
                 self.logger.error(f"[TaskWorker] Extract error for {symbol}: {e}")

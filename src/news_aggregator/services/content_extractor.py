@@ -337,6 +337,13 @@ class ContentExtractor:
         return result
 
 
+    async def close(self):
+        """Close the content extractor (cleanup resources)."""
+        # ThreadPoolExecutor cleanup is handled at module level
+        self._client = None
+        self.logger.debug("[ContentExtractor] Closed")
+
+
 # Singleton instance
 _content_extractor: Optional[ContentExtractor] = None
 
