@@ -203,16 +203,28 @@ def setup_logging(
 def _configure_third_party_loggers(level: int) -> None:
     """Configure third-party library loggers to reduce noise."""
     noisy_loggers = [
+        # HTTP clients
         "httpx",
         "httpcore",
         "urllib3",
         "aiohttp",
+        # Async
         "asyncio",
         "websockets",
+        # AI providers
         "openai",
         "anthropic",
+        # Databases
         "redis",
         "qdrant_client",
+        # Dev tools - watchfiles creates a lot of DEBUG noise
+        "watchfiles",
+        "watchfiles.main",
+        "watchgod",
+        # Selenium/crawlers
+        "selenium",
+        "urllib3.connectionpool",
+        "charset_normalizer",
     ]
 
     for name in noisy_loggers:
