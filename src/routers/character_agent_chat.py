@@ -91,16 +91,24 @@ router = APIRouter(prefix="/character-agents")
 _api_key_auth = APIKeyAuth()
 _logger = LoggerMixin().logger
 _chat_service = ChatService()
-_memory_manager = get_memory_manager()
 
 
 # =============================================================================
-# Singletons
+# Singletons (ALL lazy-loaded to prevent blocking on import)
 # =============================================================================
 
 _character_router: Optional[CharacterRouter] = None
 _intent_classifier: Optional[IntentClassifier] = None
 _unified_agent: Optional[UnifiedAgent] = None
+_memory_manager = None  # Lazy-loaded to prevent blocking
+
+
+def _get_memory_manager():
+    """Get or create MemoryManager singleton (lazy-loaded)."""
+    global _memory_manager
+    if _memory_manager is None:
+        _memory_manager = get_memory_manager()
+    return _memory_manager
 
 
 def _get_character_router() -> CharacterRouter:
@@ -203,7 +211,8 @@ async def _save_conversation_turn(
         )
 
         # Store in memory with character metadata
-        await _memory_manager.store_conversation_turn(
+        memory_manager = _get_memory_manager()
+        await memory_manager.store_conversation_turn(
             session_id=session_id,
             user_id=user_id,
             query=user_query,
