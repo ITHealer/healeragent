@@ -509,6 +509,12 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
                 f"with {len(unified_agent.catalog.get_tool_names())} tools"
             )
 
+            # Track stats for emit_done
+            stats = {
+                "total_turns": 0,
+                "total_tool_calls": 0,
+            }
+
             async for event in unified_agent.run_stream_with_all_tools(
                 query=data.query,
                 intent_result=intent_result,
@@ -530,10 +536,12 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
 
                 if event_type == "turn_start":
                     turn = event.get("turn", 1)
+                    stats["total_turns"] = turn
                     yield emitter.emit_turn_start(turn_number=turn, max_turns=6)
 
                 elif event_type == "tool_calls":
                     tools = event.get("tools", [])
+                    stats["total_tool_calls"] += len(tools)
                     yield emitter.emit_tool_calls(tools)
 
                 elif event_type == "tool_results":
@@ -550,6 +558,9 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
                         yield emitter.emit_thinking(event.get("content", ""))
 
                 elif event_type == "done":
+                    # Capture final stats from done event
+                    stats["total_turns"] = event.get("total_turns", stats["total_turns"])
+                    stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
                     break
 
             # =================================================================
@@ -568,12 +579,9 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
 
             # Emit completion
             yield emitter.emit_done(
-                metadata={
-                    "character_id": character_id,
-                    "character_name": persona.name,
-                    "symbols_analyzed": intent_result.validated_symbols,
-                    "response_time_ms": response_time_ms,
-                }
+                total_turns=stats["total_turns"],
+                total_tool_calls=stats["total_tool_calls"],
+                total_time_ms=response_time_ms,
             )
             yield format_done_marker()
 
