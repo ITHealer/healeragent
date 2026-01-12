@@ -18,44 +18,18 @@ from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.handlers.llm_chat_handler import ChatService
 from src.providers.provider_factory import ProviderType
 from src.utils.constants import APIModelName
-from src.handlers.v2.mode_router import (
-    ModeRouter,
-    QueryMode,
-    ModeDecision,
-    get_mode_router,
-)
-from src.handlers.v2.normal_mode_chat_handler import (
-    NormalModeChatHandler,
-    get_normal_mode_chat_handler,
-)
-from src.handlers.v2.chat_handler import ChatHandler as DeepResearchHandler
-from src.services.streaming_event_service import (
-    StreamEventEmitter,
-    format_done_marker,
-)
+# Classification
 from src.agents.classification import (
-    UnifiedClassifier,
-    ClassifierContext,
-    get_unified_classifier,
-    # New architecture
     IntentClassifier,
     IntentResult,
-    IntentComplexity,
     get_intent_classifier,
 )
+# Charts
 from src.agents.charts import (
-    resolve_charts_from_classification,
     charts_to_dict_list,
     get_chart_resolver,
 )
-# LLM Router + Unified Agent (ChatGPT-style 2-phase tool selection)
-from src.agents.router import (
-    LLMToolRouter,
-    RouterDecision,
-    Complexity,
-    ExecutionStrategy,
-    get_tool_router,
-)
+# Unified Agent (ChatGPT-style tool execution)
 from src.agents.unified import (
     UnifiedAgent,
     get_unified_agent,
@@ -63,45 +37,16 @@ from src.agents.unified import (
 # Streaming
 from src.services.streaming_event_service import (
     StreamEventEmitter,
-    StreamEventType,
-    format_sse_event,
     format_done_marker,
-    create_error_event,
-    with_heartbeat,  # Heartbeat for SSE keep-alive
+    with_heartbeat,
 )
+# Thinking Timeline (ChatGPT-style "Thought for Xs" display)
 from src.agents.streaming import (
-    StreamingChatHandler,
-    StreamingConfig,
-    CancellationToken,
-    StreamState,
-    # Events
-    StartEvent,
-    ThinkingStartEvent,
-    ThinkingDeltaEvent,
-    ThinkingEndEvent,
-    PlanningProgressEvent,
-    PlanningCompleteEvent,
-    ToolStartEvent,
-    ToolProgressEvent,
-    ToolCompleteEvent,
-    ContextLoadedEvent,
-    TextDeltaEvent,
-    DoneEvent,
-    ErrorEvent,
-    LLMThoughtEvent,
-    LLMDecisionEvent,
-    # Thinking Timeline (ChatGPT-style "Thought for Xs" display)
     ThinkingTimeline,
-    ThinkingTimelineEvent,
-    ThinkingSummaryEvent,
     ThinkingPhase,
 )
 # SSE Cancellation handling
-from src.utils.sse_cancellation import (
-    with_cancellation,
-    SSECancellationHandler,
-    create_cancellation_token,
-)
+from src.utils.sse_cancellation import with_cancellation
 # LEARN Phase - Memory updates after execution
 from src.agents.hooks import LearnHook
 # Working Memory Integration (session-scoped scratchpad)
@@ -142,59 +87,9 @@ _api_key_auth = APIKeyAuth()
 _logger = LoggerMixin().logger
 _chat_service = ChatService()
 
-# Handler singletons (lazy initialized)
-_normal_handler: Optional[NormalModeChatHandler] = None
-_deep_handler: Optional[DeepResearchHandler] = None
-_mode_router: Optional[ModeRouter] = None
-_classifier: Optional[UnifiedClassifier] = None
+# --- Agent Singletons ---
 
-
-def _get_normal_handler() -> NormalModeChatHandler:
-    """Get or create Normal Mode handler singleton."""
-    global _normal_handler, _deep_handler
-    if _normal_handler is None:
-        if _deep_handler is None:
-            _deep_handler = DeepResearchHandler()
-        _normal_handler = get_normal_mode_chat_handler(fallback_handler=_deep_handler)
-    return _normal_handler
-
-
-def _get_deep_handler() -> DeepResearchHandler:
-    """Get or create Deep Research handler singleton."""
-    global _deep_handler
-    if _deep_handler is None:
-        _deep_handler = DeepResearchHandler()
-    return _deep_handler
-
-
-def _get_mode_router() -> ModeRouter:
-    """Get or create Mode Router singleton."""
-    global _mode_router
-    if _mode_router is None:
-        _mode_router = get_mode_router()
-    return _mode_router
-
-
-def _get_classifier() -> UnifiedClassifier:
-    """Get or create Classifier singleton."""
-    global _classifier
-    if _classifier is None:
-        _classifier = get_unified_classifier()
-    return _classifier
-
-
-# --- LLM Router + Unified Agent Singletons (ChatGPT-style) ---
-
-_tool_router: Optional[LLMToolRouter] = None
 _unified_agent: Optional[UnifiedAgent] = None
-
-
-def _get_tool_router() -> LLMToolRouter:
-    """Get or create LLM Tool Router singleton."""
-    global _tool_router
-    if _tool_router is None:
-        _tool_router = get_tool_router()
-    return _tool_router
 
 
 def _get_unified_agent() -> UnifiedAgent:
@@ -494,42 +389,28 @@ class ModesResponse(BaseModel):
     default_mode: str
 
 
-# Cached components for StreamingChatHandler
-_streaming_components_initialized = False
-_planning_agent = None
-_task_executor = None
-_core_memory = None
-_summary_manager = None
+# --- Database Repositories ---
+
 _session_repo = None
-_llm_provider = None
-_tool_execution_service = None
 _chat_repo = None
-_validation_agent = None
-
-# Session repository for loading conversation history (V4)
-_v4_session_repo = None
 
 
-def _get_v4_session_repo():
-    """Get or create session repository for V4."""
-    global _v4_session_repo
-    if _v4_session_repo is None:
+def _get_session_repo():
+    """Get or create session repository singleton."""
+    global _session_repo
+    if _session_repo is None:
         from src.database.repository.sessions import SessionRepository
-        _v4_session_repo = SessionRepository()
-    return _v4_session_repo
+        _session_repo = SessionRepository()
+    return _session_repo
 
 
-# Chat repository for saving messages (V4)
-_v4_chat_repo = None
-
-
-def _get_v4_chat_repo():
-    """Get or create chat repository for V4 message persistence."""
-    global _v4_chat_repo
-    if _v4_chat_repo is None:
+def _get_chat_repo():
+    """Get or create chat repository singleton."""
+    global _chat_repo
+    if _chat_repo is None:
         from src.database.repository.chat import ChatRepository
-        _v4_chat_repo = ChatRepository()
-    return _v4_chat_repo
+        _chat_repo = ChatRepository()
+    return _chat_repo
 
 
 async def _save_conversation_turn(
@@ -553,7 +434,7 @@ async def _save_conversation_turn(
         response_time_ms: Time taken to generate response
     """
     try:
-        chat_repo = _get_v4_chat_repo()
+        chat_repo = _get_chat_repo()
 
         # Save user question
         question_id = chat_repo.save_user_question(
@@ -598,7 +479,7 @@ async def _load_conversation_history(session_id: str, limit: int = 10) -> List[D
         List of message dicts with role and content
     """
     try:
-        session_repo = _get_v4_session_repo()
+        session_repo = _get_session_repo()
         recent_chat = await session_repo.get_session_messages(
             session_id=session_id,
             limit=limit,
@@ -614,97 +495,8 @@ async def _load_conversation_history(session_id: str, limit: int = 10) -> List[D
             if msg.get("content")
         ]
     except Exception as e:
-        _logger.warning(f"[V4] Failed to load conversation history: {e}")
+        _logger.warning(f"[CHAT] Failed to load conversation history: {e}")
         return []
-
-def _init_streaming_components():
-    """Initialize shared components for StreamingChatHandler (called once)"""
-    global _streaming_components_initialized
-    global _planning_agent, _task_executor, _core_memory, _summary_manager
-    global _session_repo, _llm_provider, _tool_execution_service, _chat_repo
-    global _validation_agent
-
-    if _streaming_components_initialized:
-        return
-
-    from src.agents.planning.planning_agent import PlanningAgent
-    from src.agents.action.task_executor import TaskExecutor
-    from src.agents.memory.core_memory import CoreMemory
-    from src.agents.memory.recursive_summary import RecursiveSummaryManager
-    from src.database.repository.sessions import SessionRepository
-    from src.database.repository.chat import ChatRepository
-    from src.helpers.llm_helper import LLMGeneratorProvider
-    from src.services.v2.tool_execution_service import ToolExecutionService
-    from src.agents.validation.validation_agent import ValidationAgent
-
-    _tool_execution_service = ToolExecutionService()
-    _validation_agent = ValidationAgent()
-    _task_executor = TaskExecutor(
-        tool_execution_service=_tool_execution_service,
-        validation_agent=_validation_agent,
-        max_retries=2
-    )
-    _core_memory = CoreMemory()
-    _summary_manager = RecursiveSummaryManager()
-    _session_repo = SessionRepository()
-    _chat_repo = ChatRepository()
-    _llm_provider = LLMGeneratorProvider()
-
-    _streaming_components_initialized = True
-    _logger.info("[UNIFIED_CHAT] StreamingChatHandler components initialized")
-
-
-async def get_streaming_handler(
-    enable_llm_events: bool = True,
-    enable_agent_tree: bool = False,
-) -> StreamingChatHandler:
-    """
-    Get a configured StreamingChatHandler for Deep Research Mode.
-
-    Uses the 7-phase upfront planning pipeline with true streaming:
-    - Phase 1: Context Loading (with compaction)
-    - Phase 2: Planning (3-stage semantic)
-    - Phase 3: Memory Search
-    - Phase 4: Tool Execution (with progress)
-    - Phase 5: Context Assembly
-    - Phase 6: Response Generation (streaming)
-    - Phase 7: Post-Processing
-    """
-    _init_streaming_components()
-
-    from src.agents.planning.planning_agent import PlanningAgent
-    from src.utils.config import settings
-
-    # Create planning agent
-    planning_agent = PlanningAgent(
-        model_name=settings.MODEL_DEFAULT,
-        provider_type=settings.PROVIDER_DEFAULT
-    )
-
-    # Configure streaming
-    config = StreamingConfig(
-        enable_thinking_display=True,
-        enable_tool_progress=True,
-        enable_context_events=True,
-        enable_memory_events=False,
-        save_messages=True,
-        enable_llm_decision_events=enable_llm_events,
-        enable_agent_tree=enable_agent_tree,
-    )
-
-    handler = StreamingChatHandler(
-        planning_agent=planning_agent,
-        task_executor=_task_executor,
-        core_memory=_core_memory,
-        summary_manager=_summary_manager,
-        session_repo=_session_repo,
-        llm_provider=_llm_provider,
-        tool_execution_service=_tool_execution_service,
-        chat_repo=_chat_repo,
-        config=config
-    )
-
-    return handler
 
 
 # =============================================================================
