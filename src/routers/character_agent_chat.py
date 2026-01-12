@@ -65,7 +65,6 @@ from src.agents.memory import (
     WorkingMemoryIntegration,
     setup_working_memory_for_request,
 )
-from src.agents.memory.memory_manager import get_memory_manager
 
 # Context Builder
 from src.services.context_builder import (
@@ -100,15 +99,6 @@ _chat_service = ChatService()
 _character_router: Optional[CharacterRouter] = None
 _intent_classifier: Optional[IntentClassifier] = None
 _unified_agent: Optional[UnifiedAgent] = None
-_memory_manager = None  # Lazy-loaded to prevent blocking
-
-
-def _get_memory_manager():
-    """Get or create MemoryManager singleton (lazy-loaded)."""
-    global _memory_manager
-    if _memory_manager is None:
-        _memory_manager = get_memory_manager()
-    return _memory_manager
 
 
 def _get_character_router() -> CharacterRouter:
@@ -185,11 +175,21 @@ async def _save_conversation_turn(
     user_id: str,
     user_query: str,
     assistant_response: str,
-    character_id: str,
-    character_name: str,
     response_time_ms: float,
 ) -> None:
-    """Save conversation turn with character metadata."""
+    """
+    Save a conversation turn (user question + assistant response) to database.
+
+    This is CRITICAL for conversation memory - without saving,
+    follow-up questions have no context.
+
+    Args:
+        session_id: Session UUID
+        user_id: User ID
+        user_query: User's question
+        assistant_response: Assistant's response
+        response_time_ms: Time taken to generate response
+    """
     try:
         chat_repo = _get_chat_repo()
 
@@ -200,38 +200,25 @@ async def _save_conversation_turn(
             created_by=user_id,
             content=user_query,
         )
+        _logger.debug(f"[CHARACTER_CHAT] Saved user question: {question_id[:8]}...")
 
         # Save assistant response
-        chat_repo.save_assistant_response(
+        response_id = chat_repo.save_assistant_response(
             session_id=session_id,
             created_at=datetime.now(),
             question_id=question_id,
             content=assistant_response,
-            response_time=response_time_ms / 1000.0,
+            response_time=response_time_ms / 1000.0,  # Convert ms to seconds
         )
-
-        # Store in memory with character metadata
-        memory_manager = _get_memory_manager()
-        await memory_manager.store_conversation_turn(
-            session_id=session_id,
-            user_id=user_id,
-            query=user_query,
-            response=assistant_response,
-            metadata={
-                "character_id": character_id,
-                "character_name": character_name,
-                "conversation_type": "character_chat",
-            },
-            importance_score=0.7,  # Character conversations are typically important
-        )
+        _logger.debug(f"[CHARACTER_CHAT] Saved assistant response: {response_id[:8]}...")
 
         _logger.info(
-            f"[CHARACTER_CHAT] ✅ Saved conversation: "
-            f"character={character_name}, query={len(user_query)}chars"
+            f"[CHARACTER_CHAT] ✅ Conversation saved: "
+            f"query={len(user_query)} chars, response={len(assistant_response)} chars"
         )
 
     except Exception as e:
-        _logger.warning(f"[CHARACTER_CHAT] Failed to save conversation: {e}")
+        _logger.warning(f"[CHARACTER_CHAT] Failed to save conversation (non-fatal): {e}")
 
 
 # =============================================================================
@@ -576,8 +563,6 @@ Focus on the metrics most important to your investment philosophy: {', '.join(pe
                 user_id=user_id,
                 user_query=data.query,
                 assistant_response=complete_response,
-                character_id=character_id,
-                character_name=persona.name,
                 response_time_ms=response_time_ms,
             )
 
@@ -736,8 +721,6 @@ Remember to stay in character as {persona.name} throughout the conversation.
             user_id=user_id,
             user_query=data.query,
             assistant_response=result.response,
-            character_id=character_id,
-            character_name=persona.name,
             response_time_ms=response_time_ms,
         )
 
