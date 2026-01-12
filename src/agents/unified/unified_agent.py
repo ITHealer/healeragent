@@ -1198,6 +1198,7 @@ IMPORTANT:
         images: Optional[List[Any]] = None,
         model_name: Optional[str] = None,
         provider_type: Optional[str] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> AsyncGenerator[str, None]:
         """Stream response without tools."""
         effective_model = model_name or self.model_name
@@ -1211,6 +1212,7 @@ IMPORTANT:
             core_memory=core_memory,
             conversation_summary=conversation_summary,
             images=images,
+            system_prompt_override=system_prompt_override,
         )
 
         async for chunk in self.llm_provider.stream_response(
@@ -2118,6 +2120,7 @@ For each symbol analyzed, include:
         core_memory: Optional[str],
         conversation_summary: Optional[str],
         images: Optional[List[Any]] = None,
+        system_prompt_override: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Build messages for no-tools response."""
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
@@ -2128,13 +2131,19 @@ For each symbol analyzed, include:
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
-        system_prompt = f"""You are a friendly financial assistant.
+        # Use character persona override if provided, otherwise default
+        if system_prompt_override:
+            base_prompt = system_prompt_override
+        else:
+            base_prompt = "You are a friendly financial assistant."
+
+        system_prompt = f"""{base_prompt}
 
 Current Date: {current_date}
 Response Language: {system_language.upper()}
 {user_context}
 
-Respond naturally and helpfully."""
+Respond naturally and helpfully while staying in character."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -2297,6 +2306,7 @@ Respond naturally and helpfully."""
                     images=images,
                     model_name=effective_model,
                     provider_type=effective_provider,
+                    system_prompt_override=system_prompt_override,  # Pass character persona
                 ):
                     yield {"type": "content", "content": chunk}
 
