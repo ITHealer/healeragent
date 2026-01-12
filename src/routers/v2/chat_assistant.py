@@ -562,7 +562,7 @@ async def _save_conversation_turn(
             created_by=user_id,
             content=user_query,
         )
-        _logger.debug(f"[CHAT_V4] Saved user question: {question_id[:8]}...")
+        _logger.debug(f"[CHAT] Saved user question: {question_id[:8]}...")
 
         # Save assistant response
         response_id = chat_repo.save_assistant_response(
@@ -572,15 +572,15 @@ async def _save_conversation_turn(
             content=assistant_response,
             response_time=response_time_ms / 1000.0,  # Convert ms to seconds
         )
-        _logger.debug(f"[CHAT_V4] Saved assistant response: {response_id[:8]}...")
+        _logger.debug(f"[CHAT] Saved assistant response: {response_id[:8]}...")
 
         _logger.info(
-            f"[CHAT_V4] ✅ Conversation saved: "
+            f"[CHAT] ✅ Conversation saved: "
             f"query={len(user_query)} chars, response={len(assistant_response)} chars"
         )
 
     except Exception as e:
-        _logger.warning(f"[CHAT_V4] Failed to save conversation (non-fatal): {e}")
+        _logger.warning(f"[CHAT] Failed to save conversation (non-fatal): {e}")
 
 
 async def _load_conversation_history(session_id: str, limit: int = 10) -> List[Dict[str, str]]:
@@ -707,1142 +707,8 @@ async def get_streaming_handler(
     return handler
 
 
-# --- Streaming Chat Endpoint ---
-
-@router.post(
-    "/chat",
-    summary="Streaming Chat",
-    description="""Chat with SSE streaming.""",
-    response_class=StreamingResponse,
-)
-async def stream_chat(
-    request: Request,
-    data: ChatRequest,
-    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
-):
-    """Stream chat responses via SSE with automatic mode selection."""
-    user_id = getattr(request.state, "user_id", None)
-    org_id = getattr(request.state, "organization_id", None)
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID required")
-
-    # Validate: at least query or images must be provided
-    if not data.query and not data.images:
-        raise HTTPException(
-            status_code=400,
-            detail="Either question_input or images must be provided"
-        )
-
-    # Default query for image-only requests
-    query = data.query or "Analyze this image"
-
-    session_id = data.session_id
-    if not session_id:
-        session_id = _chat_service.create_chat_session(
-            user_id=user_id,
-            organization_id=org_id
-        )
-
-    emitter = StreamEventEmitter(session_id=session_id)
-
-    # Process images outside of generator to avoid async issues
-    processed_images: Optional[List[ProcessedImage]] = None
-
-    async def _generate() -> AsyncGenerator[str, None]:
-        nonlocal processed_images
-        """Generate SSE events."""
-        start_time = datetime.now()
-        mode_decision: Optional[ModeDecision] = None
-
-        # Stats tracking for accurate done event
-        stats = {
-            "total_turns": 0,
-            "total_tool_calls": 0,
-            "last_event_type": None,
-            "charts": None,
-        }
-
-        try:
-            # Process images if provided
-            if data.images:
-                processed_images = await _process_images(data.images)
-                if processed_images:
-                    _logger.info(f"[CHAT] Processed {len(processed_images)} images for multimodal request")
-
-            # Session start
-            yield emitter.emit_session_start({"mode_requested": data.mode})
-
-            # Classify query
-            yield emitter.emit_classifying()
-
-            classifier = _get_classifier()
-
-            # Build classification context WITH images for multimodal analysis
-            ctx = ClassifierContext(
-                query=query,  # Use validated query
-                conversation_history=[],
-                ui_context=data.ui_context.model_dump() if data.ui_context else None,
-                images=processed_images,  # Include images for vision-based classification
-            )
-            classification = await classifier.classify(ctx)
-
-            # Stream classification thinking/reasoning (NEW - #16 Stream thinking process)
-            if classification.reasoning and data.enable_thinking:
-                yield emitter.emit_thinking(
-                    content=f"🎯 Classification reasoning:\n{classification.reasoning[:500]}",
-                    phase="classification_reasoning",
-                )
-
-            yield emitter.emit_classified(
-                query_type=classification.query_type.value,
-                requires_tools=classification.requires_tools,
-                symbols=classification.symbols,
-                categories=classification.tool_categories,
-                confidence=classification.confidence,
-                language=classification.response_language,
-                reasoning=classification.reasoning,  # AI thought process
-                intent_summary=classification.intent_summary,
-                classification_method=classification.classification_method,  # llm, llm_vision, fallback
-            )
-
-            # Resolve charts from classification (for frontend display)
-            charts = resolve_charts_from_classification(
-                classification=classification,
-                query=query,
-                max_charts=3,
-            )
-            if charts:
-                stats["charts"] = charts_to_dict_list(charts)
-                _logger.info(f"[UNIFIED_CHAT] Charts resolved: {[c.type for c in charts]}")
-
-            # Determine mode
-            mode_router = _get_mode_router()
-            mode_decision = mode_router.determine_mode(
-                query=query,
-                explicit_mode=data.mode,
-                classification=classification,
-            )
-
-            _logger.info(
-                f"[CHAT:ROUTE] mode={mode_decision.mode.value} | "
-                f"method={mode_decision.detection_method}"
-            )
-
-            # Collect events to identify final content chunk
-            pending_events: List[str] = []
-
-            # Route to appropriate handler
-            if mode_decision.mode == QueryMode.DEEP_RESEARCH:
-                # Pass classification to avoid duplicate LLM call in PlanningAgent
-                classification_dict = classification.to_dict() if classification else None
-                async for event in _stream_deep_research(
-                    query=query,
-                    session_id=session_id,
-                    user_id=user_id,
-                    org_id=org_id,
-                    model_name=data.model_name,
-                    provider_type=data.provider_type,
-                    chart_displayed=data.chart_displayed,
-                    enable_thinking=data.enable_thinking,
-                    emitter=emitter,
-                    stats=stats,
-                    enable_llm_events=data.enable_llm_events,
-                    enable_agent_tree=data.enable_agent_tree,
-                    enable_think_tool=data.enable_think_tool,
-                    enable_compaction=data.enable_compaction,
-                    classification=classification_dict,
-                    images=processed_images,
-                ):
-                    yield event
-            else:
-                async for event in _stream_normal_mode(
-                    query=query,
-                    session_id=session_id,
-                    user_id=user_id,
-                    org_id=org_id,
-                    model_name=data.model_name,
-                    provider_type=data.provider_type,
-                    chart_displayed=data.chart_displayed,
-                    enable_thinking=data.enable_thinking,
-                    emitter=emitter,
-                    classification=classification,
-                    stats=stats,
-                    enable_tools=data.enable_tools,
-                    enable_think_tool=data.enable_think_tool,
-                    enable_llm_events=data.enable_llm_events,
-                    enable_compaction=data.enable_compaction,
-                    enable_web_search=data.enable_web_search,
-                    images=processed_images,
-                ):
-                    pending_events.append(event)
-
-            # Process events with is_final fix for last content chunk
-            last_content_idx = -1
-            for i in range(len(pending_events) - 1, -1, -1):
-                if '"type": "content"' in pending_events[i] or '"type":"content"' in pending_events[i]:
-                    last_content_idx = i
-                    break
-
-            # Yield all events, fixing is_final on the last content chunk
-            for i, event in enumerate(pending_events):
-                if i == last_content_idx:
-                    # Replace is_final: false with is_final: true
-                    event = event.replace('"is_final": false', '"is_final": true')
-                    event = event.replace('"is_final":false', '"is_final":true')
-                yield event
-
-            # Done with accurate stats
-            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-            yield emitter.emit_done(
-                total_turns=stats["total_turns"],
-                total_tool_calls=stats["total_tool_calls"],
-                total_time_ms=elapsed_ms,
-                charts=stats.get("charts"),
-            )
-            yield format_done_marker()
-
-        except Exception as e:
-            _logger.error(f"[UNIFIED_CHAT] Error: {e}", exc_info=True)
-            yield emitter.emit_error(str(e), "PROCESSING_ERROR")
-            yield format_done_marker()
-
-    # Wrap generator with SSE cancellation handling
-    async def cleanup_chat():
-        _logger.info(f"[UNIFIED_CHAT] Client disconnected - cleaning up session {session_id}")
-
-    # Wrap with heartbeat then cancellation handling
-    generator_with_heartbeat = with_heartbeat(
-        event_generator=_generate(),
-        emitter=emitter,
-        heartbeat_interval=15.0,
-    )
-
-    return StreamingResponse(
-        with_cancellation(
-            request=request,
-            generator=generator_with_heartbeat,
-            cleanup_fn=cleanup_chat,
-            check_interval=0.5,
-            emit_cancelled_event=True,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        }
-    )
-
-
-# --- Stream Handlers ---
-
-async def _stream_normal_mode(
-    query: str,
-    session_id: str,
-    user_id: str,
-    org_id: Optional[str],
-    model_name: str,
-    provider_type: str,
-    chart_displayed: bool,
-    enable_thinking: bool,
-    emitter: StreamEventEmitter,
-    classification,
-    stats: Dict[str, Any],
-    enable_tools: bool = True,
-    enable_think_tool: bool = False,
-    enable_llm_events: bool = True,
-    enable_compaction: bool = True,
-    enable_web_search: bool = False,
-    images: Optional[List[ProcessedImage]] = None,
-    ) -> AsyncGenerator[str, None]:
-    """Stream Normal Mode responses as SSE events."""
-
-    from datetime import datetime as dt
-
-    handler = _get_normal_handler()
-
-    # Force web search category when enabled by user
-    if enable_web_search:
-        if "web" not in classification.tool_categories:
-            classification.tool_categories.append("web")
-        if not classification.requires_tools:
-            classification.requires_tools = True
-
-    # Emit tools loading
-    if enable_tools and classification.tool_categories:
-        yield emitter.emit_tools_loading(classification.tool_categories)
-
-    turn_count = 0
-    tool_count = 0
-    thinking_start_time = dt.now() if enable_thinking else None
-
-    # Build kwargs for handler (images is optional for backward compatibility)
-    handler_kwargs = {
-        "query": query,
-        "session_id": session_id,
-        "user_id": user_id,
-        "model_name": model_name,
-        "provider_type": provider_type,
-        "chart_displayed": chart_displayed,
-        "organization_id": org_id,
-        "enable_thinking": enable_thinking,
-        "enable_llm_events": enable_llm_events,
-        "stream": True,
-        "enable_web_search": enable_web_search,
-        "classification": classification,
-    }
-    # Only add images if present (backward compatible with old handlers)
-    if images:
-        handler_kwargs["images"] = images
-
-    async for chunk in handler.handle_chat(**handler_kwargs):
-        # Convert handler output to SSE events
-        if isinstance(chunk, dict):
-            event_type = chunk.get("type", "content")
-
-            if event_type == "turn_start":
-                turn_count = chunk.get("turn", turn_count + 1)
-                stats["total_turns"] = turn_count  # Update stats
-                yield emitter.emit_turn_start(turn_count, 10)
-
-            elif event_type == "tool_calls":
-                tools = chunk.get("tools", [])
-                tool_count += len(tools)
-                stats["total_tool_calls"] = tool_count  # Update stats
-                yield emitter.emit_tool_calls(tools)
-
-            elif event_type == "tool_results":
-                results = chunk.get("results", [])
-                yield emitter.emit_tool_results(results)
-
-            elif event_type == "content":
-                content = chunk.get("content", "")
-                if content:
-                    yield emitter.emit_content(content)
-
-            elif event_type == "done":
-                # Extract charts from done event if present
-                if chunk.get("charts"):
-                    stats["charts"] = chunk.get("charts")
-
-            else:
-                # Unknown event type, emit as content
-                yield emitter.emit_content(str(chunk))
-        else:
-            # Plain string chunk
-            yield emitter.emit_content(str(chunk))
-
-
-async def _stream_deep_research(
-    query: str,
-    session_id: str,
-    user_id: str,
-    org_id: Optional[str],
-    model_name: str,
-    provider_type: str,
-    chart_displayed: bool,
-    enable_thinking: bool,
-    emitter: StreamEventEmitter,
-    stats: Dict[str, Any],
-    enable_llm_events: bool = True,
-    enable_agent_tree: bool = False,
-    enable_think_tool: bool = False,
-    enable_compaction: bool = True,
-    classification: Dict[str, Any] = None,
-    images: Optional[List[ProcessedImage]] = None,
-) -> AsyncGenerator[str, None]:
-    """
-    Stream Deep Research Mode responses as SSE events.
-
-    Args:
-        classification: Pre-computed classification from UnifiedClassifier.
-                       Passed to PlanningAgent to avoid duplicate classification.
-        images: Optional list of processed images for multimodal analysis.
-    """
-    from datetime import datetime as dt
-
-    # Get StreamingChatHandler
-    handler = await get_streaming_handler(
-        enable_llm_events=enable_llm_events,
-        enable_agent_tree=enable_agent_tree,
-    )
-
-    yield emitter.emit_progress(
-        phase="initialization",
-        progress_percent=5,
-        message="Starting Deep Research Mode (Upfront Planning)..."
-    )
-
-    thinking_start = None
-    current_phase = "initialization"
-    tool_count = 0  # Track tool calls for stats
-    phase_progress = {
-        "context": 10,
-        "planning": 30,
-        "execution": 60,
-        "assembly": 80,
-        "generation": 90,
-    }
-
-    # Stream events from StreamingChatHandler
-    # Pass pre-computed classification to avoid duplicate LLM call in PlanningAgent
-    # Build kwargs (images is optional for backward compatibility)
-    stream_kwargs = {
-        "query": query,
-        "session_id": session_id,
-        "user_id": int(user_id) if user_id else 0,
-        "model_name": model_name,
-        "provider_type": provider_type,
-        "organization_id": int(org_id) if org_id else None,
-        "enable_thinking": enable_thinking,
-        "chart_displayed": chart_displayed,
-        "enable_compaction": enable_compaction,
-        "enable_think_tool": enable_think_tool,
-        "classification": classification,
-    }
-    if images:
-        stream_kwargs["images"] = images
-
-    async for event in handler.handle_chat_stream(**stream_kwargs):
-        # Map StreamEvent types to StreamEventEmitter
-
-        if isinstance(event, StartEvent):
-            yield emitter.emit_session(
-                session_id=session_id,
-                mode="deep_research",
-                model=model_name,
-            )
-
-        elif isinstance(event, ThinkingStartEvent):
-            current_phase = event.data.get("phase", "thinking")
-            thinking_start = dt.now()
-            # Emit progress for UI progress bar
-            progress = phase_progress.get(current_phase, 50)
-            yield emitter.emit_progress(
-                phase=current_phase,
-                progress_percent=progress,
-                message=event.data.get("message", f"Processing {current_phase}..."),
-            )
-
-        elif isinstance(event, ThinkingDeltaEvent):
-            # Skip - no longer emitting reasoning events
-            pass
-
-        elif isinstance(event, ThinkingEndEvent):
-            # Skip - no longer emitting reasoning events
-            pass
-
-        elif isinstance(event, PlanningProgressEvent):
-            yield emitter.emit_progress(
-                phase="planning",
-                progress_percent=phase_progress["planning"],
-                message=event.data.get("message", "Creating research plan..."),
-            )
-
-        elif isinstance(event, PlanningCompleteEvent):
-            task_count = event.data.get("task_count", 0)
-            yield emitter.emit_progress(
-                phase="planning_complete",
-                progress_percent=40,
-                message=f"Plan created with {task_count} tasks",
-            )
-
-        elif isinstance(event, ToolStartEvent):
-            tool_name = event.data.get("tool_name", "unknown")
-            tool_count += 1
-            stats["total_tool_calls"] = tool_count  # Update stats
-            stats["total_turns"] = 1  # Deep Research is 1 comprehensive turn
-
-            yield emitter.emit_tool_calls([
-                {"name": tool_name, "arguments": event.data.get("arguments", {})}
-            ])
-
-        elif isinstance(event, ToolProgressEvent):
-            yield emitter.emit_progress(
-                phase="tool_execution",
-                progress_percent=phase_progress["execution"],
-                message=event.data.get("message", "Executing tools..."),
-            )
-
-        elif isinstance(event, ToolCompleteEvent):
-            tool_name = event.data.get("tool_name", "unknown")
-            success = event.data.get("success", True)
-            yield emitter.emit_tool_results([
-                {"tool": tool_name, "success": success}
-            ])
-
-        elif isinstance(event, ContextLoadedEvent):
-            yield emitter.emit_progress(
-                phase="context_loaded",
-                progress_percent=15,
-                message="Context loaded successfully",
-            )
-
-        elif isinstance(event, TextDeltaEvent):
-            content = event.data.get("chunk", "")
-            if content:
-                yield emitter.emit_content(content)
-
-        elif isinstance(event, LLMThoughtEvent):
-            # Skip - no longer emitting reasoning events
-            pass
-
-        elif isinstance(event, LLMDecisionEvent):
-            # Skip - no longer emitting reasoning events
-            pass
-
-        elif isinstance(event, DoneEvent):
-            # Final progress
-            yield emitter.emit_progress(
-                phase="complete",
-                progress_percent=100,
-                message="Deep Research completed",
-            )
-
-        elif isinstance(event, ErrorEvent):
-            yield create_error_event(
-                error_code=event.data.get("error_type", "DEEP_RESEARCH_ERROR"),
-                error_message=event.data.get("error_message", str(event.data)),
-            )
-
-        else:
-            # Unknown event - try to extract content
-            if hasattr(event, 'data'):
-                content = event.data.get("chunk", event.data.get("content", ""))
-                if content:
-                    yield emitter.emit_content(str(content))
-
-
-@router.post(
-    "/chat/complete",
-    summary="Complete Chat",
-    description="Non-streaming chat. Returns complete response as JSON.",
-)
-async def complete_chat(
-    request: Request,
-    data: ChatRequest,
-    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
-):
-    """Process chat request and return complete response."""
-    user_id = getattr(request.state, "user_id", None)
-    org_id = getattr(request.state, "organization_id", None)
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID required")
-
-    session_id = data.session_id or _chat_service.create_chat_session(
-        user_id=user_id, organization_id=org_id
-    )
-
-    start_time = datetime.now()
-
-    try:
-        # Classify query
-        classifier = _get_classifier()
-        ctx = ClassifierContext(
-            query=query,
-            conversation_history=[],
-            ui_context=data.ui_context.model_dump() if data.ui_context else None,
-        )
-        classification = await classifier.classify(ctx)
-
-        # Determine processing mode
-        mode_router = _get_mode_router()
-        mode_decision = mode_router.determine_mode(
-            query=query,
-            explicit_mode=data.mode,
-            classification=classification,
-        )
-
-        # Route to handler and collect response
-        response_chunks = []
-
-        if mode_decision.mode == QueryMode.NORMAL:
-            handler = _get_normal_handler()
-            async for chunk in handler.handle_chat(
-                query=query,
-                session_id=session_id,
-                user_id=user_id,
-                model_name=data.model_name,
-                provider_type=data.provider_type,
-                chart_displayed=data.chart_displayed,
-                organization_id=org_id,
-                enable_thinking=data.enable_thinking,
-                stream=False,
-            ):
-                if isinstance(chunk, str):
-                    response_chunks.append(chunk)
-                elif isinstance(chunk, dict) and "content" in chunk:
-                    response_chunks.append(chunk["content"])
-        else:
-            handler = _get_deep_handler()
-            async for chunk in handler.handle_chat_with_reasoning(
-                query=query,
-                chart_displayed=data.chart_displayed,
-                session_id=session_id,
-                user_id=user_id,
-                model_name=data.model_name,
-                provider_type=data.provider_type,
-                organization_id=org_id,
-                enable_thinking=data.enable_thinking,
-                stream=False,
-            ):
-                if isinstance(chunk, str):
-                    response_chunks.append(chunk)
-
-        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-
-        return JSONResponse(
-            content={
-                "status": "success",
-                "data": {
-                    "response": "".join(response_chunks),
-                    "session_id": session_id,
-                    "mode": mode_decision.mode.value,
-                    "mode_reason": mode_decision.reason,
-                    "classification": {
-                        "query_type": classification.query_type.value,
-                        "symbols": classification.symbols,
-                        "tool_categories": classification.tool_categories,
-                    },
-                    "processing_time_ms": elapsed_ms,
-                    "timestamp": datetime.now().isoformat(),
-                }
-            }
-        )
-
-    except Exception as e:
-        _logger.error(f"[CHAT:ERROR] {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
-
-
 # =============================================================================
-# V3 API: LLM Router + Unified Agent (ChatGPT-style 2-phase tool selection)
-# =============================================================================
-
-@router.post(
-    "/chat/v3",
-    summary="Streaming Chat V3 (LLM Router)",
-    description="""
-    Chat with LLM-as-Router architecture for optimal tool selection.
-
-    New Flow:
-    1. Classify query (extract symbols, language, intent)
-    2. LLM Router sees ALL tools → selects relevant tools + complexity
-    3. Unified Agent executes with complexity-based strategy
-
-    Benefits:
-    - No category blindness (Router sees all 38+ tools)
-    - ~60% token reduction (2-level tool loading)
-    - Adaptive execution (simple/medium/complex strategies)
-    """,
-    response_class=StreamingResponse,
-)
-async def stream_chat_v3(
-    request: Request,
-    data: ChatRequest,
-    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
-):
-    """
-    Stream chat responses via SSE using LLM Router + Unified Agent.
-
-    This is the ChatGPT-style 2-phase tool selection:
-    - Phase 1: Router LLM sees all tool summaries → selects tools
-    - Phase 2: Agent LLM gets full schemas for selected tools only
-    """
-    user_id = getattr(request.state, "user_id", None)
-    org_id = getattr(request.state, "organization_id", None)
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID required")
-
-    # Validate: at least query or images must be provided
-    if not data.query and not data.images:
-        raise HTTPException(
-            status_code=400,
-            detail="Either question_input or images must be provided"
-        )
-
-    # Default query for image-only requests
-    query = data.query or "Analyze this image"
-
-    session_id = data.session_id
-    if not session_id:
-        session_id = _chat_service.create_chat_session(
-            user_id=user_id,
-            organization_id=org_id
-        )
-
-    emitter = StreamEventEmitter(session_id=session_id)
-
-    async def _generate_v3() -> AsyncGenerator[str, None]:
-        """Generate SSE events using LLM Router + Unified Agent."""
-        start_time = datetime.now()
-
-        # Stats tracking
-        stats = {
-            "total_turns": 0,
-            "total_tool_calls": 0,
-            "charts": None,
-            "complexity": None,
-            "selected_tools": [],
-            # For LEARN phase
-            "tool_results": [],
-            "final_content": "",
-            # Compaction tracking
-            "compaction_result": None,
-        }
-
-        try:
-            # =================================================================
-            # Phase 0: Process images (if any)
-            # =================================================================
-            processed_images: Optional[List[ProcessedImage]] = None
-            if data.images:
-                processed_images = await _process_images(data.images)
-                if processed_images:
-                    _logger.info(
-                        f"[CHAT_V3] Processed {len(processed_images)} images"
-                    )
-
-            # =================================================================
-            # Phase 1: Session Start + Working Memory Setup
-            # =================================================================
-            yield emitter.emit_session_start({
-                "mode_requested": "llm_router",
-                "version": "v3",
-            })
-
-            # Setup WorkingMemoryIntegration (session-scoped scratchpad)
-            flow_id = f"v3_{session_id[:8]}_{int(datetime.now().timestamp())}"
-            wm_integration = setup_working_memory_for_request(
-                session_id=session_id,
-                user_id=user_id,
-                flow_id=flow_id,
-            )
-            _logger.debug(f"[CHAT_V3] WorkingMemory initialized: {flow_id}")
-
-            # Get Working Memory symbols from previous turns (CRITICAL FOR CONTEXT)
-            wm_symbols = wm_integration.get_current_symbols()
-            wm_summary = ""
-            if wm_symbols:
-                wm_summary = f"SYMBOLS FROM RECENT TURNS: {', '.join(wm_symbols)}\nWhen user refers to 'nó', 'this stock', 'công ty này', 'symbol đó' etc., they likely refer to these symbols."
-                _logger.info(f"[CHAT_V3] Working Memory symbols from previous turns: {wm_symbols}")
-
-            # =================================================================
-            # Phase 1.5: Load Conversation History (CRITICAL FOR MEMORY!)
-            # =================================================================
-            conversation_history = await _load_conversation_history(
-                session_id=session_id,
-                limit=10,
-            )
-            _logger.debug(
-                f"[CHAT_V3] Loaded {len(conversation_history)} messages from history"
-            )
-
-            # =================================================================
-            # Phase 1.6: Context Compaction Check
-            # Auto-compress conversation when token count exceeds threshold
-            # =================================================================
-            compaction_result: Optional[CompactionResult] = None
-            if conversation_history:
-                conversation_history, compaction_result = await check_and_compact_if_needed(
-                    messages=conversation_history,
-                    system_prompt="",  # Will be built after classification
-                    symbols=[],  # Symbols extracted during classification
-                    additional_context="",
-                )
-                if compaction_result:
-                    stats["compaction_result"] = compaction_result
-                    _logger.info(
-                        f"[CHAT_V3] ✅ Context compacted: "
-                        f"{compaction_result.original_tokens:,} → {compaction_result.final_tokens:,} tokens "
-                        f"(saved {compaction_result.tokens_saved:,}, {compaction_result.compression_ratio:.1%})"
-                    )
-                    yield emitter.emit_progress(
-                        phase="context_compaction",
-                        progress_percent=15,
-                        message=f"Compressed context: saved {compaction_result.tokens_saved:,} tokens",
-                    )
-
-            # =================================================================
-            # Phase 1.7: Load Conversation Summary (CRITICAL FOR LONG SESSIONS!)
-            # Summary compresses old messages (1 to n-k) while recent messages
-            # are kept raw in conversation_history. This is HYBRID CONTEXT.
-            # =================================================================
-            conversation_summary_v3: Optional[str] = None
-            try:
-                summary_manager = get_recursive_summary_manager()
-                conversation_summary_v3 = await summary_manager.get_active_summary(session_id)
-                if conversation_summary_v3:
-                    _logger.info(
-                        f"[CHAT_V3] ✅ Loaded Conversation Summary: {len(conversation_summary_v3)} chars"
-                    )
-                else:
-                    _logger.debug(f"[CHAT_V3] No active summary for session {session_id[:8]}...")
-            except Exception as sum_err:
-                _logger.warning(f"[CHAT_V3] Summary load failed (non-fatal): {sum_err}")
-
-            # =================================================================
-            # Phase 2: Classification (reuse existing classifier)
-            # =================================================================
-            yield emitter.emit_classifying()
-
-            classifier = _get_classifier()
-            classification_context = ClassifierContext(
-                query=query,
-                conversation_history=conversation_history,  # NOW WITH HISTORY!
-                ui_context=data.ui_context.model_dump() if data.ui_context else None,
-                images=processed_images,
-                working_memory_summary=wm_summary,  # Symbols from previous turns!
-            )
-            classification = await classifier.classify(classification_context)
-
-            # Emit classification result
-            yield emitter.emit_classified(
-                query_type=classification.query_type.value,
-                requires_tools=classification.requires_tools,
-                symbols=classification.symbols,
-                categories=classification.tool_categories,
-                confidence=classification.confidence,
-                language=classification.response_language,
-                reasoning=classification.reasoning,
-                intent_summary=classification.intent_summary,
-                classification_method=classification.classification_method,
-            )
-
-            # Save classification to working memory (for cross-turn continuity)
-            wm_integration.save_classification(
-                query_type=classification.query_type.value,
-                categories=classification.tool_categories,
-                symbols=classification.symbols,
-                language=classification.response_language,
-                reasoning=classification.reasoning,
-            )
-
-            # Resolve charts for frontend
-            charts = resolve_charts_from_classification(
-                classification=classification,
-                query=query,
-                max_charts=3,
-            )
-            if charts:
-                stats["charts"] = charts_to_dict_list(charts)
-
-            # =================================================================
-            # Phase 3: LLM Tool Router (2-phase tool selection)
-            # =================================================================
-            tool_router = _get_tool_router()
-            router_decision = await tool_router.route(
-                query=query,
-                symbols=classification.symbols,
-                context=classification_context,
-                classification=classification,  # Pass classification for disambiguation
-                enable_web_search=data.enable_web_search,  # Force webSearch when enabled
-            )
-
-            stats["complexity"] = router_decision.complexity.value
-            stats["selected_tools"] = router_decision.selected_tools
-
-            _logger.info(
-                f"[CHAT_V3:ROUTE] tools={router_decision.selected_tools} | "
-                f"complexity={router_decision.complexity.value} | "
-                f"strategy={router_decision.execution_strategy.value}"
-            )
-
-            # =================================================================
-            # Phase 4: Unified Agent Execution
-            # =================================================================
-            unified_agent = _get_unified_agent()
-
-            # Stream events from Unified Agent
-            # Pass user-provided model_name for final response generation
-            # CRITICAL: Pass conversation_history for memory/context!
-            # CRITICAL: Pass conversation_summary for long-term context!
-            async for event in unified_agent.run_stream(
-                query=query,
-                router_decision=router_decision,
-                classification=classification,
-                conversation_history=conversation_history,  # Recent K messages (raw)
-                conversation_summary=conversation_summary_v3,  # Old messages (compressed)
-                system_language=classification.response_language,
-                user_id=int(user_id) if user_id else None,
-                session_id=session_id,
-                enable_reasoning=data.enable_thinking,
-                images=processed_images,
-                model_name=data.model_name,
-                provider_type=data.provider_type,
-            ):
-                event_type = event.get("type", "unknown")
-
-                if event_type == "turn_start":
-                    turn = event.get("turn", 1)
-                    stats["total_turns"] = turn
-                    yield emitter.emit_turn_start(
-                        turn_number=turn,
-                        max_turns=router_decision.suggested_max_turns,
-                    )
-
-                elif event_type == "tool_calls":
-                    tools = event.get("tools", [])
-                    stats["total_tool_calls"] += len(tools)
-                    yield emitter.emit_tool_calls(tools)
-
-                elif event_type == "tool_results":
-                    results = event.get("results", [])
-                    stats["tool_results"].extend(results)  # Capture for LEARN
-                    yield emitter.emit_tool_results(results)
-
-                elif event_type == "content":
-                    content = event.get("content", "")
-                    if content:
-                        stats["final_content"] += content  # Capture for LEARN
-                        yield emitter.emit_content(content)
-
-                elif event_type == "max_turns_reached":
-                    yield emitter.emit_progress(
-                        phase="max_turns",
-                        progress_percent=90,
-                        message=f"Max turns ({event.get('turns', 0)}) reached",
-                    )
-
-                elif event_type == "done":
-                    stats["total_turns"] = event.get("total_turns", stats["total_turns"])
-                    stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
-
-                elif event_type == "error":
-                    yield emitter.emit_error(
-                        error_message=event.get("error", "Unknown error"),
-                        error_code="UNIFIED_AGENT_ERROR",
-                    )
-
-            # =================================================================
-            # Phase 5: Done
-            # =================================================================
-            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-
-            # =================================================================
-            # LEARN Phase: Update memory after successful execution
-            # =================================================================
-            try:
-                learn_hook = LearnHook()
-                learn_result = await learn_hook.on_execution_complete(
-                    query=query,
-                    classification=classification,
-                    tool_results=stats["tool_results"],
-                    response=stats["final_content"],
-                    user_id=int(user_id) if user_id else None,
-                )
-                updates = learn_result.get("updates", [])
-                if updates:
-                    _logger.debug(
-                        f"[LEARN] Memory updated: {len(updates)} updates"
-                    )
-            except Exception as learn_err:
-                # LEARN errors should not fail the request
-                _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
-
-            # =================================================================
-            # SAVE Phase: Persist conversation to database (CRITICAL FOR MEMORY!)
-            # Without this, conversation history will be empty on next turn
-            # =================================================================
-            await _save_conversation_turn(
-                session_id=session_id,
-                user_id=str(user_id),
-                user_query=query,
-                assistant_response=stats["final_content"],
-                response_time_ms=elapsed_ms,
-            )
-
-            # =================================================================
-            # SUMMARY Phase: Create/update recursive summary if threshold reached
-            # This compresses old messages for future turns, enabling long
-            # conversations without context overflow.
-            # =================================================================
-            try:
-                summary_manager = get_recursive_summary_manager()
-                summary_result = await summary_manager.check_and_create_summary(
-                    session_id=session_id,
-                    user_id=str(user_id),
-                    organization_id=org_id,
-                )
-                if summary_result.get("created"):
-                    _logger.info(
-                        f"[CHAT_V3] ✅ Summary created: v{summary_result.get('version')} "
-                        f"({summary_result.get('token_count')} tokens, "
-                        f"summarized {summary_result.get('messages_summarized')} messages)"
-                    )
-                else:
-                    _logger.debug(
-                        f"[CHAT_V3] Summary skipped: {summary_result.get('reason', 'unknown')}"
-                    )
-            except Exception as sum_err:
-                _logger.warning(f"[CHAT_V3] Summary creation failed (non-fatal): {sum_err}")
-
-            # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
-            wm_integration.complete_request()
-
-            yield emitter.emit_done(
-                total_turns=stats["total_turns"],
-                total_tool_calls=stats["total_tool_calls"],
-                total_time_ms=elapsed_ms,
-                charts=stats.get("charts"),
-            )
-            yield format_done_marker()
-
-        except Exception as e:
-            _logger.error(f"[CHAT_V3] Error: {e}", exc_info=True)
-            # Attempt to complete working memory even on error
-            try:
-                wm_integration.complete_request()
-            except Exception:
-                pass
-            yield emitter.emit_error(str(e), "CHAT_V3_ERROR")
-            yield format_done_marker()
-
-    # Wrap generator with SSE cancellation handling
-    async def cleanup_v3():
-        _logger.info(f"[CHAT_V3] Client disconnected - cleaning up session {session_id}")
-
-    # Wrap with heartbeat then cancellation handling
-    generator_with_heartbeat = with_heartbeat(
-        event_generator=_generate_v3(),
-        emitter=emitter,
-        heartbeat_interval=15.0,
-    )
-
-    return StreamingResponse(
-        with_cancellation(
-            request=request,
-            generator=generator_with_heartbeat,
-            cleanup_fn=cleanup_v3,
-            check_interval=0.5,
-            emit_cancelled_event=True,
-        ),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
-@router.post(
-    "/chat/v3/complete",
-    summary="Complete Chat V3 (LLM Router)",
-    description="Non-streaming chat using LLM Router + Unified Agent.",
-)
-async def complete_chat_v3(
-    request: Request,
-    data: ChatRequest,
-    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
-):
-    """Process chat request using LLM Router and return complete response."""
-    user_id = getattr(request.state, "user_id", None)
-    org_id = getattr(request.state, "organization_id", None)
-
-    if not user_id:
-        raise HTTPException(status_code=400, detail="User ID required")
-
-    query = data.query or "Analyze this image"
-    session_id = data.session_id or _chat_service.create_chat_session(
-        user_id=user_id, organization_id=org_id
-    )
-
-    start_time = datetime.now()
-
-    try:
-        # Process images
-        processed_images = await _process_images(data.images) if data.images else None
-
-        # Classify
-        classifier = _get_classifier()
-        classification_context = ClassifierContext(
-            query=query,
-            conversation_history=[],
-            ui_context=data.ui_context.model_dump() if data.ui_context else None,
-            images=processed_images,
-        )
-        classification = await classifier.classify(classification_context)
-
-        # Route with LLM Router
-        tool_router = _get_tool_router()
-        router_decision = await tool_router.route(
-            query=query,
-            symbols=classification.symbols,
-            context=classification_context,
-            classification=classification,  # Pass classification for disambiguation
-            enable_web_search=data.enable_web_search,  # Force webSearch when enabled
-        )
-
-        # Execute with Unified Agent
-        unified_agent = _get_unified_agent()
-        result = await unified_agent.run(
-            query=query,
-            router_decision=router_decision,
-            classification=classification,
-            conversation_history=[],
-            system_language=classification.response_language,
-            user_id=int(user_id) if user_id else None,
-            session_id=session_id,
-        )
-
-        # LEARN Phase: Update memory after successful execution
-        if result.success:
-            try:
-                learn_hook = LearnHook()
-                await learn_hook.on_execution_complete(
-                    query=query,
-                    classification=classification,
-                    tool_results=getattr(result, "tool_results", []),
-                    response=result.response or "",
-                    user_id=int(user_id) if user_id else None,
-                )
-            except Exception as learn_err:
-                _logger.warning(f"[LEARN] Memory update failed (non-fatal): {learn_err}")
-
-        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-
-        return JSONResponse(
-            content={
-                "status": "success" if result.success else "error",
-                "data": {
-                    "response": result.response,
-                    "session_id": session_id,
-                    "version": "v3",
-                    "router_decision": {
-                        "selected_tools": router_decision.selected_tools,
-                        "complexity": router_decision.complexity.value,
-                        "strategy": router_decision.execution_strategy.value,
-                        "reasoning": router_decision.reasoning,
-                        "confidence": router_decision.confidence,
-                    },
-                    "classification": {
-                        "query_type": classification.query_type.value,
-                        "symbols": classification.symbols,
-                        "tool_categories": classification.tool_categories,
-                    },
-                    "execution": {
-                        "total_turns": result.total_turns,
-                        "total_tool_calls": result.total_tool_calls,
-                        "execution_time_ms": result.total_execution_time_ms,
-                    },
-                    "processing_time_ms": elapsed_ms,
-                    "timestamp": datetime.now().isoformat(),
-                },
-                "error": result.error if not result.success else None,
-            }
-        )
-
-    except Exception as e:
-        _logger.error(f"[CHAT_V3:ERROR] {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Chat V3 failed: {str(e)}")
-
-
-# =============================================================================
-# V4 API: IntentClassifier + Agent with ALL Tools (Simplified Architecture)
+# Main Chat API: IntentClassifier + Agent with ALL Tools (Simplified Architecture)
 # =============================================================================
 
 # IntentClassifier singleton
@@ -1858,8 +724,8 @@ def _get_intent_classifier() -> IntentClassifier:
 
 
 @router.post(
-    "/chat/v4",
-    summary="Streaming Chat V4 (Intent Classifier + All Tools)",
+    "/chat",
+    summary="Streaming Chat (Intent Classifier + All Tools)",
     description="""
     Chat with simplified architecture:
     - Single LLM call for classification + symbol normalization
@@ -1878,7 +744,7 @@ def _get_intent_classifier() -> IntentClassifier:
     """,
     response_class=StreamingResponse,
 )
-async def stream_chat_v4(
+async def stream_chat(
     request: Request,
     data: ChatRequest,
     api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
@@ -1915,7 +781,7 @@ async def stream_chat_v4(
 
     emitter = StreamEventEmitter(session_id=session_id)
 
-    async def _generate_v4() -> AsyncGenerator[str, None]:
+    async def _generate() -> AsyncGenerator[str, None]:
         """Generate SSE events using IntentClassifier + Agent with ALL tools."""
         start_time = datetime.now()
 
@@ -1947,7 +813,7 @@ async def stream_chat_v4(
                 processed_images = await _process_images(data.images)
                 if processed_images:
                     _logger.info(
-                        f"[CHAT_V4] Processed {len(processed_images)} images"
+                        f"[CHAT] Processed {len(processed_images)} images"
                     )
 
             # =================================================================
@@ -1965,7 +831,7 @@ async def stream_chat_v4(
                 user_id=user_id,
                 flow_id=flow_id,
             )
-            _logger.debug(f"[CHAT_V4] WorkingMemory initialized: {flow_id}")
+            _logger.debug(f"[CHAT] WorkingMemory initialized: {flow_id}")
 
             # =================================================================
             # Phase 1.5: UNIFIED CONTEXT LOADING via ContextBuilder
@@ -1987,14 +853,14 @@ async def stream_chat_v4(
             # Log context summary
             ctx_summary = assembled_context.get_context_summary()
             _logger.info(
-                f"[CHAT_V4] ✅ ContextBuilder loaded: "
+                f"[CHAT] ✅ ContextBuilder loaded: "
                 f"core_memory={ctx_summary['core_memory_chars']}chars, "
                 f"summary={ctx_summary['summary_chars']}chars, "
                 f"wm_symbols={ctx_summary['wm_symbols']}"
             )
 
             if wm_symbols:
-                _logger.info(f"[CHAT_V4] Working Memory symbols from previous turns: {wm_symbols}")
+                _logger.info(f"[CHAT] Working Memory symbols from previous turns: {wm_symbols}")
 
             # Load conversation history (separate from ContextBuilder for compaction)
             conversation_history = await _load_conversation_history(
@@ -2002,7 +868,7 @@ async def stream_chat_v4(
                 limit=10,  # Last 10 messages for context
             )
             _logger.debug(
-                f"[CHAT_V4] Loaded {len(conversation_history)} messages from history"
+                f"[CHAT] Loaded {len(conversation_history)} messages from history"
             )
 
             # =================================================================
@@ -2020,7 +886,7 @@ async def stream_chat_v4(
                 if compaction_result:
                     stats["compaction_result"] = compaction_result
                     _logger.info(
-                        f"[CHAT_V4] ✅ Context compacted: "
+                        f"[CHAT] ✅ Context compacted: "
                         f"{compaction_result.original_tokens:,} → {compaction_result.final_tokens:,} tokens "
                         f"(saved {compaction_result.tokens_saved:,}, {compaction_result.compression_ratio:.1%})"
                     )
@@ -2119,7 +985,7 @@ async def stream_chat_v4(
             # CRITICAL: Pass wm_symbols for cross-turn symbol continuity!
             # CRITICAL: Pass core_memory for user personalization!
             # CRITICAL: Pass conversation_summary for long-term context!
-            _logger.info(f"[CHAT_V4] 🚀 Starting agent loop with {len(unified_agent.catalog.get_tool_names())} tools")
+            _logger.info(f"[CHAT] 🚀 Starting agent loop with {len(unified_agent.catalog.get_tool_names())} tools")
             agent_event_count = 0
             async for event in unified_agent.run_stream_with_all_tools(
                 query=query,
@@ -2146,7 +1012,7 @@ async def stream_chat_v4(
                 if event_type == "turn_start":
                     turn = event.get("turn", 1)
                     stats["total_turns"] = turn
-                    _logger.info(f"[CHAT_V4] 📍 Turn {turn} started")
+                    _logger.info(f"[CHAT] 📍 Turn {turn} started")
                     yield emitter.emit_turn_start(
                         turn_number=turn,
                         max_turns=6,
@@ -2198,7 +1064,7 @@ async def stream_chat_v4(
                         stats["final_content"] += content
                         # Log first content chunk
                         if len(stats["final_content"]) == len(content):
-                            _logger.info(f"[CHAT_V4] 📝 First content chunk received ({len(content)} chars)")
+                            _logger.info(f"[CHAT] 📝 First content chunk received ({len(content)} chars)")
                         yield emitter.emit_content(content)
 
                 elif event_type == "thinking":
@@ -2223,7 +1089,7 @@ async def stream_chat_v4(
                             phase=phase,
                         )
 
-                        _logger.info(f"[CHAT_V4] 💭 Think [{phase}]: {thought_content[:80]}...")
+                        _logger.info(f"[CHAT] 💭 Think [{phase}]: {thought_content[:80]}...")
 
                 elif event_type == "max_turns_reached":
                     yield emitter.emit_progress(
@@ -2236,12 +1102,12 @@ async def stream_chat_v4(
                     stats["total_turns"] = event.get("total_turns", stats["total_turns"])
                     stats["total_tool_calls"] = event.get("total_tool_calls", stats["total_tool_calls"])
                     _logger.info(
-                        f"[CHAT_V4] ✅ Agent done: {stats['total_turns']} turns, "
+                        f"[CHAT] ✅ Agent done: {stats['total_turns']} turns, "
                         f"{stats['total_tool_calls']} tools, {len(stats['final_content'])} chars content"
                     )
 
                 elif event_type == "error":
-                    _logger.error(f"[CHAT_V4] ❌ Agent error: {event.get('error', 'Unknown')}")
+                    _logger.error(f"[CHAT] ❌ Agent error: {event.get('error', 'Unknown')}")
                     yield emitter.emit_error(
                         error_message=event.get("error", "Unknown error"),
                         error_code="AGENT_ERROR",
@@ -2249,14 +1115,14 @@ async def stream_chat_v4(
 
             # Log agent loop completion
             _logger.info(
-                f"[CHAT_V4] 🏁 Agent loop finished: {agent_event_count} events, "
+                f"[CHAT] 🏁 Agent loop finished: {agent_event_count} events, "
                 f"content_length={len(stats['final_content'])}"
             )
 
             # Warn if no content was generated
             if not stats["final_content"]:
                 _logger.warning(
-                    f"[CHAT_V4] ⚠️ No content generated! "
+                    f"[CHAT] ⚠️ No content generated! "
                     f"turns={stats['total_turns']}, tools={stats['total_tool_calls']}"
                 )
 
@@ -2318,16 +1184,16 @@ async def stream_chat_v4(
                 )
                 if summary_result.get("created"):
                     _logger.info(
-                        f"[CHAT_V4] ✅ Summary created: v{summary_result.get('version')} "
+                        f"[CHAT] ✅ Summary created: v{summary_result.get('version')} "
                         f"({summary_result.get('token_count')} tokens, "
                         f"summarized {summary_result.get('messages_summarized')} messages)"
                     )
                 else:
                     _logger.debug(
-                        f"[CHAT_V4] Summary skipped: {summary_result.get('reason', 'unknown')}"
+                        f"[CHAT] Summary skipped: {summary_result.get('reason', 'unknown')}"
                     )
             except Exception as sum_err:
-                _logger.warning(f"[CHAT_V4] Summary creation failed (non-fatal): {sum_err}")
+                _logger.warning(f"[CHAT] Summary creation failed (non-fatal): {sum_err}")
 
             # Complete WorkingMemory request (cleanup task-specific data, preserve symbols)
             wm_integration.complete_request()
@@ -2354,11 +1220,11 @@ async def stream_chat_v4(
                 if charts:
                     stats["charts"] = charts_to_dict_list(charts)
                     _logger.info(
-                        f"[CHAT_V4] Charts resolved: {[c.type for c in charts]} "
+                        f"[CHAT] Charts resolved: {[c.type for c in charts]} "
                         f"with symbols={chart_symbols}"
                     )
             except Exception as chart_err:
-                _logger.warning(f"[CHAT_V4] Chart resolution failed (non-fatal): {chart_err}")
+                _logger.warning(f"[CHAT] Chart resolution failed (non-fatal): {chart_err}")
 
             yield emitter.emit_done(
                 total_turns=stats["total_turns"],
@@ -2369,26 +1235,26 @@ async def stream_chat_v4(
             yield format_done_marker()
 
         except Exception as e:
-            _logger.error(f"[CHAT_V4] Error: {e}", exc_info=True)
+            _logger.error(f"[CHAT] Error: {e}", exc_info=True)
             # Attempt to complete working memory even on error
             try:
                 wm_integration.complete_request()
             except Exception:
                 pass
-            yield emitter.emit_error(str(e), "CHAT_V4_ERROR")
+            yield emitter.emit_error(str(e), "CHAT_ERROR")
             yield format_done_marker()
 
     # Wrap generator with SSE cancellation handling
     # This detects client disconnection and runs cleanup
     async def cleanup_on_disconnect():
         """Cleanup resources when client disconnects"""
-        _logger.info(f"[CHAT_V4] Client disconnected - cleaning up session {session_id}")
+        _logger.info(f"[CHAT] Client disconnected - cleaning up session {session_id}")
         # Any additional cleanup can be added here
 
     # Wrap with heartbeat (15s interval) then cancellation handling
-    # Order: _generate_v4() -> with_heartbeat() -> with_cancellation()
+    # Order: _generate() -> with_heartbeat() -> with_cancellation()
     generator_with_heartbeat = with_heartbeat(
-        event_generator=_generate_v4(),
+        event_generator=_generate(),
         emitter=emitter,
         heartbeat_interval=15.0,  # Emit heartbeat every 15s if no activity
     )
