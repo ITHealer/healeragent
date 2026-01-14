@@ -32,19 +32,35 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 FORMAT_SYSTEM_PROMPT = """You are a professional financial report formatter.
-Your task is to convert structured analysis data into a beautiful, readable markdown report.
+Your task is to convert structured analysis data into a readable markdown report with INLINE CITATIONS.
 
-Output Guidelines:
-- Write in the specified target language (natural, professional tone)
-- Use markdown formatting: headers, bullet points, bold, links
-- Include emoji indicators for sentiment (🟢 bullish, 🔴 bearish, ⚪ neutral, 🟡 mixed)
-- Format prices with proper currency symbols and separations
-- Include all citations as markdown links [title](url)
-- Structure: Title → Summary → Overall Sentiment → Per-Symbol Analysis → Sources
+CITATION FORMAT (CRITICAL - Follow exactly like ChatGPT):
+- Every factual claim MUST have an inline citation immediately after it
+- Use format: "claim text" ([Source Title](url))
+- Example: "Tesla stock rose 5% today" ([Tesla Surges on AI News](https://example.com/article))
+- Each insight should clearly show its source inline, not at the end
 
-IMPORTANT: Output ONLY the markdown text, no code blocks or explanations."""
+Output Structure:
+1. Title
+2. Executive Summary with inline citations
+3. Overall Sentiment (🟢 bullish, 🔴 bearish, ⚪ neutral, 🟡 mixed)
+4. Key Themes
+5. Per-Symbol Analysis:
+   - Price and changes (📈/📉)
+   - Key insights - EACH with inline citation link
+   - Outlook
+   - Risk factors (⚠️)
+6. Sources Reference (numbered list at end for quick reference)
 
-FORMAT_USER_PROMPT = """Convert this analysis result to a beautiful markdown report.
+Example of correct inline citation:
+"Cổ phiếu TSLA tăng 3.5% trong tuần qua nhờ doanh số giao xe vượt kỳ vọng" ([Tesla Q4 Deliveries Beat Expectations](https://reuters.com/tesla-q4))
+
+IMPORTANT:
+- Output ONLY markdown text, no code blocks
+- Write in the specified target language
+- Be natural and professional"""
+
+FORMAT_USER_PROMPT = """Convert this analysis result to a markdown report with INLINE CITATIONS.
 
 **Target Language:** {target_language}
 **Date:** {date}
@@ -54,21 +70,48 @@ FORMAT_USER_PROMPT = """Convert this analysis result to a beautiful markdown rep
 {data_json}
 ```
 
-Generate a professional markdown report in {language_name}. Include:
-1. Report title
-2. Executive summary (if available)
-3. Overall market sentiment with emoji
-4. Key themes
-5. For each symbol:
-   - Price and changes (with 📈/📉 emoji)
-   - Sentiment indicator
-   - Key insights with citation numbers [1], [2], etc.
-   - Short-term and long-term outlook
-   - Risk factors (with ⚠️ emoji)
-   - Sources as markdown links
-6. Processing time footer
+Generate a professional markdown report in {language_name}.
 
-Output only the markdown text."""
+DATA STRUCTURE EXPLANATION:
+- Each key_insight now has a "sources" array with {{"title", "url"}} directly attached
+- Use these to create inline citations immediately after each insight text
+
+CRITICAL CITATION FORMAT:
+For each insight, output like this:
+- "Insight text here" ([Source Title](url))
+
+Example transformation:
+INPUT:
+{{"text": "Tesla Q4 deliveries exceeded expectations", "sources": [{{"title": "Reuters: Tesla Q4 Report", "url": "https://reuters.com/tesla"}}]}}
+
+OUTPUT:
+Tesla Q4 deliveries exceeded expectations ([Reuters: Tesla Q4 Report](https://reuters.com/tesla))
+
+STRUCTURE:
+1. ## Tóm tắt điều hành - Summary with key highlights
+2. ## Tâm lý thị trường - 🟢/🔴/⚪/🟡 emoji + description
+3. ## Các chủ đề chính - Bullet list
+4. ## Phân tích theo mã chứng khoán
+   For each symbol:
+   ### Symbol Name (SYMBOL)
+   - **Giá hiện tại:** $XXX
+   - **Biến động:** 24h, 7d, 30d with 📈/📉
+   - **Tâm lý:** Sentiment with score
+
+   #### Các điểm nhấn chính
+   For EACH insight: "text" ([Source Title](url))
+
+   #### Triển vọng
+   - Ngắn hạn: outlook
+   - Dài hạn: outlook
+
+   #### Yếu tố rủi ro ⚠️
+   Bullet list of risks
+
+5. ## Nguồn tham khảo
+   Numbered list: [N] [Title](url) - source_site
+
+Output only the markdown text, no code blocks."""
 
 
 # Language names for prompt
@@ -154,6 +197,17 @@ class MarkdownFormatter:
         Returns:
             JSON string with essential data
         """
+        # Build source index mapping for easy lookup
+        # This maps source_index -> {title, url} for inline citation
+        source_map = {}
+        for analysis in result.analyses:
+            for src in analysis.sources:
+                source_map[src.index] = {
+                    "title": src.title,
+                    "url": src.url,
+                    "source_site": src.source,
+                }
+
         # Build simplified data structure for LLM
         data = {
             "title": result.title,
@@ -164,11 +218,30 @@ class MarkdownFormatter:
             "summary": result.summary,
             "processing_time_ms": result.processing_time_ms,
             "user_prompt": result.prompt,
+            "source_map": source_map,  # Add global source mapping for easy lookup
             "analyses": []
         }
 
         # Add symbol analyses
         for analysis in result.analyses:
+            # Build insights with inline source info for easier LLM formatting
+            insights_with_sources = []
+            for ins in analysis.key_insights:
+                insight_sources = []
+                for idx in ins.source_indices:
+                    if idx in source_map:
+                        insight_sources.append({
+                            "index": idx,
+                            "title": source_map[idx]["title"],
+                            "url": source_map[idx]["url"],
+                        })
+
+                insights_with_sources.append({
+                    "text": ins.text,
+                    "sentiment": ins.sentiment,
+                    "sources": insight_sources,  # Direct source info for inline citation
+                })
+
             symbol_data = {
                 "symbol": analysis.symbol,
                 "display_name": analysis.display_name,
@@ -177,20 +250,13 @@ class MarkdownFormatter:
                 "short_term_outlook": analysis.short_term_outlook,
                 "long_term_outlook": analysis.long_term_outlook,
                 "risk_factors": analysis.risk_factors,
-                "key_insights": [
-                    {
-                        "text": ins.text,
-                        "source_indices": ins.source_indices,
-                        "sentiment": ins.sentiment
-                    }
-                    for ins in analysis.key_insights
-                ],
-                "sources": [
+                "key_insights": insights_with_sources,  # Now includes direct source links
+                "all_sources": [
                     {
                         "index": src.index,
                         "title": src.title,
                         "url": src.url,
-                        "source": src.source,
+                        "source_site": src.source,
                         "published_at": src.published_at.strftime("%d/%m/%Y") if src.published_at else None
                     }
                     for src in analysis.sources
