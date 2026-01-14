@@ -511,11 +511,12 @@ class TaskWorker:
         symbols: List[str],
     ) -> Dict[str, List[UnifiedNewsItem]]:
         """
-        Fetch news articles for each symbol using FMP and Tavily.
+        Fetch news articles for each symbol using FMP and Tavily in parallel.
 
         Pipeline:
-        1. FMP API filters by tickers directly (primary source)
-        2. Tavily search for symbols with insufficient news (fallback)
+        1. FMP API filters by tickers directly
+        2. Tavily search for symbols (runs in parallel with FMP)
+        3. Merge and deduplicate results
 
         Args:
             symbols: List of symbols to fetch news for
@@ -536,8 +537,15 @@ class TaskWorker:
             else:
                 stock_symbols.append(symbol_upper)
 
-        # ===== Step 1: Fetch from FMP (primary source) =====
-        if self._fmp_provider:
+        # ===== Run FMP and Tavily in parallel =====
+        async def fetch_from_fmp() -> Dict[str, List[UnifiedNewsItem]]:
+            """Fetch news from FMP provider."""
+            fmp_result: Dict[str, List[UnifiedNewsItem]] = {symbol: [] for symbol in symbols}
+
+            if not self._fmp_provider:
+                self.logger.warning("[TaskWorker] FMP provider not available")
+                return fmp_result
+
             try:
                 # Fetch stock news with tickers filter
                 if stock_symbols:
@@ -550,13 +558,11 @@ class TaskWorker:
                     # Assign news to symbols
                     for item in stock_news:
                         for symbol in stock_symbols:
-                            if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                                # FMP filters by ticker - check if symbol matches
+                            if len(fmp_result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
                                 if symbol in [s.upper() for s in item.symbols]:
-                                    result[symbol].append(item)
-                                # If no specific symbol in item, assign to all requested
+                                    fmp_result[symbol].append(item)
                                 elif not item.symbols:
-                                    result[symbol].append(item)
+                                    fmp_result[symbol].append(item)
 
                     self.logger.info(f"[TaskWorker] FMP: {len(stock_news)} stock news for {stock_symbols}")
 
@@ -567,51 +573,56 @@ class TaskWorker:
                         page=0,
                         limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
                     )
-                    # Assign crypto news to matching symbols
                     for item in crypto_news:
                         for symbol in crypto_symbols:
-                            if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                            if len(fmp_result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
                                 item_symbols_str = " ".join(item.symbols).upper()
                                 if symbol in item_symbols_str or symbol in item.title.upper():
-                                    result[symbol].append(item)
+                                    fmp_result[symbol].append(item)
 
                     self.logger.info(f"[TaskWorker] FMP: {len(crypto_news)} crypto news")
 
             except Exception as e:
                 self.logger.error(f"[TaskWorker] FMP fetch error: {e}", exc_info=True)
-        else:
-            self.logger.warning("[TaskWorker] FMP provider not available")
 
-        # ===== Step 2: Fetch from Tavily for symbols with insufficient news =====
-        symbols_needing_news = [
-            symbol for symbol in symbols
-            if len(result[symbol]) < 3  # Use Tavily if less than 3 articles from FMP
-        ]
+            return fmp_result
 
-        if symbols_needing_news and self._tavily_provider:
-            self.logger.info(f"[TaskWorker] Tavily: Searching for symbols with low FMP results: {symbols_needing_news}")
+        async def fetch_from_tavily() -> List[UnifiedNewsItem]:
+            """Fetch news from Tavily provider."""
+            if not self._tavily_provider:
+                self.logger.warning("[TaskWorker] Tavily provider not available")
+                return []
+
             try:
+                self.logger.info(f"[TaskWorker] Tavily: Searching for symbols: {symbols}")
                 tavily_news = await self._tavily_provider.search_for_symbols(
-                    symbols=symbols_needing_news,
+                    symbols=symbols,
                     max_results_per_symbol=self.MAX_NEWS_PER_SYMBOL,
                 )
-
-                # Assign Tavily results to symbols
-                for item in tavily_news:
-                    for symbol in item.symbols:
-                        symbol_upper = symbol.upper()
-                        if symbol_upper in result and len(result[symbol_upper]) < self.MAX_NEWS_PER_SYMBOL:
-                            # Avoid duplicates by checking URL
-                            existing_urls = {n.url for n in result[symbol_upper]}
-                            if item.url not in existing_urls:
-                                result[symbol_upper].append(item)
-
                 self.logger.info(f"[TaskWorker] Tavily: {len(tavily_news)} articles found")
-
+                return tavily_news
             except Exception as e:
                 self.logger.error(f"[TaskWorker] Tavily fetch error: {e}", exc_info=True)
-        elif symbols_needing_news and not self._tavily_provider:
-            self.logger.warning("[TaskWorker] Tavily provider not available for fallback search")
+                return []
+
+        # Run both providers in parallel
+        fmp_result, tavily_news = await asyncio.gather(
+            fetch_from_fmp(),
+            fetch_from_tavily(),
+        )
+
+        # Merge FMP results
+        for symbol, news_list in fmp_result.items():
+            result[symbol].extend(news_list)
+
+        # Merge Tavily results (avoid duplicates)
+        for item in tavily_news:
+            for symbol in item.symbols:
+                symbol_upper = symbol.upper()
+                if symbol_upper in result and len(result[symbol_upper]) < self.MAX_NEWS_PER_SYMBOL:
+                    existing_urls = {n.url for n in result[symbol_upper]}
+                    if item.url not in existing_urls:
+                        result[symbol_upper].append(item)
 
         # Log final results
         for symbol, news_list in result.items():
