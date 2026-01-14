@@ -465,6 +465,7 @@ class TaskWorker:
                     request_id=request.request_id,
                     error_message=error_msg,
                     job_id=job_id,
+                    target_language=request.target_language,
                 )
 
         except Exception as e:
@@ -492,6 +493,7 @@ class TaskWorker:
                     request_id=request.request_id,
                     error_message=error_msg,
                     job_id=job_id,
+                    target_language=request.target_language,
                 )
 
     async def _fetch_news_for_symbols(

@@ -8,10 +8,11 @@ Features:
 - Retry with exponential backoff (3 attempts, 2s/4s/8s delays)
 - Timeout handling (30s default)
 - Error logging with request details
+- LLM-powered markdown formatting in target language
 
 Callback API:
     POST /api/v1/user-task/submit-generation-result
-    Body: { "requestId": 1792, "content": "JSON string of result" }
+    Body: { "requestId": 1792, "content": "markdown formatted result" }
 
 Usage:
     service = CallbackService()
@@ -22,7 +23,6 @@ Usage:
     )
 """
 
-import json
 import asyncio
 import logging
 from datetime import datetime
@@ -32,7 +32,6 @@ import httpx
 
 from src.news_aggregator.schemas.task import (
     TaskResult,
-    CallbackPayload,
     CallbackStatus,
 )
 from src.news_aggregator.services.markdown_formatter import (
@@ -48,6 +47,7 @@ class CallbackService:
     Service for sending webhook callbacks to BE .NET.
 
     Implements retry logic with exponential backoff for reliability.
+    Uses LLM to format content as markdown in target language.
     """
 
     DEFAULT_TIMEOUT = 30.0
@@ -89,7 +89,7 @@ class CallbackService:
             await self._client.aclose()
             self._client = None
 
-    def _build_payload(
+    async def _build_payload(
         self,
         request_id: int,
         result: TaskResult,
@@ -101,13 +101,14 @@ class CallbackService:
         Args:
             request_id: Original request ID from BE
             result: Task result with analysis
-            use_markdown: If True, format as markdown; else JSON
+            use_markdown: If True, format as markdown using LLM; else JSON
 
         Returns:
             Dict with requestId and content (markdown or JSON string)
         """
         if use_markdown:
-            content = format_task_result_markdown(result)
+            # Use LLM to format as markdown in target language
+            content = await format_task_result_markdown(result)
         else:
             content = result.model_dump_json(exclude_none=True)
 
@@ -142,7 +143,8 @@ class CallbackService:
                 attempts=0,
             )
 
-        payload = self._build_payload(request_id, result)
+        # Build payload with LLM markdown formatting
+        payload = await self._build_payload(request_id, result)
         client = await self._get_client()
 
         last_error = None
@@ -231,6 +233,7 @@ class CallbackService:
         request_id: int,
         error_message: str,
         job_id: Optional[str] = None,
+        target_language: str = "vi",
     ) -> CallbackStatus:
         """
         Send error callback when task processing fails.
@@ -240,6 +243,7 @@ class CallbackService:
             request_id: Original request ID
             error_message: Error description
             job_id: Optional job ID for reference
+            target_language: Language for error message
 
         Returns:
             CallbackStatus with success/failure info
@@ -253,11 +257,12 @@ class CallbackService:
                 attempts=0,
             )
 
-        # Format error as markdown
-        content = format_error_markdown(
+        # Format error as markdown in target language
+        content = await format_error_markdown(
             request_id=request_id,
             error_message=error_message,
             job_id=job_id,
+            target_language=target_language,
         )
 
         payload = {
