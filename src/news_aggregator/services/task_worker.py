@@ -555,13 +555,13 @@ class TaskWorker:
                         limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
                         tickers=stock_symbols,
                     )
-                    # Assign news to symbols
+                    # Assign news to symbols using matches_symbols method
+                    # FMP already filters by tickers, so we trust the results
                     for item in stock_news:
                         for symbol in stock_symbols:
                             if len(fmp_result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                                if symbol in [s.upper() for s in item.symbols]:
-                                    fmp_result[symbol].append(item)
-                                elif not item.symbols:
+                                # Use matches_symbols which checks both symbols list AND title
+                                if item.matches_symbols([symbol]):
                                     fmp_result[symbol].append(item)
 
                     self.logger.info(f"[TaskWorker] FMP: {len(stock_news)} stock news for {stock_symbols}")
@@ -576,8 +576,8 @@ class TaskWorker:
                     for item in crypto_news:
                         for symbol in crypto_symbols:
                             if len(fmp_result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                                item_symbols_str = " ".join(item.symbols).upper()
-                                if symbol in item_symbols_str or symbol in item.title.upper():
+                                # Use matches_symbols which checks both symbols list AND title
+                                if item.matches_symbols([symbol]):
                                     fmp_result[symbol].append(item)
 
                     self.logger.info(f"[TaskWorker] FMP: {len(crypto_news)} crypto news")
