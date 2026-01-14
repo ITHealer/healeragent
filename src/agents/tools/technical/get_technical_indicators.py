@@ -1091,6 +1091,70 @@ class GetTechnicalIndicatorsTool(BaseTool):
         volume_signal = volume_analysis.get('signal', 'NORMAL')
         risk_level = "LOW" if adx_analysis.get('trend_strength') == 'strong' and volume_signal in ['HIGH', 'STRONG'] else "MODERATE" if adx_analysis.get('trend_strength') in ['moderate', 'strong'] else "HIGH"
 
+        # Signal breakdown for LLM understanding
+        signal_breakdown = {
+            "bullish_indicators": [],
+            "bearish_indicators": [],
+            "neutral_indicators": []
+        }
+
+        # Categorize each indicator signal
+        if rsi_analysis.get('signal') == 'BUY':
+            signal_breakdown["bullish_indicators"].append("RSI (oversold)")
+        elif rsi_analysis.get('signal') == 'SELL':
+            signal_breakdown["bearish_indicators"].append("RSI (overbought)")
+        else:
+            signal_breakdown["neutral_indicators"].append("RSI")
+
+        if macd_analysis.get('signal') == 'BULLISH':
+            signal_breakdown["bullish_indicators"].append("MACD")
+        elif macd_analysis.get('signal') == 'BEARISH':
+            signal_breakdown["bearish_indicators"].append("MACD")
+        else:
+            signal_breakdown["neutral_indicators"].append("MACD")
+
+        if trend_analysis.get('signal') == 'BULLISH':
+            signal_breakdown["bullish_indicators"].append("MA Trend")
+        elif trend_analysis.get('signal') == 'BEARISH':
+            signal_breakdown["bearish_indicators"].append("MA Trend")
+        else:
+            signal_breakdown["neutral_indicators"].append("MA Trend")
+
+        if stoch_analysis.get('signal') == 'BUY':
+            signal_breakdown["bullish_indicators"].append("Stochastic")
+        elif stoch_analysis.get('signal') == 'SELL':
+            signal_breakdown["bearish_indicators"].append("Stochastic")
+        else:
+            signal_breakdown["neutral_indicators"].append("Stochastic")
+
+        if adx_signal == 'BULLISH':
+            signal_breakdown["bullish_indicators"].append("ADX")
+        elif adx_signal == 'BEARISH':
+            signal_breakdown["bearish_indicators"].append("ADX")
+        else:
+            signal_breakdown["neutral_indicators"].append("ADX")
+
+        if 'BULLISH' in vwap_signal:
+            signal_breakdown["bullish_indicators"].append("VWAP")
+        elif 'BEARISH' in vwap_signal:
+            signal_breakdown["bearish_indicators"].append("VWAP")
+        else:
+            signal_breakdown["neutral_indicators"].append("VWAP")
+
+        if 'BULLISH' in obv_signal:
+            signal_breakdown["bullish_indicators"].append(f"OBV {'(divergence)' if 'DIVERGENCE' in obv_signal else ''}")
+        elif 'BEARISH' in obv_signal:
+            signal_breakdown["bearish_indicators"].append(f"OBV {'(divergence)' if 'DIVERGENCE' in obv_signal else ''}")
+        else:
+            signal_breakdown["neutral_indicators"].append("OBV")
+
+        if ma_signal == 'BULLISH':
+            signal_breakdown["bullish_indicators"].append("MA Crossover")
+        elif ma_signal == 'BEARISH':
+            signal_breakdown["bearish_indicators"].append("MA Crossover")
+        else:
+            signal_breakdown["neutral_indicators"].append("MA Crossover")
+
         return {
             "overall_action": action,
             "action_strength": action_strength,
@@ -1098,6 +1162,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "bearish_signals": int(bearish_count),
             "total_signals": int(total_indicators),
             "confidence_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
+            "signal_breakdown": signal_breakdown,
             "short_term_trade": short_term,
             "swing_trade": swing_trade,
             "key_levels": key_levels,
@@ -1106,10 +1171,32 @@ class GetTechnicalIndicatorsTool(BaseTool):
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
-        """Generate comprehensive LLM-friendly summary."""
+        """Generate comprehensive LLM-friendly summary with all insights."""
         outlook = result.get('outlook', {})
         rec = result.get('trading_recommendation', {})
         indicators = result.get('indicators', {})
+        price_ctx = result.get('price_context', {})
+        signals = result.get('signals', [])
+
+        # Build price context string
+        price_changes = price_ctx.get('price_changes', {})
+        price_change_str = []
+        if '1_day' in price_changes:
+            price_change_str.append(f"1d: {price_changes['1_day']:+.1f}%")
+        if '5_day' in price_changes:
+            price_change_str.append(f"5d: {price_changes['5_day']:+.1f}%")
+        if '20_day' in price_changes:
+            price_change_str.append(f"20d: {price_changes['20_day']:+.1f}%")
+
+        # Build indicator trend summary
+        rsi_data = indicators.get('rsi', {})
+        macd_data = indicators.get('macd', {})
+        rsi_trend = rsi_data.get('trend', 'unknown')
+        macd_hist_trend = macd_data.get('histogram_trend', 'unknown')
+
+        # Count signal agreement
+        bullish_signals = [s for s in signals if 'BULLISH' in s or 'GOLDEN' in s or 'BUY' in s or 'OVERSOLD' in s]
+        bearish_signals = [s for s in signals if 'BEARISH' in s or 'DEATH' in s or 'SELL' in s or 'OVERBOUGHT' in s]
 
         # Build summary
         lines = [
@@ -1117,34 +1204,90 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"",
             f"PRICE: ${current_price:.2f} | Period: {result.get('timeframe')} ({result.get('analysis_period_days')} days)",
             f"Data Range: {result.get('date_range')}",
-            f"",
+        ]
+
+        # Price context section
+        if price_ctx:
+            range_pos = price_ctx.get('range_position_pct')
+            period_high = price_ctx.get('period_high')
+            period_low = price_ctx.get('period_low')
+            lines.extend([
+                f"",
+                f"PRICE CONTEXT:",
+                f"- Period Range: ${period_low:.2f} - ${period_high:.2f}",
+                f"- Current Position: {range_pos:.0f}% of range (0%=low, 100%=high)",
+                f"- Price Changes: {', '.join(price_change_str) if price_change_str else 'N/A'}",
+            ])
+
+        # Extract indicator values for cleaner formatting
+        rsi_val = rsi_data.get('value')
+        rsi_val_str = f"{rsi_val:.1f}" if isinstance(rsi_val, (int, float)) else "N/A"
+        rsi_cond = (rsi_data.get('condition') or 'N/A').upper()
+
+        macd_hist = macd_data.get('histogram')
+        macd_hist_str = f"{macd_hist:.4f}" if isinstance(macd_hist, (int, float)) else "N/A"
+
+        adx_data = indicators.get('adx', {})
+        adx_val = adx_data.get('adx')
+        adx_val_str = f"{adx_val:.1f}" if isinstance(adx_val, (int, float)) else "N/A"
+        adx_strength = (adx_data.get('trend_strength') or 'N/A').upper()
+
+        stoch_cond = (indicators.get('stochastic', {}).get('condition') or 'N/A').upper()
+        vwap_signal = indicators.get('vwap', {}).get('signal', 'N/A')
+        vwap_pct = indicators.get('vwap', {}).get('price_vs_vwap_pct', 'N/A')
+
+        obv_sig = indicators.get('obv', {}).get('signal', 'N/A')
+        obv_div = indicators.get('obv', {}).get('divergence') or 'No divergence'
+
+        ma_cross_sig = indicators.get('ma_crossovers', {}).get('signal', 'N/A')
+        ma_alignment = (indicators.get('ma_crossovers', {}).get('current_alignment') or 'N/A').upper()
+
+        lines.extend([
+            "",
             f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Confidence: {outlook.get('confidence', 0):.0%})",
             f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')})",
-            f"",
-            f"KEY INDICATORS:",
-            f"- RSI (14d): {indicators.get('rsi', {}).get('value', 'N/A')} - {indicators.get('rsi', {}).get('condition', 'N/A').upper()}",
-            f"- MACD: {indicators.get('macd', {}).get('signal', 'N/A')} - Histogram: {indicators.get('macd', {}).get('histogram', 'N/A')}",
+            "",
+            "KEY INDICATORS (with trends):",
+            f"- RSI (14d): {rsi_val_str} - {rsi_cond} | Trend: {rsi_trend.upper()}",
+            f"- MACD: {macd_data.get('signal', 'N/A')} | Histogram: {macd_hist_str} ({macd_hist_trend.upper()})",
             f"- Trend: {indicators.get('moving_averages', {}).get('trend', 'N/A')}",
-            f"- ADX (14d): {indicators.get('adx', {}).get('adx', 'N/A')} - {indicators.get('adx', {}).get('trend_strength', 'N/A').upper()} trend",
-            f"- Stochastic: {indicators.get('stochastic', {}).get('condition', 'N/A').upper()}",
-            f"- VWAP: {indicators.get('vwap', {}).get('signal', 'N/A')} (Price vs VWAP: {indicators.get('vwap', {}).get('price_vs_vwap_pct', 'N/A')}%)",
-            f"- OBV: {indicators.get('obv', {}).get('signal', 'N/A')} - {indicators.get('obv', {}).get('divergence', 'No divergence') or 'No divergence'}",
-            f"- MA Crossover: {indicators.get('ma_crossovers', {}).get('signal', 'N/A')} - Alignment: {indicators.get('ma_crossovers', {}).get('current_alignment', 'N/A').upper() if indicators.get('ma_crossovers', {}).get('current_alignment') else 'N/A'}",
+            f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
+            f"- Stochastic: {stoch_cond}",
+            f"- VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%)",
+            f"- OBV: {obv_sig} - {obv_div}",
+            f"- MA Crossover: {ma_cross_sig} | Alignment: {ma_alignment}",
+        ])
+
+        # Signal confluence section
+        lines.extend([
+            f"",
+            f"SIGNAL CONFLUENCE:",
+            f"- Bullish signals ({len(bullish_signals)}): {', '.join(bullish_signals[:5]) if bullish_signals else 'None'}",
+            f"- Bearish signals ({len(bearish_signals)}): {', '.join(bearish_signals[:5]) if bearish_signals else 'None'}",
+            f"- Net bias: {'BULLISH' if len(bullish_signals) > len(bearish_signals) else 'BEARISH' if len(bearish_signals) > len(bullish_signals) else 'MIXED'}",
+        ])
+
+        # Support/Resistance
+        sr = result.get('support_resistance', {})
+        support_levels = sr.get('support_levels', [])
+        resistance_levels = sr.get('resistance_levels', [])
+        lines.extend([
             f"",
             f"TRADING LEVELS:",
-            f"- Support: {result.get('support_resistance', {}).get('support_levels', [{}])[0].get('price', 'N/A') if result.get('support_resistance', {}).get('support_levels') else 'N/A'}",
-            f"- Resistance: {result.get('support_resistance', {}).get('resistance_levels', [{}])[0].get('price', 'N/A') if result.get('support_resistance', {}).get('resistance_levels') else 'N/A'}",
-            f"",
-            f"SIGNALS: {', '.join(result.get('signals', [])[:5])}",
+            f"- Support: ${support_levels[0].get('price', 0):.2f} ({support_levels[0].get('distance_pct', 0):.1f}% below)" if support_levels else "- Support: N/A",
+            f"- Resistance: ${resistance_levels[0].get('price', 0):.2f} ({resistance_levels[0].get('distance_pct', 0):.1f}% above)" if resistance_levels else "- Resistance: N/A",
+        ])
+
+        lines.extend([
             f"",
             f"RECOMMENDATION:",
             f"Short-term (1-5d): {rec.get('short_term_trade', {}).get('action', 'N/A')} | Target: {rec.get('short_term_trade', {}).get('target_1', 'N/A')} | Stop: {rec.get('short_term_trade', {}).get('stop_loss', 'N/A')}",
             f"Swing (1-4w): {rec.get('swing_trade', {}).get('action', 'N/A')} - {rec.get('swing_trade', {}).get('condition', 'N/A')}",
             f"",
-            f"Risk Level: {rec.get('risk_level', 'N/A')}",
+            f"Risk Level: {rec.get('risk_level', 'N/A')} | Confidence: {rec.get('confidence_pct', 0):.0f}%",
             f"",
             f"Note: Technical analysis only. Combine with fundamental analysis and risk management."
-        ]
+        ])
 
         return "\n".join(lines)
 
