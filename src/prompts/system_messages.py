@@ -283,3 +283,17 @@ def get_system_message_simple(detected_language: str = "en") -> str:
 
 Provide clear, concise, and accurate information based on your knowledge.
 If you need current data to answer properly, inform the user that you can search for real-time information."""
+
+
+def get_system_message_minimal(detected_language: str = "en") -> str:
+    """
+    Get MINIMAL system prompt to maximize response length.
+
+    For testing: Smaller prompts = More room for model to generate longer responses.
+    """
+    lang_instructions = {
+        "vi": "Trả lời bằng tiếng Việt. Phân tích CHI TIẾT và ĐẦY ĐỦ tất cả dữ liệu.",
+        "en": "Respond in English. Provide DETAILED and COMPREHENSIVE analysis of all data.",
+    }
+
+    return lang_instructions.get(detected_language, lang_instructions["en"])
