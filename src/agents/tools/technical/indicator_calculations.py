@@ -1196,15 +1196,23 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
     # MA Crossover signals (from nested structure)
     ma_cross_data = data.get('ma_crossovers', {})
     if isinstance(ma_cross_data, dict):
-        if ma_cross_data.get('golden_cross', {}).get('detected'):
+        # Check golden_cross safely - value can be None or dict
+        golden_cross = ma_cross_data.get('golden_cross')
+        if isinstance(golden_cross, dict) and golden_cross.get('detected'):
             signals.append('GOLDEN_CROSS')
-        if ma_cross_data.get('death_cross', {}).get('detected'):
+
+        # Check death_cross safely
+        death_cross = ma_cross_data.get('death_cross')
+        if isinstance(death_cross, dict) and death_cross.get('detected'):
             signals.append('DEATH_CROSS')
-        sma_20_50 = ma_cross_data.get('sma_20_50_cross', {})
-        if isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bullish':
-            signals.append('SMA_20_50_BULLISH_CROSS')
-        elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bearish':
-            signals.append('SMA_20_50_BEARISH_CROSS')
+
+        # Check SMA 20/50 crossover
+        sma_20_50 = ma_cross_data.get('sma_20_50_cross')
+        if isinstance(sma_20_50, dict):
+            if sma_20_50.get('type') == 'bullish':
+                signals.append('SMA_20_50_BULLISH_CROSS')
+            elif sma_20_50.get('type') == 'bearish':
+                signals.append('SMA_20_50_BEARISH_CROSS')
 
     return signals
 
