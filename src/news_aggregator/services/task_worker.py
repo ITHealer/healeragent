@@ -503,6 +503,9 @@ class TaskWorker:
         """
         Fetch news articles for each symbol using FMP tickers filter.
 
+        FMP API filters by tickers directly, so returned news is already relevant.
+        We just group by symbol without additional filtering.
+
         Args:
             symbols: List of symbols to fetch news for
 
@@ -527,17 +530,25 @@ class TaskWorker:
                 else:
                     stock_symbols.append(symbol_upper)
 
-            all_news: List[UnifiedNewsItem] = []
-
-            # Fetch stock news with tickers filter
+            # Fetch stock news with tickers filter (FMP API filters for us)
             if stock_symbols:
                 stock_news = await self._fmp_provider.fetch_news(
                     categories=[NewsCategory.STOCK],
                     page=0,
                     limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
-                    tickers=stock_symbols,  # Filter by specific tickers
+                    tickers=stock_symbols,
                 )
-                all_news.extend(stock_news)
+                # FMP returns news filtered by tickers - assign to symbols directly
+                for item in stock_news:
+                    for symbol in stock_symbols:
+                        if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                            # FMP filters by ticker, so all returned news is relevant
+                            if symbol in [s.upper() for s in item.symbols]:
+                                result[symbol].append(item)
+                            # If no specific symbol in item, assign to all requested
+                            elif not item.symbols:
+                                result[symbol].append(item)
+
                 self.logger.info(f"[TaskWorker] Fetched {len(stock_news)} stock news for {stock_symbols}")
 
             # Fetch crypto news
@@ -547,21 +558,16 @@ class TaskWorker:
                     page=0,
                     limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
                 )
-                all_news.extend(crypto_news)
-                self.logger.info(f"[TaskWorker] Fetched {len(crypto_news)} crypto news")
+                # Assign crypto news to matching symbols
+                for item in crypto_news:
+                    for symbol in crypto_symbols:
+                        if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                            # Check if symbol appears in item's symbols (e.g., BTCUSD contains BTC)
+                            item_symbols_str = " ".join(item.symbols).upper()
+                            if symbol in item_symbols_str or symbol in item.title.upper():
+                                result[symbol].append(item)
 
-            # Group news by symbol
-            for item in all_news:
-                for symbol in symbols:
-                    symbol_upper = symbol.upper()
-                    # Check if symbol matches
-                    is_match = (
-                        symbol_upper in [s.upper() for s in item.symbols]
-                        or symbol_upper in item.title.upper()
-                        or (item.content and symbol_upper in item.content.upper()[:500])
-                    )
-                    if is_match and len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                        result[symbol].append(item)
+                self.logger.info(f"[TaskWorker] Fetched {len(crypto_news)} crypto news")
 
             # Log results
             for symbol, news_list in result.items():
