@@ -43,7 +43,9 @@ from src.agents.tools.technical.indicator_calculations import (
     analyze_trend,
     analyze_adx,
     analyze_vwap,
-    analyze_volume
+    analyze_volume,
+    analyze_obv,
+    detect_ma_crossovers
 )
 from src.agents.tools.technical.technical_constants import TECHNICAL_CONFIG
 
@@ -478,6 +480,35 @@ class GetTechnicalIndicatorsTool(BaseTool):
         }
 
         # =====================================================================
+        # OBV Analysis (On-Balance Volume)
+        # =====================================================================
+        obv = indicator_values.get('obv')
+        obv_analysis = analyze_obv(df['obv'], df['close'], lookback=14)
+        result['indicators']['obv'] = {
+            "value": obv,
+            "obv_trend": obv_analysis.get('obv_trend'),
+            "price_trend": obv_analysis.get('price_trend'),
+            "divergence": obv_analysis.get('divergence'),
+            "signal": obv_analysis.get('signal'),
+            "lookback_days": 14,
+            "explanation": self._get_obv_explanation(obv_analysis)
+        }
+
+        # =====================================================================
+        # MA Crossovers (Golden Cross / Death Cross)
+        # =====================================================================
+        ma_crossovers = detect_ma_crossovers(df, lookback=10)
+        result['indicators']['ma_crossovers'] = {
+            "golden_cross": ma_crossovers.get('golden_cross'),
+            "death_cross": ma_crossovers.get('death_cross'),
+            "sma_20_50_cross": ma_crossovers.get('sma_20_50_cross'),
+            "current_alignment": ma_crossovers.get('current_alignment'),
+            "signal": ma_crossovers.get('signal'),
+            "lookback_days": 10,
+            "explanation": self._get_ma_crossover_explanation(ma_crossovers)
+        }
+
+        # =====================================================================
         # Support and Resistance Levels
         # =====================================================================
         highs = df['high'].values
@@ -527,6 +558,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
             adx_analysis=adx_analysis,
             vwap_analysis=vwap_analysis,
             volume_analysis=volume_analysis,
+            obv_analysis=obv_analysis,
+            ma_crossovers=ma_crossovers,
             outlook=result['outlook'],
             support_levels=support_levels,
             resistance_levels=resistance_levels
@@ -709,6 +742,65 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         return signals.get(signal, f"Volume: {volume:,}, Avg: {avg_volume:,}, Ratio: {ratio:.1f}x")
 
+    def _get_obv_explanation(self, analysis: Dict) -> str:
+        """Generate LLM-friendly OBV explanation."""
+        if not analysis or analysis.get('trend') == 'unknown':
+            return "OBV data not available or insufficient data for analysis."
+
+        signal = analysis.get('signal', 'NEUTRAL')
+        obv_trend = analysis.get('obv_trend', 'flat')
+        price_trend = analysis.get('price_trend', 'flat')
+        divergence = analysis.get('divergence')
+        description = analysis.get('description', '')
+
+        base = f"OBV Trend: {obv_trend.upper()}, Price Trend: {price_trend.upper()} (14-day). "
+
+        if divergence == 'bullish':
+            return base + "BULLISH DIVERGENCE DETECTED - OBV rising while price falling. This often precedes a price reversal UPWARD. Strong buy signal."
+        elif divergence == 'bearish':
+            return base + "BEARISH DIVERGENCE DETECTED - OBV falling while price rising. This often precedes a price reversal DOWNWARD. Caution advised."
+        elif signal == 'BULLISH':
+            return base + "OBV confirms uptrend - accumulation phase. Buyers are in control, volume supports price increase."
+        elif signal == 'BEARISH':
+            return base + "OBV confirms downtrend - distribution phase. Sellers are in control, volume supports price decrease."
+        else:
+            return base + "No clear divergence. Watch for OBV to confirm price direction."
+
+    def _get_ma_crossover_explanation(self, analysis: Dict) -> str:
+        """Generate LLM-friendly MA Crossover explanation."""
+        if not analysis:
+            return "MA crossover data not available."
+
+        golden = analysis.get('golden_cross')
+        death = analysis.get('death_cross')
+        sma_20_50 = analysis.get('sma_20_50_cross')
+        alignment = analysis.get('current_alignment')
+        description = analysis.get('description', 'No recent crossovers detected')
+
+        parts = []
+
+        if golden and golden.get('detected'):
+            parts.append(f"GOLDEN CROSS detected {golden.get('days_ago', 'recently')} days ago (SMA_50 crossed above SMA_200). This is a classic BULLISH signal suggesting potential long-term uptrend.")
+
+        if death and death.get('detected'):
+            parts.append(f"DEATH CROSS detected {death.get('days_ago', 'recently')} days ago (SMA_50 crossed below SMA_200). This is a classic BEARISH signal suggesting potential long-term downtrend.")
+
+        if sma_20_50 and isinstance(sma_20_50, dict):
+            cross_type = sma_20_50.get('type', '')
+            days = sma_20_50.get('days_ago', 'recently')
+            if cross_type == 'bullish':
+                parts.append(f"Short-term bullish crossover: SMA_20 crossed above SMA_50 ({days} days ago). Near-term momentum is positive.")
+            elif cross_type == 'bearish':
+                parts.append(f"Short-term bearish crossover: SMA_20 crossed below SMA_50 ({days} days ago). Near-term momentum is negative.")
+
+        if alignment:
+            parts.append(f"Current MA alignment: {alignment.upper()} (SMA_50 {'above' if alignment == 'bullish' else 'below'} SMA_200).")
+
+        if not parts:
+            return description
+
+        return " ".join(parts)
+
     def _get_sr_explanation(self, price: float, supports: List, resistances: List) -> str:
         """Generate LLM-friendly Support/Resistance explanation."""
         parts = [f"Current price: ${price:.2f}"]
@@ -749,6 +841,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         adx_analysis: Dict,
         vwap_analysis: Dict,
         volume_analysis: Dict,
+        obv_analysis: Dict,
+        ma_crossovers: Dict,
         outlook: Dict,
         support_levels: List,
         resistance_levels: List
@@ -803,6 +897,34 @@ class GetTechnicalIndicatorsTool(BaseTool):
         elif 'BEARISH' in vwap_signal:
             bearish_count += 0.5
         total_indicators += 0.5
+
+        # OBV signal (divergence is strong signal)
+        obv_signal = obv_analysis.get('signal', 'NEUTRAL')
+        if obv_signal == 'BULLISH_DIVERGENCE':
+            bullish_count += 1.5  # Divergence is strong signal
+        elif obv_signal == 'BEARISH_DIVERGENCE':
+            bearish_count += 1.5
+        elif obv_signal == 'BULLISH':
+            bullish_count += 0.5
+        elif obv_signal == 'BEARISH':
+            bearish_count += 0.5
+        total_indicators += 1
+
+        # MA Crossover signal (Golden/Death Cross is strong signal)
+        ma_signal = ma_crossovers.get('signal', 'NEUTRAL')
+        if ma_signal == 'BULLISH':  # Golden Cross detected
+            bullish_count += 1.5  # Strong signal
+        elif ma_signal == 'BEARISH':  # Death Cross detected
+            bearish_count += 1.5
+
+        # Also consider short-term SMA 20/50 crossover
+        sma_20_50 = ma_crossovers.get('sma_20_50_cross', {})
+        if isinstance(sma_20_50, dict):
+            if sma_20_50.get('type') == 'bullish':
+                bullish_count += 0.5
+            elif sma_20_50.get('type') == 'bearish':
+                bearish_count += 0.5
+        total_indicators += 1
 
         # Calculate bias
         bullish_pct = bullish_count / total_indicators if total_indicators > 0 else 0
@@ -892,6 +1014,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- ADX (14d): {indicators.get('adx', {}).get('adx', 'N/A')} - {indicators.get('adx', {}).get('trend_strength', 'N/A').upper()} trend",
             f"- Stochastic: {indicators.get('stochastic', {}).get('condition', 'N/A').upper()}",
             f"- VWAP: {indicators.get('vwap', {}).get('signal', 'N/A')} (Price vs VWAP: {indicators.get('vwap', {}).get('price_vs_vwap_pct', 'N/A')}%)",
+            f"- OBV: {indicators.get('obv', {}).get('signal', 'N/A')} - {indicators.get('obv', {}).get('divergence', 'No divergence') or 'No divergence'}",
+            f"- MA Crossover: {indicators.get('ma_crossovers', {}).get('signal', 'N/A')} - Alignment: {indicators.get('ma_crossovers', {}).get('current_alignment', 'N/A').upper() if indicators.get('ma_crossovers', {}).get('current_alignment') else 'N/A'}",
             f"",
             f"TRADING LEVELS:",
             f"- Support: {result.get('support_resistance', {}).get('support_levels', [{}])[0].get('price', 'N/A') if result.get('support_resistance', {}).get('support_levels') else 'N/A'}",

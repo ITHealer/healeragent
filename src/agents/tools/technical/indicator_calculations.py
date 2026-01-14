@@ -116,6 +116,12 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     typical_price = (df['high'] + df['low'] + df['close']) / 3
     df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
 
+    # OBV (On-Balance Volume)
+    # OBV adds volume on up days and subtracts on down days
+    price_change = df['close'].diff()
+    obv_direction = np.where(price_change > 0, 1, np.where(price_change < 0, -1, 0))
+    df['obv'] = (df['volume'] * obv_direction).cumsum()
+
     # Price Range (ADR)
     daily_range = df['high'] - df['low']
     df['adr'] = daily_range.rolling(window=cfg.ADR_PERIOD).mean()
@@ -565,6 +571,187 @@ def analyze_vwap(price: float, vwap: float) -> Dict[str, Any]:
     return result
 
 
+def analyze_obv(
+    obv_series: pd.Series,
+    price_series: pd.Series,
+    lookback: int = 14
+) -> Dict[str, Any]:
+    """
+    Analyze On-Balance Volume (OBV) for trend confirmation.
+
+    OBV Theory:
+    - OBV rising with price rising = Confirmed uptrend (accumulation)
+    - OBV falling with price falling = Confirmed downtrend (distribution)
+    - OBV rising while price falling = Bullish divergence (potential reversal up)
+    - OBV falling while price rising = Bearish divergence (potential reversal down)
+
+    Args:
+        obv_series: OBV values series
+        price_series: Close price series
+        lookback: Period for trend analysis
+
+    Returns:
+        Dict with OBV analysis and divergence detection
+    """
+    if obv_series.empty or price_series.empty or len(obv_series) < lookback:
+        return {'signal': 'NEUTRAL', 'trend': 'unknown', 'divergence': None}
+
+    # Get recent values
+    recent_obv = obv_series.tail(lookback)
+    recent_price = price_series.tail(lookback)
+
+    # Calculate trends
+    obv_start, obv_end = recent_obv.iloc[0], recent_obv.iloc[-1]
+    price_start, price_end = recent_price.iloc[0], recent_price.iloc[-1]
+
+    obv_change_pct = ((obv_end - obv_start) / abs(obv_start) * 100) if obv_start != 0 else 0
+    price_change_pct = ((price_end - price_start) / price_start * 100) if price_start != 0 else 0
+
+    result = {
+        'obv_current': int(obv_end),
+        'obv_change_pct': round(obv_change_pct, 2),
+        'price_change_pct': round(price_change_pct, 2),
+        'lookback_days': lookback
+    }
+
+    # Determine OBV trend
+    obv_trend = 'rising' if obv_change_pct > 2 else 'falling' if obv_change_pct < -2 else 'flat'
+    price_trend = 'rising' if price_change_pct > 2 else 'falling' if price_change_pct < -2 else 'flat'
+
+    result['obv_trend'] = obv_trend
+    result['price_trend'] = price_trend
+
+    # Detect divergence and signal
+    if obv_trend == 'rising' and price_trend == 'rising':
+        result['signal'] = 'BULLISH'
+        result['divergence'] = None
+        result['description'] = 'OBV confirms uptrend - accumulation phase, buyers in control'
+    elif obv_trend == 'falling' and price_trend == 'falling':
+        result['signal'] = 'BEARISH'
+        result['divergence'] = None
+        result['description'] = 'OBV confirms downtrend - distribution phase, sellers in control'
+    elif obv_trend == 'rising' and price_trend == 'falling':
+        result['signal'] = 'BULLISH_DIVERGENCE'
+        result['divergence'] = 'bullish'
+        result['description'] = 'BULLISH DIVERGENCE - OBV rising while price falls, potential reversal UP'
+    elif obv_trend == 'falling' and price_trend == 'rising':
+        result['signal'] = 'BEARISH_DIVERGENCE'
+        result['divergence'] = 'bearish'
+        result['description'] = 'BEARISH DIVERGENCE - OBV falling while price rises, potential reversal DOWN'
+    else:
+        result['signal'] = 'NEUTRAL'
+        result['divergence'] = None
+        result['description'] = 'OBV trend inconclusive - wait for clearer signal'
+
+    return result
+
+
+def detect_ma_crossovers(
+    df: pd.DataFrame,
+    lookback: int = 5
+) -> Dict[str, Any]:
+    """
+    Detect Moving Average crossovers (Golden Cross / Death Cross).
+
+    Golden Cross: Short-term MA (SMA_50) crosses ABOVE long-term MA (SMA_200)
+                  → Bullish signal, suggests uptrend beginning
+    Death Cross: Short-term MA (SMA_50) crosses BELOW long-term MA (SMA_200)
+                 → Bearish signal, suggests downtrend beginning
+
+    Also detects faster crossovers:
+    - SMA_20 crossing SMA_50 for medium-term signals
+
+    Args:
+        df: DataFrame with sma_20, sma_50, sma_200 columns
+        lookback: Number of days to look back for crossover detection
+
+    Returns:
+        Dict with crossover detection results
+    """
+    result = {
+        'golden_cross': None,
+        'death_cross': None,
+        'sma_20_50_cross': None,
+        'current_alignment': None,
+        'signal': 'NEUTRAL',
+        'description': 'No recent crossovers detected'
+    }
+
+    if df.empty or len(df) < lookback + 1:
+        return result
+
+    # Get recent data
+    recent = df.tail(lookback + 1)
+
+    sma_50 = recent.get('sma_50')
+    sma_200 = recent.get('sma_200')
+    sma_20 = recent.get('sma_20')
+
+    # Check SMA_50 vs SMA_200 (Golden/Death Cross)
+    if sma_50 is not None and sma_200 is not None:
+        if not sma_50.isna().all() and not sma_200.isna().all():
+            # Calculate crossover: when difference changes sign
+            diff = sma_50 - sma_200
+
+            for i in range(1, len(diff)):
+                prev_diff = diff.iloc[i - 1]
+                curr_diff = diff.iloc[i]
+
+                if pd.notna(prev_diff) and pd.notna(curr_diff):
+                    # Golden Cross: diff goes from negative to positive
+                    if prev_diff <= 0 and curr_diff > 0:
+                        result['golden_cross'] = {
+                            'detected': True,
+                            'days_ago': lookback - i,
+                            'sma_50': round(float(sma_50.iloc[i]), 2),
+                            'sma_200': round(float(sma_200.iloc[i]), 2)
+                        }
+                        result['signal'] = 'BULLISH'
+                        result['description'] = f'GOLDEN CROSS detected {lookback - i} days ago - SMA_50 crossed above SMA_200, bullish signal'
+
+                    # Death Cross: diff goes from positive to negative
+                    elif prev_diff >= 0 and curr_diff < 0:
+                        result['death_cross'] = {
+                            'detected': True,
+                            'days_ago': lookback - i,
+                            'sma_50': round(float(sma_50.iloc[i]), 2),
+                            'sma_200': round(float(sma_200.iloc[i]), 2)
+                        }
+                        result['signal'] = 'BEARISH'
+                        result['description'] = f'DEATH CROSS detected {lookback - i} days ago - SMA_50 crossed below SMA_200, bearish signal'
+
+            # Current alignment
+            latest_sma_50 = sma_50.iloc[-1]
+            latest_sma_200 = sma_200.iloc[-1]
+            if pd.notna(latest_sma_50) and pd.notna(latest_sma_200):
+                result['current_alignment'] = 'bullish' if latest_sma_50 > latest_sma_200 else 'bearish'
+
+    # Check SMA_20 vs SMA_50 (faster signal)
+    if sma_20 is not None and sma_50 is not None:
+        if not sma_20.isna().all() and not sma_50.isna().all():
+            diff_20_50 = sma_20 - sma_50
+
+            for i in range(1, len(diff_20_50)):
+                prev_diff = diff_20_50.iloc[i - 1]
+                curr_diff = diff_20_50.iloc[i]
+
+                if pd.notna(prev_diff) and pd.notna(curr_diff):
+                    if prev_diff <= 0 and curr_diff > 0:
+                        result['sma_20_50_cross'] = {
+                            'type': 'bullish',
+                            'days_ago': lookback - i,
+                            'description': 'SMA_20 crossed above SMA_50 - short-term bullish'
+                        }
+                    elif prev_diff >= 0 and curr_diff < 0:
+                        result['sma_20_50_cross'] = {
+                            'type': 'bearish',
+                            'days_ago': lookback - i,
+                            'description': 'SMA_20 crossed below SMA_50 - short-term bearish'
+                        }
+
+    return result
+
+
 # =============================================================================
 # SUPPORT & RESISTANCE
 # =============================================================================
@@ -997,6 +1184,28 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
         elif volume_ratio <= cfg.VOLUME_LOW_THRESHOLD:
             signals.append('VOLUME_LOW')
 
+    # OBV divergence signals (from nested structure)
+    obv_data = data.get('obv', {})
+    if isinstance(obv_data, dict):
+        obv_divergence = obv_data.get('divergence')
+        if obv_divergence == 'bullish':
+            signals.append('OBV_BULLISH_DIVERGENCE')
+        elif obv_divergence == 'bearish':
+            signals.append('OBV_BEARISH_DIVERGENCE')
+
+    # MA Crossover signals (from nested structure)
+    ma_cross_data = data.get('ma_crossovers', {})
+    if isinstance(ma_cross_data, dict):
+        if ma_cross_data.get('golden_cross', {}).get('detected'):
+            signals.append('GOLDEN_CROSS')
+        if ma_cross_data.get('death_cross', {}).get('detected'):
+            signals.append('DEATH_CROSS')
+        sma_20_50 = ma_cross_data.get('sma_20_50_cross', {})
+        if isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bullish':
+            signals.append('SMA_20_50_BULLISH_CROSS')
+        elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bearish':
+            signals.append('SMA_20_50_BEARISH_CROSS')
+
     return signals
 
 
@@ -1113,6 +1322,7 @@ def get_indicator_summary(df: pd.DataFrame) -> Dict[str, Any]:
         'di_plus': round(float(latest['di_plus']), 2) if pd.notna(latest.get('di_plus')) else None,
         'di_minus': round(float(latest['di_minus']), 2) if pd.notna(latest.get('di_minus')) else None,
         'vwap': round(float(latest['vwap']), 2) if pd.notna(latest.get('vwap')) else None,
+        'obv': int(latest['obv']) if pd.notna(latest.get('obv')) else None,
         'volume': int(latest['volume']) if pd.notna(latest.get('volume')) else None,
         'volume_sma_20': int(latest['volume_sma_20']) if pd.notna(latest.get('volume_sma_20')) else None,
         'volume_ratio': round(float(latest['volume_ratio']), 2) if pd.notna(latest.get('volume_ratio')) else None
