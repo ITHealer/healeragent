@@ -111,6 +111,11 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df['volume_sma_20'] = ta.sma(df['volume'], length=cfg.VOLUME_SMA_PERIOD)
     df['volume_ratio'] = df['volume'] / df['volume_sma_20']
 
+    # VWAP (Volume Weighted Average Price)
+    # Calculate cumulative VWAP for the entire period
+    typical_price = (df['high'] + df['low'] + df['close']) / 3
+    df['vwap'] = (typical_price * df['volume']).cumsum() / df['volume'].cumsum()
+
     # Price Range (ADR)
     daily_range = df['high'] - df['low']
     df['adr'] = daily_range.rolling(window=cfg.ADR_PERIOD).mean()
@@ -242,6 +247,33 @@ def calculate_adx(
         'di_plus': round(float(latest.iloc[1]), 2),
         'di_minus': round(float(latest.iloc[2]), 2)
     }
+
+
+def calculate_vwap(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    volume: pd.Series
+) -> Dict[str, float]:
+    """
+    Calculate Volume Weighted Average Price (VWAP).
+
+    VWAP = Cumulative(Typical Price × Volume) / Cumulative(Volume)
+    where Typical Price = (High + Low + Close) / 3
+
+    Returns:
+        Dict with vwap value for the latest data point
+    """
+    if any(s.empty for s in [high, low, close, volume]):
+        return {'vwap': 0.0}
+
+    typical_price = (high + low + close) / 3
+    vwap_series = (typical_price * volume).cumsum() / volume.cumsum()
+
+    if vwap_series.empty or pd.isna(vwap_series.iloc[-1]):
+        return {'vwap': 0.0}
+
+    return {'vwap': round(float(vwap_series.iloc[-1]), 2)}
 
 
 # =============================================================================
@@ -475,6 +507,60 @@ def analyze_adx(adx: float, di_plus: float, di_minus: float) -> Dict[str, Any]:
     else:
         result['direction'] = 'bearish'
         result['signal'] = 'BEARISH' if adx >= cfg.ADX_STRONG_TREND else 'NEUTRAL'
+
+    return result
+
+
+def analyze_vwap(price: float, vwap: float) -> Dict[str, Any]:
+    """
+    Analyze VWAP relative to current price.
+
+    VWAP (Volume Weighted Average Price) is used by institutions to gauge
+    whether they paid a fair price. Key interpretations:
+    - Price > VWAP: Bullish intraday sentiment, buyers in control
+    - Price < VWAP: Bearish intraday sentiment, sellers in control
+    - Price near VWAP: Fair value zone, watch for breakout
+
+    Args:
+        price: Current price
+        vwap: VWAP value
+
+    Returns:
+        Dict with analysis including signal and description
+    """
+    if any(pd.isna([price, vwap])) or vwap == 0:
+        return {'signal': 'NEUTRAL', 'position': 'unknown', 'vwap': None}
+
+    result = {
+        'price': round(price, 2),
+        'vwap': round(vwap, 2)
+    }
+
+    # Calculate percentage difference
+    diff_pct = ((price - vwap) / vwap) * 100
+    result['diff_pct'] = round(diff_pct, 2)
+
+    # Determine signal based on position relative to VWAP
+    if diff_pct > 2.0:  # Price significantly above VWAP
+        result['signal'] = 'BULLISH'
+        result['position'] = 'above_vwap'
+        result['description'] = 'Price above VWAP - bullish momentum, institutional buying pressure'
+    elif diff_pct < -2.0:  # Price significantly below VWAP
+        result['signal'] = 'BEARISH'
+        result['position'] = 'below_vwap'
+        result['description'] = 'Price below VWAP - bearish momentum, institutional selling pressure'
+    elif diff_pct > 0.5:  # Slightly above
+        result['signal'] = 'SLIGHTLY_BULLISH'
+        result['position'] = 'slightly_above_vwap'
+        result['description'] = 'Price slightly above VWAP - mild bullish bias'
+    elif diff_pct < -0.5:  # Slightly below
+        result['signal'] = 'SLIGHTLY_BEARISH'
+        result['position'] = 'slightly_below_vwap'
+        result['description'] = 'Price slightly below VWAP - mild bearish bias'
+    else:  # Near VWAP
+        result['signal'] = 'NEUTRAL'
+        result['position'] = 'at_vwap'
+        result['description'] = 'Price at fair value (VWAP) - watch for directional breakout'
 
     return result
 
@@ -795,12 +881,37 @@ def _detect_bear_flag(
 # =============================================================================
 
 def generate_signals(data: Dict[str, Any]) -> List[str]:
-    """Generate trading signals from indicator values."""
+    """
+    Generate trading signals from indicator values.
+
+    Supports both flat structure (backward compatible) and nested structure
+    from the comprehensive technical indicators tool.
+    """
     cfg = TECHNICAL_CONFIG
     signals = []
 
+    # Helper to extract value from nested or flat structure
+    def get_value(key: str, nested_path: tuple = None):
+        """Get value from flat key or nested path."""
+        # Try flat structure first
+        if key in data:
+            val = data.get(key)
+            if isinstance(val, dict):
+                return val.get('value')
+            return val
+        # Try nested structure
+        if nested_path:
+            obj = data
+            for p in nested_path:
+                if isinstance(obj, dict):
+                    obj = obj.get(p, {})
+                else:
+                    return None
+            return obj if not isinstance(obj, dict) else obj.get('value')
+        return None
+
     # RSI signals
-    rsi = data.get('rsi_14') or data.get('rsi')
+    rsi = get_value('rsi_14') or get_value('rsi', ('rsi', 'value'))
     if rsi:
         if rsi > cfg.RSI_OVERBOUGHT:
             signals.append('RSI_OVERBOUGHT')
@@ -810,14 +921,23 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
             signals.append('RSI_NEUTRAL')
 
     # MACD signals
-    macd_hist = data.get('macd_histogram')
+    macd_hist = get_value('macd_histogram') or get_value('histogram', ('macd', 'histogram'))
     if macd_hist is not None:
         signals.append('MACD_BULLISH' if macd_hist > 0 else 'MACD_BEARISH')
 
     # Trend signals (price vs SMA)
     price = data.get('current_price', 0)
-    sma_200 = data.get('sma_200')
-    sma_50 = data.get('sma_50')
+
+    # Try flat then nested for SMAs
+    sma_200 = get_value('sma_200')
+    if sma_200 is None:
+        ma_data = data.get('moving_averages', {}).get('sma', {})
+        sma_200 = ma_data.get('sma_200', {}).get('value') if isinstance(ma_data.get('sma_200'), dict) else None
+
+    sma_50 = get_value('sma_50')
+    if sma_50 is None:
+        ma_data = data.get('moving_averages', {}).get('sma', {})
+        sma_50 = ma_data.get('sma_50', {}).get('value') if isinstance(ma_data.get('sma_50'), dict) else None
 
     if sma_200 and price:
         signals.append(
@@ -832,8 +952,8 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
         )
 
     # Bollinger Bands signals
-    bb_upper = data.get('bb_upper')
-    bb_lower = data.get('bb_lower')
+    bb_upper = get_value('bb_upper') or get_value('upper', ('bollinger_bands', 'upper'))
+    bb_lower = get_value('bb_lower') or get_value('lower', ('bollinger_bands', 'lower'))
 
     if bb_upper and bb_lower and price:
         if price > bb_upper:
@@ -842,8 +962,8 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
             signals.append('PRICE_BELOW_LOWER_BAND')
 
     # Stochastic signals
-    stoch_k = data.get('stoch_k')
-    stoch_d = data.get('stoch_d')
+    stoch_k = get_value('stoch_k') or get_value('k', ('stochastic', 'k'))
+    stoch_d = get_value('stoch_d') or get_value('d', ('stochastic', 'd'))
 
     if stoch_k and stoch_d:
         if stoch_k > cfg.STOCH_OVERBOUGHT and stoch_d > cfg.STOCH_OVERBOUGHT:
@@ -852,12 +972,30 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
             signals.append('STOCH_OVERSOLD')
 
     # ADX signals
-    adx = data.get('adx')
+    adx = get_value('adx') or get_value('adx', ('adx', 'adx'))
     if adx:
         if adx > cfg.ADX_STRONG_TREND:
             signals.append('TREND_STRONG')
         else:
             signals.append('TREND_WEAK')
+
+    # VWAP signals (new)
+    vwap = get_value('vwap') or get_value('vwap', ('vwap', 'value'))
+    if vwap and price:
+        if price > vwap * 1.02:
+            signals.append('PRICE_ABOVE_VWAP')
+        elif price < vwap * 0.98:
+            signals.append('PRICE_BELOW_VWAP')
+
+    # Volume signals (new)
+    volume_ratio = get_value('volume_ratio') or get_value('ratio', ('volume', 'ratio'))
+    if volume_ratio:
+        if volume_ratio >= cfg.VOLUME_VERY_HIGH_THRESHOLD:
+            signals.append('VOLUME_VERY_HIGH')
+        elif volume_ratio >= cfg.VOLUME_HIGH_THRESHOLD:
+            signals.append('VOLUME_HIGH')
+        elif volume_ratio <= cfg.VOLUME_LOW_THRESHOLD:
+            signals.append('VOLUME_LOW')
 
     return signals
 
@@ -973,5 +1111,9 @@ def get_indicator_summary(df: pd.DataFrame) -> Dict[str, Any]:
         'stoch_d': round(float(latest['stoch_d']), 2) if pd.notna(latest.get('stoch_d')) else None,
         'adx': round(float(latest['adx']), 2) if pd.notna(latest.get('adx')) else None,
         'di_plus': round(float(latest['di_plus']), 2) if pd.notna(latest.get('di_plus')) else None,
-        'di_minus': round(float(latest['di_minus']), 2) if pd.notna(latest.get('di_minus')) else None
+        'di_minus': round(float(latest['di_minus']), 2) if pd.notna(latest.get('di_minus')) else None,
+        'vwap': round(float(latest['vwap']), 2) if pd.notna(latest.get('vwap')) else None,
+        'volume': int(latest['volume']) if pd.notna(latest.get('volume')) else None,
+        'volume_sma_20': int(latest['volume_sma_20']) if pd.notna(latest.get('volume_sma_20')) else None,
+        'volume_ratio': round(float(latest['volume_ratio']), 2) if pd.notna(latest.get('volume_ratio')) else None
     }

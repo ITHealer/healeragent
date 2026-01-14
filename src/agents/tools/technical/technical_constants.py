@@ -90,6 +90,11 @@ class TechnicalAnalysisConfig:
     ADX_MODERATE_TREND: float = 20.0     # Moderate trend
 
     # =========================================================================
+    # VWAP Configuration
+    # =========================================================================
+    VWAP_ANCHOR: str = "D"  # Daily anchor for VWAP (D=Day, W=Week, M=Month)
+
+    # =========================================================================
     # CCI Configuration (for future use)
     # =========================================================================
     CCI_PERIOD: int = 20

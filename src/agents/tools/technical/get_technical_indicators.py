@@ -1,14 +1,22 @@
 """
 Technical Indicators Tool
 
-Fetches historical price data and calculates technical indicators.
-Returns indicator values with buy/sell signals for trading analysis.
+Fetches historical price data and calculates comprehensive technical indicators.
+Returns indicator values with detailed analysis, LLM-friendly explanations,
+and actionable trading recommendations.
+
+Key Features:
+- 9 core indicators: RSI, MACD, SMA, EMA, BB, ATR, STOCH, ADX, VWAP
+- Clear calculation periods specified for each indicator
+- LLM-friendly text explanations for model understanding
+- Actionable trading recommendations (short-term and long-term)
+- Support/Resistance levels and chart patterns
 """
 
 import httpx
 import logging
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -33,19 +41,27 @@ from src.agents.tools.technical.indicator_calculations import (
     analyze_bollinger_bands,
     analyze_stochastic,
     analyze_trend,
-    analyze_adx
+    analyze_adx,
+    analyze_vwap,
+    analyze_volume
 )
+from src.agents.tools.technical.technical_constants import TECHNICAL_CONFIG
 
 
 class GetTechnicalIndicatorsTool(BaseTool):
     """
-    Technical Indicators Tool using centralized calculations.
+    Comprehensive Technical Indicators Tool.
 
-    Supports: RSI, MACD, SMA, EMA, Bollinger Bands, ATR, Stochastic, ADX
+    Returns ALL indicators by default for complete analysis.
+    Each indicator includes:
+    - Numeric values
+    - Calculation period (in days where applicable)
+    - LLM-friendly explanation
+    - Signal interpretation (BUY/SELL/NEUTRAL)
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
-    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "ATR", "STOCH", "ADX"]
+    DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "ATR", "STOCH", "ADX", "VWAP", "VOLUME"]
 
     # Indicator aliases for flexible input
     INDICATOR_ALIASES = {
@@ -60,7 +76,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         "ATR_14": "ATR",
         "AVERAGE_TRUE_RANGE": "ATR",
         "STOCHASTIC": "STOCH",
-        "STOCH_RSI": "STOCH"
+        "STOCH_RSI": "STOCH",
+        "VOL": "VOLUME"
     }
 
     def __init__(self, api_key: Optional[str] = None):
@@ -75,45 +92,53 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         self.api_key = api_key
         self.logger = logging.getLogger(__name__)
+        self.cfg = TECHNICAL_CONFIG
 
         self.schema = ToolSchema(
             name="getTechnicalIndicators",
             category="technical",
             description=(
-                "Calculate technical indicators (RSI, MACD, Moving Averages, "
-                "Bollinger Bands, Stochastic, ADX) from historical price data. "
-                "Returns indicator values with buy/sell signals."
+                "Calculate comprehensive technical indicators from historical price data. "
+                "Returns ALL indicators with detailed analysis, calculation periods, "
+                "LLM-friendly explanations, and actionable trading recommendations."
             ),
             capabilities=[
-                "RSI - Overbought/oversold detection",
-                "MACD - Trend momentum",
-                "SMA & EMA - Trend direction",
-                "Bollinger Bands - Volatility analysis",
-                "Stochastic - Momentum oscillator",
-                "ADX - Trend strength",
-                "Multiple timeframes (1M to 1Y)"
+                "RSI (14-day) - Overbought/oversold momentum detection",
+                "MACD (12/26/9) - Trend momentum and crossover signals",
+                "SMA (20/50/200-day) - Trend direction and support/resistance",
+                "EMA (12/26-day) - Responsive trend following",
+                "Bollinger Bands (20-day, 2 std) - Volatility and price extremes",
+                "Stochastic (14/3) - Momentum oscillator",
+                "ADX (14-day) - Trend strength measurement",
+                "ATR (14-day) - Volatility measurement",
+                "VWAP - Institutional fair value indicator",
+                "Volume Analysis - Buying/selling pressure",
+                "Support/Resistance levels",
+                "Chart pattern detection",
+                "Actionable trading recommendations"
             ],
             limitations=[
-                "Requires minimum 50 data points",
+                "Requires minimum 50 data points for accurate calculations",
                 "One symbol at a time",
-                "Historical data may be delayed"
+                "Historical data may have 15-min delay"
             ],
             usage_hints=[
-                "User asks: 'Apple technical indicators' -> symbol=AAPL",
-                "User asks: 'TSLA RSI' -> symbol=TSLA, indicators=['RSI']",
+                "User asks: 'Apple technical analysis' -> symbol=AAPL",
+                "User asks: 'TSLA RSI and MACD' -> symbol=TSLA (returns all indicators)",
+                "User asks: 'Should I buy NVDA?' -> symbol=NVDA, analyze recommendations"
             ],
             parameters=[
                 ToolParameter(
                     name="symbol",
                     type="string",
-                    description="Stock ticker symbol (e.g., AAPL, TSLA)",
+                    description="Stock/ETF ticker symbol (e.g., AAPL, TSLA, SPY)",
                     required=True,
                     pattern="^[A-Z]{1,7}$"
                 ),
                 ToolParameter(
                     name="timeframe",
                     type="string",
-                    description="Analysis timeframe (1M, 3M, 6M, 1Y)",
+                    description="Analysis timeframe: 1M (30 days), 3M (90 days), 6M (180 days), 1Y (252 days)",
                     required=False,
                     default="3M",
                     allowed_values=["1M", "3M", "6M", "1Y"]
@@ -121,21 +146,23 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 ToolParameter(
                     name="indicators",
                     type="array",
-                    description="Indicators to calculate",
+                    description="Specific indicators to calculate (default: ALL indicators)",
                     required=False,
-                    default=["RSI", "MACD", "SMA", "EMA", "BB", "ATR"]
+                    default=["RSI", "MACD", "SMA", "EMA", "BB", "ATR", "STOCH", "ADX", "VWAP", "VOLUME"]
                 )
             ],
             returns={
                 "symbol": "string",
                 "timeframe": "string",
-                "indicators": "array",
-                "signals": "array",
-                "current_price": "number",
-                "data_points": "number",
-                "timestamp": "string"
+                "analysis_period_days": "number",
+                "indicators": "object - All indicator values with analysis",
+                "trading_recommendation": "object - Actionable trading advice",
+                "signals": "array - Summary signals",
+                "outlook": "object - Overall market outlook",
+                "support_resistance": "object - Key price levels",
+                "llm_summary": "string - Human-readable summary for LLM"
             },
-            typical_execution_time_ms=1500,
+            typical_execution_time_ms=2000,
             requires_symbol=True
         )
 
@@ -146,7 +173,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
         timeframe: str = "3M",
         **kwargs
     ) -> Dict[str, Any]:
-        """Execute technical indicators calculation."""
+        """Execute comprehensive technical indicators calculation."""
         start_time = datetime.now()
         symbol = symbol.upper()
 
@@ -155,12 +182,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
         lookback_days = timeframe_map.get(timeframe, 90)
 
         try:
-            # Normalize indicators
+            # Always calculate ALL indicators for comprehensive analysis
+            # The indicators param is kept for backward compatibility
             indicators = self._normalize_indicators(indicators)
 
             self.logger.info(
-                f"[getTechnicalIndicators] {symbol} | timeframe={timeframe} | "
-                f"indicators={indicators}"
+                f"[getTechnicalIndicators] {symbol} | timeframe={timeframe} ({lookback_days} days)"
             )
 
             # Fetch historical data
@@ -169,7 +196,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             if not historical_data or len(historical_data) < 50:
                 return create_error_output(
                     tool_name="getTechnicalIndicators",
-                    error=f"Insufficient data for {symbol} (need 50+ days)",
+                    error=f"Insufficient data for {symbol} (need 50+ days, got {len(historical_data) if historical_data else 0})",
                     metadata={"symbol": symbol, "data_points": len(historical_data) if historical_data else 0}
                 )
 
@@ -181,15 +208,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
             # Get indicator summary
             indicator_values = get_indicator_summary(df)
-            indicator_values['current_price'] = indicator_values.pop('price')
+            current_price = indicator_values.get('price', 0)
 
-            # Build result with requested indicators only
-            result = self._build_result(
+            # Build comprehensive result
+            result = self._build_comprehensive_result(
                 symbol=symbol,
                 timeframe=timeframe,
+                lookback_days=lookback_days,
                 df=df,
                 indicator_values=indicator_values,
-                requested_indicators=indicators
+                current_price=current_price
             )
 
             execution_time = (datetime.now() - start_time).total_seconds() * 1000
@@ -202,7 +230,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 metadata={
                     "source": "FMP + pandas_ta",
                     "execution_time_ms": int(execution_time),
-                    "data_quality": "high" if len(df) > 100 else "medium"
+                    "data_quality": "high" if len(df) > 100 else "medium",
+                    "indicators_calculated": len(result.get('indicators', {}))
                 }
             )
 
@@ -242,110 +271,644 @@ class GetTechnicalIndicatorsTool(BaseTool):
         df = df.sort_values("timestamp").reset_index(drop=True)
         return df
 
-    def _build_result(
+    def _build_comprehensive_result(
         self,
         symbol: str,
         timeframe: str,
+        lookback_days: int,
         df: pd.DataFrame,
         indicator_values: Dict[str, Any],
-        requested_indicators: List[str]
+        current_price: float
     ) -> Dict[str, Any]:
-        """Build result dictionary with requested indicators."""
+        """Build comprehensive result with all indicators and analysis."""
         latest = df.iloc[-1]
-        current_price = indicator_values.get('current_price', 0)
+        first_date = df.iloc[0]["timestamp"]
+        last_date = df.iloc[-1]["timestamp"]
+
+        # Calculate date range for display
+        date_range = f"{first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}"
 
         result = {
             "symbol": symbol,
             "timeframe": timeframe,
+            "analysis_period_days": lookback_days,
+            "date_range": date_range,
             "current_price": current_price,
             "data_points": len(df),
-            "timestamp": latest["timestamp"].isoformat() if pd.notna(latest["timestamp"]) else datetime.now().isoformat(),
-            "indicators": [],
-            "signals": []
+            "timestamp": last_date.isoformat(),
+            "indicators": {},
+            "signals": [],
+            "trading_recommendation": {},
+            "support_resistance": {},
+            "llm_summary": ""
         }
 
-        # Add requested indicators
-        def has_indicator(base: str) -> bool:
-            return any(ind.startswith(base) for ind in requested_indicators)
+        # =====================================================================
+        # RSI Analysis (14-day period)
+        # =====================================================================
+        rsi_value = indicator_values.get('rsi_14')
+        rsi_analysis = analyze_rsi(rsi_value or 0)
+        result['indicators']['rsi'] = {
+            "value": rsi_value,
+            "period_days": self.cfg.RSI_PERIOD,
+            "signal": rsi_analysis.get('signal'),
+            "condition": rsi_analysis.get('condition'),
+            "thresholds": {
+                "overbought": self.cfg.RSI_OVERBOUGHT,
+                "oversold": self.cfg.RSI_OVERSOLD
+            },
+            "explanation": self._get_rsi_explanation(rsi_value, rsi_analysis)
+        }
 
-        if has_indicator('RSI'):
-            result['rsi_14'] = indicator_values.get('rsi_14')
-            result['rsi_analysis'] = analyze_rsi(result['rsi_14'] or 0)
-            result['indicators'].append('RSI')
+        # =====================================================================
+        # MACD Analysis (12/26/9 periods)
+        # =====================================================================
+        macd_line = indicator_values.get('macd_line')
+        macd_signal = indicator_values.get('macd_signal')
+        macd_histogram = indicator_values.get('macd_histogram')
+        macd_analysis = analyze_macd(macd_line or 0, macd_signal or 0, macd_histogram or 0)
+        result['indicators']['macd'] = {
+            "macd_line": macd_line,
+            "signal_line": macd_signal,
+            "histogram": macd_histogram,
+            "periods": {
+                "fast": self.cfg.MACD_FAST_PERIOD,
+                "slow": self.cfg.MACD_SLOW_PERIOD,
+                "signal": self.cfg.MACD_SIGNAL_PERIOD
+            },
+            "signal": macd_analysis.get('signal'),
+            "crossover": macd_analysis.get('crossover'),
+            "explanation": self._get_macd_explanation(macd_line, macd_signal, macd_histogram, macd_analysis)
+        }
 
-        if has_indicator('MACD'):
-            result['macd_line'] = indicator_values.get('macd_line')
-            result['macd_signal'] = indicator_values.get('macd_signal')
-            result['macd_histogram'] = indicator_values.get('macd_histogram')
-            result['macd_analysis'] = analyze_macd(
-                result['macd_line'] or 0,
-                result['macd_signal'] or 0,
-                result['macd_histogram'] or 0
-            )
-            result['indicators'].append('MACD')
+        # =====================================================================
+        # Moving Averages Analysis (SMA 20/50/200, EMA 12/26)
+        # =====================================================================
+        sma_20 = indicator_values.get('sma_20')
+        sma_50 = indicator_values.get('sma_50')
+        sma_200 = indicator_values.get('sma_200')
+        ema_12 = indicator_values.get('ema_12')
+        ema_26 = indicator_values.get('ema_26')
+        trend_analysis = analyze_trend(current_price, sma_20 or 0, sma_50 or 0, sma_200 or 0)
 
-        if has_indicator('SMA'):
-            result['sma_20'] = indicator_values.get('sma_20')
-            result['sma_50'] = indicator_values.get('sma_50')
-            result['sma_200'] = indicator_values.get('sma_200')
-            result['indicators'].append('SMA')
+        result['indicators']['moving_averages'] = {
+            "sma": {
+                "sma_20": {"value": sma_20, "period_days": self.cfg.SMA_SHORT_PERIOD},
+                "sma_50": {"value": sma_50, "period_days": self.cfg.SMA_MEDIUM_PERIOD},
+                "sma_200": {"value": sma_200, "period_days": self.cfg.SMA_LONG_PERIOD}
+            },
+            "ema": {
+                "ema_12": {"value": ema_12, "period_days": self.cfg.EMA_FAST_PERIOD},
+                "ema_26": {"value": ema_26, "period_days": self.cfg.EMA_SLOW_PERIOD}
+            },
+            "price_position": {
+                "above_sma_20": current_price > sma_20 if sma_20 else None,
+                "above_sma_50": current_price > sma_50 if sma_50 else None,
+                "above_sma_200": current_price > sma_200 if sma_200 else None
+            },
+            "trend": trend_analysis.get('trend'),
+            "signal": trend_analysis.get('signal'),
+            "explanation": self._get_ma_explanation(current_price, sma_20, sma_50, sma_200, trend_analysis)
+        }
 
-        if has_indicator('EMA'):
-            result['ema_12'] = indicator_values.get('ema_12')
-            result['ema_26'] = indicator_values.get('ema_26')
-            result['indicators'].append('EMA')
+        # =====================================================================
+        # Bollinger Bands Analysis (20-day, 2 std dev)
+        # =====================================================================
+        bb_upper = indicator_values.get('bb_upper')
+        bb_middle = indicator_values.get('bb_middle')
+        bb_lower = indicator_values.get('bb_lower')
+        bb_analysis = analyze_bollinger_bands(current_price, bb_upper or 0, bb_middle or 0, bb_lower or 0)
+        result['indicators']['bollinger_bands'] = {
+            "upper": bb_upper,
+            "middle": bb_middle,
+            "lower": bb_lower,
+            "period_days": self.cfg.BOLLINGER_PERIOD,
+            "std_dev": self.cfg.BOLLINGER_STD_DEV,
+            "signal": bb_analysis.get('signal'),
+            "position": bb_analysis.get('position'),
+            "squeeze": bb_analysis.get('squeeze', False),
+            "explanation": self._get_bb_explanation(current_price, bb_upper, bb_middle, bb_lower, bb_analysis)
+        }
 
-        if has_indicator('BB'):
-            result['bb_upper'] = indicator_values.get('bb_upper')
-            result['bb_middle'] = indicator_values.get('bb_middle')
-            result['bb_lower'] = indicator_values.get('bb_lower')
-            result['bb_analysis'] = analyze_bollinger_bands(
-                current_price,
-                result['bb_upper'] or 0,
-                result['bb_middle'] or 0,
-                result['bb_lower'] or 0
-            )
-            result['indicators'].append('BB')
+        # =====================================================================
+        # Stochastic Oscillator Analysis (14/3 periods)
+        # =====================================================================
+        stoch_k = indicator_values.get('stoch_k')
+        stoch_d = indicator_values.get('stoch_d')
+        stoch_analysis = analyze_stochastic(stoch_k or 0, stoch_d or 0)
+        result['indicators']['stochastic'] = {
+            "k": stoch_k,
+            "d": stoch_d,
+            "periods": {
+                "k_period": self.cfg.STOCH_K_PERIOD,
+                "d_period": self.cfg.STOCH_D_PERIOD
+            },
+            "thresholds": {
+                "overbought": self.cfg.STOCH_OVERBOUGHT,
+                "oversold": self.cfg.STOCH_OVERSOLD
+            },
+            "signal": stoch_analysis.get('signal'),
+            "condition": stoch_analysis.get('condition'),
+            "crossover": stoch_analysis.get('crossover'),
+            "explanation": self._get_stoch_explanation(stoch_k, stoch_d, stoch_analysis)
+        }
 
-        if has_indicator('ATR'):
-            result['atr_14'] = indicator_values.get('atr_14')
-            result['indicators'].append('ATR')
+        # =====================================================================
+        # ADX Analysis (14-day period)
+        # =====================================================================
+        adx = indicator_values.get('adx')
+        di_plus = indicator_values.get('di_plus')
+        di_minus = indicator_values.get('di_minus')
+        adx_analysis = analyze_adx(adx or 0, di_plus or 0, di_minus or 0)
+        result['indicators']['adx'] = {
+            "adx": adx,
+            "di_plus": di_plus,
+            "di_minus": di_minus,
+            "period_days": self.cfg.ADX_PERIOD,
+            "thresholds": {
+                "strong_trend": self.cfg.ADX_STRONG_TREND,
+                "very_strong_trend": self.cfg.ADX_VERY_STRONG_TREND
+            },
+            "trend_strength": adx_analysis.get('trend_strength'),
+            "direction": adx_analysis.get('direction'),
+            "signal": adx_analysis.get('signal'),
+            "explanation": self._get_adx_explanation(adx, di_plus, di_minus, adx_analysis)
+        }
 
-        if has_indicator('STOCH'):
-            result['stoch_k'] = indicator_values.get('stoch_k')
-            result['stoch_d'] = indicator_values.get('stoch_d')
-            result['stoch_analysis'] = analyze_stochastic(
-                result['stoch_k'] or 0,
-                result['stoch_d'] or 0
-            )
-            result['indicators'].append('STOCH')
+        # =====================================================================
+        # ATR Analysis (14-day period)
+        # =====================================================================
+        atr = indicator_values.get('atr_14')
+        atr_pct = (atr / current_price * 100) if atr and current_price else 0
+        result['indicators']['atr'] = {
+            "value": atr,
+            "period_days": self.cfg.ATR_PERIOD,
+            "atr_percent": round(atr_pct, 2) if atr_pct else None,
+            "explanation": self._get_atr_explanation(atr, atr_pct, current_price)
+        }
 
-        if has_indicator('ADX'):
-            result['adx'] = indicator_values.get('adx')
-            result['di_plus'] = indicator_values.get('di_plus')
-            result['di_minus'] = indicator_values.get('di_minus')
-            result['adx_analysis'] = analyze_adx(
-                result['adx'] or 0,
-                result['di_plus'] or 0,
-                result['di_minus'] or 0
-            )
-            result['indicators'].append('ADX')
+        # =====================================================================
+        # VWAP Analysis (cumulative from period start)
+        # =====================================================================
+        vwap = indicator_values.get('vwap')
+        vwap_analysis = analyze_vwap(current_price, vwap or 0)
+        result['indicators']['vwap'] = {
+            "value": vwap,
+            "calculation": f"Cumulative VWAP from {first_date.strftime('%Y-%m-%d')}",
+            "price_vs_vwap_pct": vwap_analysis.get('diff_pct'),
+            "signal": vwap_analysis.get('signal'),
+            "position": vwap_analysis.get('position'),
+            "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis)
+        }
 
-        # Add trend analysis
-        result['trend_analysis'] = analyze_trend(
-            current_price,
-            indicator_values.get('sma_20') or 0,
-            indicator_values.get('sma_50') or 0,
-            indicator_values.get('sma_200') or 0
+        # =====================================================================
+        # Volume Analysis (20-day average)
+        # =====================================================================
+        volume = indicator_values.get('volume')
+        volume_avg = indicator_values.get('volume_sma_20')
+        volume_ratio = indicator_values.get('volume_ratio')
+        volume_analysis = analyze_volume(volume or 0, volume_avg or 1)
+        result['indicators']['volume'] = {
+            "current": volume,
+            "average_20d": volume_avg,
+            "ratio": volume_ratio,
+            "period_days": self.cfg.VOLUME_SMA_PERIOD,
+            "signal": volume_analysis.get('signal'),
+            "explanation": self._get_volume_explanation(volume, volume_avg, volume_ratio, volume_analysis)
+        }
+
+        # =====================================================================
+        # Support and Resistance Levels
+        # =====================================================================
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+
+        support_levels = identify_support_levels(lows, closes, current_price)
+        resistance_levels = identify_resistance_levels(highs, closes, current_price)
+        pivot_points = calculate_pivot_points(
+            float(df.tail(1)['high'].iloc[0]),
+            float(df.tail(1)['low'].iloc[0]),
+            float(df.tail(1)['close'].iloc[0])
         )
 
-        # Generate signals
-        result['signals'] = generate_signals(result)
+        result['support_resistance'] = {
+            "support_levels": support_levels[:3] if support_levels else [],
+            "resistance_levels": resistance_levels[:3] if resistance_levels else [],
+            "pivot_points": pivot_points,
+            "explanation": self._get_sr_explanation(current_price, support_levels, resistance_levels)
+        }
 
-        # Add outlook
+        # =====================================================================
+        # Chart Patterns
+        # =====================================================================
+        patterns = identify_chart_patterns(df)
+        result['chart_patterns'] = {
+            "detected": patterns,
+            "explanation": self._get_pattern_explanation(patterns)
+        }
+
+        # =====================================================================
+        # Generate Signals and Outlook
+        # =====================================================================
+        result['signals'] = generate_signals(result['indicators'])
         result['outlook'] = generate_outlook(df)
 
+        # =====================================================================
+        # Trading Recommendation (Actionable Insights)
+        # =====================================================================
+        result['trading_recommendation'] = self._generate_trading_recommendation(
+            symbol=symbol,
+            current_price=current_price,
+            rsi_analysis=rsi_analysis,
+            macd_analysis=macd_analysis,
+            trend_analysis=trend_analysis,
+            stoch_analysis=stoch_analysis,
+            adx_analysis=adx_analysis,
+            vwap_analysis=vwap_analysis,
+            volume_analysis=volume_analysis,
+            outlook=result['outlook'],
+            support_levels=support_levels,
+            resistance_levels=resistance_levels
+        )
+
+        # =====================================================================
+        # LLM Summary (Human-readable comprehensive summary)
+        # =====================================================================
+        result['llm_summary'] = self._generate_llm_summary(
+            symbol=symbol,
+            current_price=current_price,
+            result=result
+        )
+
         return result
+
+    # =========================================================================
+    # Explanation Generator Methods
+    # =========================================================================
+
+    def _get_rsi_explanation(self, rsi_value: float, analysis: Dict) -> str:
+        """Generate LLM-friendly RSI explanation."""
+        if rsi_value is None:
+            return "RSI data not available."
+
+        condition = analysis.get('condition', 'unknown')
+        explanations = {
+            'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - The stock has risen significantly and may be due for a pullback. Consider taking profits or waiting for a better entry.",
+            'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - The stock has fallen significantly and may be due for a bounce. Potential buying opportunity if fundamentals are sound.",
+            'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish momentum is building but approaching overbought territory. Monitor for continuation or reversal.",
+            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK MOMENTUM - Bearish momentum present but approaching oversold territory. Watch for potential reversal signals.",
+            'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL - No extreme conditions. The stock is trading in a balanced momentum range."
+        }
+        return explanations.get(condition, f"RSI={rsi_value:.1f}: Momentum indicator based on 14-day price changes.")
+
+    def _get_macd_explanation(self, macd_line: float, signal_line: float, histogram: float, analysis: Dict) -> str:
+        """Generate LLM-friendly MACD explanation."""
+        if macd_line is None:
+            return "MACD data not available."
+
+        signal = analysis.get('signal', 'NEUTRAL')
+        crossover = analysis.get('crossover', 'none')
+
+        if histogram and histogram > 0:
+            momentum = "bullish momentum (histogram positive)"
+        else:
+            momentum = "bearish momentum (histogram negative)"
+
+        crossover_text = {
+            'bullish': " Recent bullish crossover (MACD crossed above signal line) - potential BUY signal.",
+            'bearish': " Recent bearish crossover (MACD crossed below signal line) - potential SELL signal.",
+            'none': ""
+        }
+
+        return f"MACD Line={macd_line:.4f}, Signal={signal_line:.4f}, Histogram={histogram:.4f}. Shows {momentum}.{crossover_text.get(crossover, '')}"
+
+    def _get_ma_explanation(self, price: float, sma_20: float, sma_50: float, sma_200: float, analysis: Dict) -> str:
+        """Generate LLM-friendly Moving Averages explanation."""
+        trend = analysis.get('trend', 'MIXED')
+        parts = [f"Current price ${price:.2f}"]
+
+        if sma_20:
+            rel = "above" if price > sma_20 else "below"
+            parts.append(f"{rel} SMA-20 (${sma_20:.2f})")
+        if sma_50:
+            rel = "above" if price > sma_50 else "below"
+            parts.append(f"{rel} SMA-50 (${sma_50:.2f})")
+        if sma_200:
+            rel = "above" if price > sma_200 else "below"
+            parts.append(f"{rel} SMA-200 (${sma_200:.2f})")
+
+        trend_interpretations = {
+            'STRONG_UPTREND': "STRONG UPTREND - Price above all major MAs. Bullish trend intact.",
+            'UPTREND': "UPTREND - Price above most MAs. Generally bullish.",
+            'MIXED': "MIXED - Price between MAs. No clear trend direction.",
+            'DOWNTREND': "DOWNTREND - Price below most/all MAs. Bearish trend."
+        }
+
+        return f"{', '.join(parts)}. {trend_interpretations.get(trend, 'Trend analysis inconclusive.')}"
+
+    def _get_bb_explanation(self, price: float, upper: float, middle: float, lower: float, analysis: Dict) -> str:
+        """Generate LLM-friendly Bollinger Bands explanation."""
+        if upper is None:
+            return "Bollinger Bands data not available."
+
+        position = analysis.get('position', 'unknown')
+        squeeze = analysis.get('squeeze', False)
+
+        positions = {
+            'above_upper': f"Price ${price:.2f} is ABOVE upper band (${upper:.2f}). OVERBOUGHT - potential pullback expected.",
+            'below_lower': f"Price ${price:.2f} is BELOW lower band (${lower:.2f}). OVERSOLD - potential bounce expected.",
+            'within_bands': f"Price ${price:.2f} is within bands (${lower:.2f} - ${upper:.2f}). Trading in normal range."
+        }
+
+        explanation = positions.get(position, f"Price ${price:.2f}, Bands: ${lower:.2f} - ${middle:.2f} - ${upper:.2f}.")
+
+        if squeeze:
+            explanation += " SQUEEZE DETECTED - Low volatility, potential breakout imminent."
+
+        return explanation
+
+    def _get_stoch_explanation(self, k: float, d: float, analysis: Dict) -> str:
+        """Generate LLM-friendly Stochastic explanation."""
+        if k is None:
+            return "Stochastic data not available."
+
+        condition = analysis.get('condition', 'neutral')
+        crossover = analysis.get('crossover', 'none')
+
+        conditions = {
+            'overbought': f"%K={k:.1f}, %D={d:.1f} (>80): OVERBOUGHT - Momentum stretched to upside. Watch for reversal.",
+            'oversold': f"%K={k:.1f}, %D={d:.1f} (<20): OVERSOLD - Momentum stretched to downside. Potential bounce.",
+            'neutral': f"%K={k:.1f}, %D={d:.1f}: NEUTRAL range. No extreme momentum."
+        }
+
+        explanation = conditions.get(condition, f"Stochastic %K={k:.1f}, %D={d:.1f}")
+
+        if crossover == 'bullish':
+            explanation += " BULLISH crossover (%K above %D)."
+        elif crossover == 'bearish':
+            explanation += " BEARISH crossover (%K below %D)."
+
+        return explanation
+
+    def _get_adx_explanation(self, adx: float, di_plus: float, di_minus: float, analysis: Dict) -> str:
+        """Generate LLM-friendly ADX explanation."""
+        if adx is None:
+            return "ADX data not available."
+
+        strength = analysis.get('trend_strength', 'weak')
+        direction = analysis.get('direction', 'unknown')
+
+        strengths = {
+            'very_strong': f"ADX={adx:.1f} (>50): VERY STRONG TREND. High conviction in current direction.",
+            'strong': f"ADX={adx:.1f} (25-50): STRONG TREND. Clear directional movement.",
+            'moderate': f"ADX={adx:.1f} (20-25): MODERATE TREND. Developing trend, not fully established.",
+            'weak': f"ADX={adx:.1f} (<20): WEAK/NO TREND. Market is ranging, avoid trend-following strategies."
+        }
+
+        dir_text = f" Direction: {'BULLISH' if direction == 'bullish' else 'BEARISH'} (+DI={di_plus:.1f}, -DI={di_minus:.1f})."
+
+        return strengths.get(strength, f"ADX={adx:.1f}") + dir_text
+
+    def _get_atr_explanation(self, atr: float, atr_pct: float, price: float) -> str:
+        """Generate LLM-friendly ATR explanation."""
+        if atr is None:
+            return "ATR data not available."
+
+        volatility = "HIGH" if atr_pct > 3 else "MODERATE" if atr_pct > 1.5 else "LOW"
+        return f"ATR=${atr:.2f} ({atr_pct:.1f}% of price). {volatility} VOLATILITY. Average daily range over 14 days. Use for stop-loss placement (e.g., 1.5-2x ATR from entry)."
+
+    def _get_vwap_explanation(self, price: float, vwap: float, analysis: Dict) -> str:
+        """Generate LLM-friendly VWAP explanation."""
+        if vwap is None:
+            return "VWAP data not available."
+
+        position = analysis.get('position', 'unknown')
+        diff_pct = analysis.get('diff_pct', 0)
+
+        if diff_pct > 0:
+            return f"Price ${price:.2f} is {diff_pct:.1f}% ABOVE VWAP (${vwap:.2f}). Institutional buyers likely paid more - BULLISH sentiment. Good for intraday long positions."
+        elif diff_pct < 0:
+            return f"Price ${price:.2f} is {abs(diff_pct):.1f}% BELOW VWAP (${vwap:.2f}). Price below institutional average cost - BEARISH sentiment. Consider waiting for VWAP reclaim."
+        else:
+            return f"Price ${price:.2f} at VWAP (${vwap:.2f}). Fair value zone. Watch for directional breakout."
+
+    def _get_volume_explanation(self, volume: int, avg_volume: int, ratio: float, analysis: Dict) -> str:
+        """Generate LLM-friendly Volume explanation."""
+        if volume is None:
+            return "Volume data not available."
+
+        signal = analysis.get('signal', 'NORMAL')
+
+        signals = {
+            'STRONG': f"Volume {volume:,} is {ratio:.1f}x average ({avg_volume:,}). VERY HIGH VOLUME - significant activity, confirms price movement.",
+            'HIGH': f"Volume {volume:,} is {ratio:.1f}x average ({avg_volume:,}). ABOVE AVERAGE - increased interest.",
+            'LOW': f"Volume {volume:,} is {ratio:.1f}x average ({avg_volume:,}). LOW VOLUME - lack of conviction, breakouts may fail.",
+            'NORMAL': f"Volume {volume:,} is {ratio:.1f}x average ({avg_volume:,}). NORMAL trading activity."
+        }
+
+        return signals.get(signal, f"Volume: {volume:,}, Avg: {avg_volume:,}, Ratio: {ratio:.1f}x")
+
+    def _get_sr_explanation(self, price: float, supports: List, resistances: List) -> str:
+        """Generate LLM-friendly Support/Resistance explanation."""
+        parts = [f"Current price: ${price:.2f}"]
+
+        if supports:
+            nearest_support = supports[0]['price']
+            parts.append(f"Nearest support: ${nearest_support:.2f} ({supports[0].get('distance_pct', 0):.1f}% below)")
+
+        if resistances:
+            nearest_resistance = resistances[0]['price']
+            parts.append(f"Nearest resistance: ${nearest_resistance:.2f} ({resistances[0].get('distance_pct', 0):.1f}% above)")
+
+        return ". ".join(parts) + "."
+
+    def _get_pattern_explanation(self, patterns: Dict) -> str:
+        """Generate LLM-friendly chart pattern explanation."""
+        detected = []
+        for name, pattern in patterns.items():
+            if pattern and pattern.get('detected'):
+                detected.append(f"{name.replace('_', ' ').title()}: {pattern.get('description', '')}")
+
+        if detected:
+            return "PATTERNS DETECTED: " + "; ".join(detected)
+        return "No significant chart patterns detected in the analysis period."
+
+    # =========================================================================
+    # Trading Recommendation Generator
+    # =========================================================================
+
+    def _generate_trading_recommendation(
+        self,
+        symbol: str,
+        current_price: float,
+        rsi_analysis: Dict,
+        macd_analysis: Dict,
+        trend_analysis: Dict,
+        stoch_analysis: Dict,
+        adx_analysis: Dict,
+        vwap_analysis: Dict,
+        volume_analysis: Dict,
+        outlook: Dict,
+        support_levels: List,
+        resistance_levels: List
+    ) -> Dict[str, Any]:
+        """Generate actionable trading recommendations."""
+
+        # Count bullish/bearish signals
+        bullish_count = 0
+        bearish_count = 0
+        total_indicators = 0
+
+        # RSI signal
+        if rsi_analysis.get('signal') == 'BUY':
+            bullish_count += 1
+        elif rsi_analysis.get('signal') == 'SELL':
+            bearish_count += 1
+        total_indicators += 1
+
+        # MACD signal
+        if macd_analysis.get('signal') == 'BULLISH':
+            bullish_count += 1
+        elif macd_analysis.get('signal') == 'BEARISH':
+            bearish_count += 1
+        total_indicators += 1
+
+        # Trend signal
+        if trend_analysis.get('signal') == 'BULLISH':
+            bullish_count += 1
+        elif trend_analysis.get('signal') == 'BEARISH':
+            bearish_count += 1
+        total_indicators += 1
+
+        # Stochastic signal
+        if stoch_analysis.get('signal') == 'BUY':
+            bullish_count += 1
+        elif stoch_analysis.get('signal') == 'SELL':
+            bearish_count += 1
+        total_indicators += 1
+
+        # ADX with direction
+        adx_signal = adx_analysis.get('signal', 'NEUTRAL')
+        if adx_signal == 'BULLISH':
+            bullish_count += 1
+        elif adx_signal == 'BEARISH':
+            bearish_count += 1
+        total_indicators += 1
+
+        # VWAP signal
+        vwap_signal = vwap_analysis.get('signal', 'NEUTRAL')
+        if 'BULLISH' in vwap_signal:
+            bullish_count += 0.5  # Half weight for VWAP
+        elif 'BEARISH' in vwap_signal:
+            bearish_count += 0.5
+        total_indicators += 0.5
+
+        # Calculate bias
+        bullish_pct = bullish_count / total_indicators if total_indicators > 0 else 0
+        bearish_pct = bearish_count / total_indicators if total_indicators > 0 else 0
+
+        # Determine overall action
+        if bullish_pct >= 0.6:
+            action = "BUY"
+            action_strength = "STRONG" if bullish_pct >= 0.75 else "MODERATE"
+        elif bearish_pct >= 0.6:
+            action = "SELL"
+            action_strength = "STRONG" if bearish_pct >= 0.75 else "MODERATE"
+        else:
+            action = "HOLD"
+            action_strength = "NEUTRAL"
+
+        # Calculate price targets
+        nearest_support = support_levels[0]['price'] if support_levels else current_price * 0.95
+        nearest_resistance = resistance_levels[0]['price'] if resistance_levels else current_price * 1.05
+
+        # Short-term recommendation (1-5 days)
+        short_term = {
+            "action": action,
+            "timeframe": "1-5 days",
+            "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
+            "stop_loss": f"${nearest_support * 0.98:.2f}",
+            "target_1": f"${current_price * 1.03:.2f}" if action == "BUY" else f"${current_price * 0.97:.2f}",
+            "target_2": f"${nearest_resistance:.2f}" if action == "BUY" else f"${nearest_support:.2f}",
+            "risk_reward": "1:2 minimum recommended"
+        }
+
+        # Swing trade recommendation (1-4 weeks)
+        swing_trade = {
+            "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
+            "timeframe": "1-4 weeks",
+            "condition": "Enter on pullback to moving average support" if action == "BUY" else "Enter on rally to resistance" if action == "SELL" else "Wait for clearer trend",
+            "stop_loss": f"Below SMA-50 or ${nearest_support * 0.97:.2f}",
+            "target": f"${nearest_resistance:.2f}" if action == "BUY" else f"${nearest_support:.2f}"
+        }
+
+        # Key levels to watch
+        key_levels = {
+            "immediate_support": f"${nearest_support:.2f}",
+            "immediate_resistance": f"${nearest_resistance:.2f}",
+            "breakout_level": f"Above ${nearest_resistance:.2f} with volume confirms bullish breakout",
+            "breakdown_level": f"Below ${nearest_support:.2f} with volume confirms bearish breakdown"
+        }
+
+        # Risk assessment
+        volume_signal = volume_analysis.get('signal', 'NORMAL')
+        risk_level = "LOW" if adx_analysis.get('trend_strength') == 'strong' and volume_signal in ['HIGH', 'STRONG'] else "MODERATE" if adx_analysis.get('trend_strength') in ['moderate', 'strong'] else "HIGH"
+
+        return {
+            "overall_action": action,
+            "action_strength": action_strength,
+            "bullish_signals": int(bullish_count),
+            "bearish_signals": int(bearish_count),
+            "total_signals": int(total_indicators),
+            "confidence_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
+            "short_term_trade": short_term,
+            "swing_trade": swing_trade,
+            "key_levels": key_levels,
+            "risk_level": risk_level,
+            "caution": "This is technical analysis only. Always consider fundamentals, news, and your risk tolerance before trading."
+        }
+
+    def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
+        """Generate comprehensive LLM-friendly summary."""
+        outlook = result.get('outlook', {})
+        rec = result.get('trading_recommendation', {})
+        indicators = result.get('indicators', {})
+
+        # Build summary
+        lines = [
+            f"=== TECHNICAL ANALYSIS SUMMARY: {symbol} ===",
+            f"",
+            f"PRICE: ${current_price:.2f} | Period: {result.get('timeframe')} ({result.get('analysis_period_days')} days)",
+            f"Data Range: {result.get('date_range')}",
+            f"",
+            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Confidence: {outlook.get('confidence', 0):.0%})",
+            f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')})",
+            f"",
+            f"KEY INDICATORS:",
+            f"- RSI (14d): {indicators.get('rsi', {}).get('value', 'N/A')} - {indicators.get('rsi', {}).get('condition', 'N/A').upper()}",
+            f"- MACD: {indicators.get('macd', {}).get('signal', 'N/A')} - Histogram: {indicators.get('macd', {}).get('histogram', 'N/A')}",
+            f"- Trend: {indicators.get('moving_averages', {}).get('trend', 'N/A')}",
+            f"- ADX (14d): {indicators.get('adx', {}).get('adx', 'N/A')} - {indicators.get('adx', {}).get('trend_strength', 'N/A').upper()} trend",
+            f"- Stochastic: {indicators.get('stochastic', {}).get('condition', 'N/A').upper()}",
+            f"- VWAP: {indicators.get('vwap', {}).get('signal', 'N/A')} (Price vs VWAP: {indicators.get('vwap', {}).get('price_vs_vwap_pct', 'N/A')}%)",
+            f"",
+            f"TRADING LEVELS:",
+            f"- Support: {result.get('support_resistance', {}).get('support_levels', [{}])[0].get('price', 'N/A') if result.get('support_resistance', {}).get('support_levels') else 'N/A'}",
+            f"- Resistance: {result.get('support_resistance', {}).get('resistance_levels', [{}])[0].get('price', 'N/A') if result.get('support_resistance', {}).get('resistance_levels') else 'N/A'}",
+            f"",
+            f"SIGNALS: {', '.join(result.get('signals', [])[:5])}",
+            f"",
+            f"RECOMMENDATION:",
+            f"Short-term (1-5d): {rec.get('short_term_trade', {}).get('action', 'N/A')} | Target: {rec.get('short_term_trade', {}).get('target_1', 'N/A')} | Stop: {rec.get('short_term_trade', {}).get('stop_loss', 'N/A')}",
+            f"Swing (1-4w): {rec.get('swing_trade', {}).get('action', 'N/A')} - {rec.get('swing_trade', {}).get('condition', 'N/A')}",
+            f"",
+            f"Risk Level: {rec.get('risk_level', 'N/A')}",
+            f"",
+            f"Note: Technical analysis only. Combine with fundamental analysis and risk management."
+        ]
+
+        return "\n".join(lines)
 
     async def _fetch_historical_data(self, symbol: str, lookback_days: int) -> List[Dict]:
         """Fetch historical data from FMP API."""
@@ -366,6 +929,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
 if __name__ == "__main__":
     import asyncio
     import os
+    import json
 
     async def test_tool():
         api_key = os.environ.get("FMP_API_KEY")
@@ -375,21 +939,19 @@ if __name__ == "__main__":
 
         tool = GetTechnicalIndicatorsTool(api_key=api_key)
 
-        print("\n" + "=" * 60)
-        print("Testing getTechnicalIndicators Tool")
-        print("=" * 60)
+        print("\n" + "=" * 70)
+        print("Testing Comprehensive Technical Indicators Tool")
+        print("=" * 70)
 
         result = await tool.safe_execute(symbol="AAPL", timeframe="3M")
 
         if result.is_success():
-            print("SUCCESS")
-            print(f"Indicators: {result.data['indicators']}")
-            print(f"Signals: {result.data['signals']}")
-            print(f"Outlook: {result.data['outlook']}")
-            print(f"RSI: {result.data.get('rsi_14')}")
-            print(f"MACD: {result.data.get('macd_histogram')}")
-            print(f"Trend: {result.data.get('trend_analysis', {}).get('trend')}")
+            print("\nSUCCESS")
+            print("\n" + result.data.get('llm_summary', 'No summary'))
+            print("\n" + "=" * 70)
+            print("Trading Recommendation:")
+            print(json.dumps(result.data.get('trading_recommendation', {}), indent=2))
         else:
-            print(f"ERROR: {result.error}")
+            print(f"\nERROR: {result.error}")
 
     asyncio.run(test_tool())
