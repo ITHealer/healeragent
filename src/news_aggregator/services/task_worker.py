@@ -528,16 +528,28 @@ class TaskWorker:
         """
         result: Dict[str, List[UnifiedNewsItem]] = {symbol: [] for symbol in symbols}
 
-        # Separate crypto vs stock symbols
-        crypto_symbols = []
-        stock_symbols = []
-
-        for symbol in symbols:
-            symbol_upper = symbol.upper()
-            if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"]):
-                crypto_symbols.append(symbol_upper)
-            else:
-                stock_symbols.append(symbol_upper)
+        # Classify symbols using DB-backed classifier (production-ready)
+        from src.news_aggregator.services.symbol_classifier import get_symbol_classifier
+        try:
+            classifier = await get_symbol_classifier()
+            crypto_symbols, stock_symbols = classifier.classify_batch(symbols)
+            self.logger.info(
+                f"[TaskWorker] 🏷️ Symbol Classification | "
+                f"crypto={crypto_symbols} | stock={stock_symbols} | "
+                f"cache_stats={classifier.get_stats()}"
+            )
+        except Exception as e:
+            # Fallback to simple heuristic if classifier fails
+            self.logger.warning(f"[TaskWorker] Classifier failed, using fallback: {e}")
+            crypto_symbols = []
+            stock_symbols = []
+            fallback_cryptos = {"BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"}
+            for symbol in symbols:
+                symbol_upper = symbol.upper()
+                if any(crypto in symbol_upper for crypto in fallback_cryptos):
+                    crypto_symbols.append(symbol_upper)
+                else:
+                    stock_symbols.append(symbol_upper)
 
         # ===== Run FMP and Tavily in parallel =====
         async def fetch_from_fmp() -> Dict[str, List[UnifiedNewsItem]]:

@@ -291,11 +291,20 @@ class TavilyNewsProvider(BaseNewsProvider):
             for item in results:
                 if symbol not in item.symbols:
                     item.symbols.append(symbol)
-                # Determine category based on symbol format
-                if "-USD" in symbol.upper() or symbol.upper() in ["BTC", "ETH", "DOGE"]:
-                    item.category = NewsCategory.CRYPTO
-                else:
-                    item.category = NewsCategory.STOCK
+                # Determine category using classifier or fallback
+                is_crypto = False
+                try:
+                    from src.news_aggregator.services.symbol_classifier import get_symbol_classifier_sync
+                    classifier = get_symbol_classifier_sync()
+                    if classifier and classifier.is_initialized:
+                        is_crypto = classifier.classify(symbol) == "crypto"
+                    else:
+                        # Fallback
+                        is_crypto = "-USD" in symbol.upper() or symbol.upper() in {"BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"}
+                except Exception:
+                    is_crypto = "-USD" in symbol.upper() or symbol.upper() in {"BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"}
+
+                item.category = NewsCategory.CRYPTO if is_crypto else NewsCategory.STOCK
             
             all_results.extend(results)
         

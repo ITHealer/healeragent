@@ -37,8 +37,8 @@ from src.news_aggregator.schemas.task import (
 logger = logging.getLogger(__name__)
 
 
-# Known crypto symbols
-CRYPTO_SYMBOLS = {
+# Fallback crypto symbols (used if DB classifier unavailable)
+FALLBACK_CRYPTO_SYMBOLS = {
     "BTC", "ETH", "DOGE", "XRP", "SOL", "ADA", "DOT", "AVAX", "MATIC", "LINK",
     "LTC", "UNI", "ATOM", "XLM", "ALGO", "FIL", "VET", "THETA", "AAVE", "EOS",
     "BTCUSD", "ETHUSD", "DOGEUSD", "XRPUSD", "SOLUSD",
@@ -95,20 +95,55 @@ class MarketDataService:
             self._client = None
 
     def _classify_symbol(self, symbol: str) -> SymbolType:
-        """Classify symbol type (stock, crypto, etc.)."""
+        """
+        Classify symbol type (stock, crypto, etc.).
+
+        Uses DB-backed SymbolClassifier if available, otherwise falls back
+        to hardcoded list.
+        """
         symbol_upper = symbol.upper().replace("-USD", "").replace("USD", "")
 
-        if symbol_upper in CRYPTO_SYMBOLS or symbol.upper().endswith("USD"):
+        # Try to use DB-backed classifier (if initialized)
+        try:
+            from src.news_aggregator.services.symbol_classifier import get_symbol_classifier_sync
+            classifier = get_symbol_classifier_sync()
+            if classifier and classifier.is_initialized:
+                asset_type = classifier.classify(symbol)
+                if asset_type == "crypto":
+                    return SymbolType.CRYPTO
+                elif symbol.upper().endswith(".X"):
+                    return SymbolType.FOREX
+                else:
+                    return SymbolType.STOCK
+        except Exception:
+            pass  # Fall through to fallback
+
+        # Fallback to hardcoded list
+        if symbol_upper in FALLBACK_CRYPTO_SYMBOLS or symbol.upper().endswith("USD"):
             return SymbolType.CRYPTO
         elif symbol.upper().endswith(".X"):
             return SymbolType.FOREX
         else:
             return SymbolType.STOCK
 
+    def _is_crypto_symbol(self, symbol: str) -> bool:
+        """Check if symbol is crypto using classifier or fallback."""
+        try:
+            from src.news_aggregator.services.symbol_classifier import get_symbol_classifier_sync
+            classifier = get_symbol_classifier_sync()
+            if classifier and classifier.is_initialized:
+                return classifier.classify(symbol) == "crypto"
+        except Exception:
+            pass
+
+        # Fallback
+        symbol_upper = symbol.upper().replace("-USD", "").replace("USD", "")
+        return symbol_upper in FALLBACK_CRYPTO_SYMBOLS
+
     def _normalize_crypto_symbol(self, symbol: str) -> str:
         """Normalize crypto symbol for FMP API."""
         symbol_upper = symbol.upper()
-        if symbol_upper in CRYPTO_SYMBOLS and not symbol_upper.endswith("USD"):
+        if self._is_crypto_symbol(symbol_upper) and not symbol_upper.endswith("USD"):
             return f"{symbol_upper}USD"
         return symbol_upper
 
