@@ -501,7 +501,7 @@ class TaskWorker:
         symbols: List[str],
     ) -> Dict[str, List[UnifiedNewsItem]]:
         """
-        Fetch news articles for each symbol.
+        Fetch news articles for each symbol using FMP tickers filter.
 
         Args:
             symbols: List of symbols to fetch news for
@@ -516,48 +516,59 @@ class TaskWorker:
         result: Dict[str, List[UnifiedNewsItem]] = {symbol: [] for symbol in symbols}
 
         try:
-            # Determine categories based on symbols
-            # Crypto symbols vs stock symbols
-            crypto_symbols = set()
-            stock_symbols = set()
+            # Separate crypto vs stock symbols
+            crypto_symbols = []
+            stock_symbols = []
 
             for symbol in symbols:
                 symbol_upper = symbol.upper()
-                if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "DOGE", "SOL", "XRP"]):
-                    crypto_symbols.add(symbol)
+                if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"]):
+                    crypto_symbols.append(symbol_upper)
                 else:
-                    stock_symbols.add(symbol)
+                    stock_symbols.append(symbol_upper)
 
-            # Fetch from appropriate categories
-            categories = [NewsCategory.STOCK, NewsCategory.GENERAL]
+            all_news: List[UnifiedNewsItem] = []
+
+            # Fetch stock news with tickers filter
+            if stock_symbols:
+                stock_news = await self._fmp_provider.fetch_news(
+                    categories=[NewsCategory.STOCK],
+                    page=0,
+                    limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
+                    tickers=stock_symbols,  # Filter by specific tickers
+                )
+                all_news.extend(stock_news)
+                self.logger.info(f"[TaskWorker] Fetched {len(stock_news)} stock news for {stock_symbols}")
+
+            # Fetch crypto news
             if crypto_symbols:
-                categories.append(NewsCategory.CRYPTO)
+                crypto_news = await self._fmp_provider.fetch_news(
+                    categories=[NewsCategory.CRYPTO],
+                    page=0,
+                    limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
+                )
+                all_news.extend(crypto_news)
+                self.logger.info(f"[TaskWorker] Fetched {len(crypto_news)} crypto news")
 
-            all_news = await self._fmp_provider.fetch_news(
-                categories=categories,
-                page=0,
-                limit=50,  # Fetch more to filter by symbol
-            )
-
-            # Group by symbol
+            # Group news by symbol
             for item in all_news:
                 for symbol in symbols:
                     symbol_upper = symbol.upper()
-                    # Check if symbol is in the news item
-                    if (
+                    # Check if symbol matches
+                    is_match = (
                         symbol_upper in [s.upper() for s in item.symbols]
                         or symbol_upper in item.title.upper()
-                        or (item.content and symbol_upper in item.content.upper())
-                    ):
-                        if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                            result[symbol].append(item)
+                        or (item.content and symbol_upper in item.content.upper()[:500])
+                    )
+                    if is_match and len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                        result[symbol].append(item)
 
             # Log results
             for symbol, news_list in result.items():
-                self.logger.debug(f"[TaskWorker] Found {len(news_list)} news for {symbol}")
+                self.logger.info(f"[TaskWorker] Found {len(news_list)} news for {symbol}")
 
         except Exception as e:
-            self.logger.error(f"[TaskWorker] News fetch error: {e}")
+            self.logger.error(f"[TaskWorker] News fetch error: {e}", exc_info=True)
 
         return result
 
