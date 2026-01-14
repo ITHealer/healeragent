@@ -4,6 +4,10 @@ Technical Indicator Calculations
 Centralized module for computing technical indicators using pandas_ta.
 Provides calculation functions, analysis with signal interpretation,
 pattern detection, and support/resistance identification.
+
+Configuration:
+    All magic numbers are centralized in technical_constants.py
+    Import TECHNICAL_CONFIG to access configuration values.
 """
 
 import numpy as np
@@ -11,6 +15,8 @@ import pandas as pd
 import pandas_ta as ta
 from typing import Dict, Any, List, Optional, Tuple
 from scipy.signal import argrelextrema
+
+from src.agents.tools.technical.technical_constants import TECHNICAL_CONFIG
 
 
 # =============================================================================
@@ -26,68 +32,88 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
     Returns:
         DataFrame with added indicator columns
+
+    Note:
+        All indicator periods are configured in TECHNICAL_CONFIG.
     """
+    cfg = TECHNICAL_CONFIG
     df = df.copy()
     df.columns = df.columns.str.lower()
 
-    # Trend Indicators
-    df['sma_20'] = ta.sma(df['close'], length=20)
-    df['sma_50'] = ta.sma(df['close'], length=50)
-    df['sma_200'] = ta.sma(df['close'], length=200)
-    df['ema_12'] = ta.ema(df['close'], length=12)
-    df['ema_26'] = ta.ema(df['close'], length=26)
+    # Trend Indicators (SMAs and EMAs)
+    df['sma_20'] = ta.sma(df['close'], length=cfg.SMA_SHORT_PERIOD)
+    df['sma_50'] = ta.sma(df['close'], length=cfg.SMA_MEDIUM_PERIOD)
+    df['sma_200'] = ta.sma(df['close'], length=cfg.SMA_LONG_PERIOD)
+    df['ema_12'] = ta.ema(df['close'], length=cfg.EMA_FAST_PERIOD)
+    df['ema_26'] = ta.ema(df['close'], length=cfg.EMA_SLOW_PERIOD)
 
     # Momentum Indicators
-    df['rsi'] = ta.rsi(df['close'], length=14)
+    df['rsi'] = ta.rsi(df['close'], length=cfg.RSI_PERIOD)
 
-    macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+    # MACD
+    macd = ta.macd(
+        df['close'],
+        fast=cfg.MACD_FAST_PERIOD,
+        slow=cfg.MACD_SLOW_PERIOD,
+        signal=cfg.MACD_SIGNAL_PERIOD
+    )
     if macd is not None:
         df = pd.concat([df, macd], axis=1)
-        df.rename(columns={
-            'MACD_12_26_9': 'macd_line',
-            'MACDs_12_26_9': 'macd_signal',
-            'MACDh_12_26_9': 'macd_histogram'
-        }, inplace=True)
+        macd_cols = {
+            f'MACD_{cfg.MACD_FAST_PERIOD}_{cfg.MACD_SLOW_PERIOD}_{cfg.MACD_SIGNAL_PERIOD}': 'macd_line',
+            f'MACDs_{cfg.MACD_FAST_PERIOD}_{cfg.MACD_SLOW_PERIOD}_{cfg.MACD_SIGNAL_PERIOD}': 'macd_signal',
+            f'MACDh_{cfg.MACD_FAST_PERIOD}_{cfg.MACD_SLOW_PERIOD}_{cfg.MACD_SIGNAL_PERIOD}': 'macd_histogram'
+        }
+        df.rename(columns=macd_cols, inplace=True)
 
-    stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+    # Stochastic Oscillator
+    stoch = ta.stoch(
+        df['high'], df['low'], df['close'],
+        k=cfg.STOCH_K_PERIOD,
+        d=cfg.STOCH_D_PERIOD
+    )
     if stoch is not None:
         df = pd.concat([df, stoch], axis=1)
-        df.rename(columns={
-            'STOCHk_14_3_3': 'stoch_k',
-            'STOCHd_14_3_3': 'stoch_d'
-        }, inplace=True)
+        stoch_cols = {
+            f'STOCHk_{cfg.STOCH_K_PERIOD}_{cfg.STOCH_D_PERIOD}_{cfg.STOCH_SMOOTH}': 'stoch_k',
+            f'STOCHd_{cfg.STOCH_K_PERIOD}_{cfg.STOCH_D_PERIOD}_{cfg.STOCH_SMOOTH}': 'stoch_d'
+        }
+        df.rename(columns=stoch_cols, inplace=True)
 
     # Volatility Indicators
-    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+    df['atr'] = ta.atr(df['high'], df['low'], df['close'], length=cfg.ATR_PERIOD)
 
-    bbands = ta.bbands(df['close'], length=20, std=2.0)
+    # Bollinger Bands
+    bbands = ta.bbands(df['close'], length=cfg.BOLLINGER_PERIOD, std=cfg.BOLLINGER_STD_DEV)
     if bbands is not None:
         df = pd.concat([df, bbands], axis=1)
-        df.rename(columns={
-            'BBL_20_2.0': 'bb_lower',
-            'BBM_20_2.0': 'bb_middle',
-            'BBU_20_2.0': 'bb_upper',
-            'BBB_20_2.0': 'bb_bandwidth',
-            'BBP_20_2.0': 'bb_percent'
-        }, inplace=True)
+        bb_cols = {
+            f'BBL_{cfg.BOLLINGER_PERIOD}_{cfg.BOLLINGER_STD_DEV}': 'bb_lower',
+            f'BBM_{cfg.BOLLINGER_PERIOD}_{cfg.BOLLINGER_STD_DEV}': 'bb_middle',
+            f'BBU_{cfg.BOLLINGER_PERIOD}_{cfg.BOLLINGER_STD_DEV}': 'bb_upper',
+            f'BBB_{cfg.BOLLINGER_PERIOD}_{cfg.BOLLINGER_STD_DEV}': 'bb_bandwidth',
+            f'BBP_{cfg.BOLLINGER_PERIOD}_{cfg.BOLLINGER_STD_DEV}': 'bb_percent'
+        }
+        df.rename(columns=bb_cols, inplace=True)
 
-    # Trend Strength
-    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+    # Trend Strength (ADX)
+    adx = ta.adx(df['high'], df['low'], df['close'], length=cfg.ADX_PERIOD)
     if adx is not None:
         df = pd.concat([df, adx], axis=1)
-        df.rename(columns={
-            'ADX_14': 'adx',
-            'DMP_14': 'di_plus',
-            'DMN_14': 'di_minus'
-        }, inplace=True)
+        adx_cols = {
+            f'ADX_{cfg.ADX_PERIOD}': 'adx',
+            f'DMP_{cfg.ADX_PERIOD}': 'di_plus',
+            f'DMN_{cfg.ADX_PERIOD}': 'di_minus'
+        }
+        df.rename(columns=adx_cols, inplace=True)
 
     # Volume Indicators
-    df['volume_sma_20'] = ta.sma(df['volume'], length=20)
+    df['volume_sma_20'] = ta.sma(df['volume'], length=cfg.VOLUME_SMA_PERIOD)
     df['volume_ratio'] = df['volume'] / df['volume_sma_20']
 
-    # Price Range
+    # Price Range (ADR)
     daily_range = df['high'] - df['low']
-    df['adr'] = daily_range.rolling(window=20).mean()
+    df['adr'] = daily_range.rolling(window=cfg.ADR_PERIOD).mean()
     df['adr_pct'] = (df['adr'] / df['close']) * 100
 
     return df
@@ -97,8 +123,12 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 # INDIVIDUAL INDICATOR CALCULATIONS
 # =============================================================================
 
-def calculate_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
+def calculate_rsi(
+    prices: pd.Series,
+    period: int = None
+) -> pd.Series:
     """Calculate RSI from price series."""
+    period = period or TECHNICAL_CONFIG.RSI_PERIOD
     return ta.rsi(prices, length=period)
 
 
@@ -112,15 +142,29 @@ def calculate_ema(prices: pd.Series, period: int) -> pd.Series:
     return ta.ema(prices, length=period)
 
 
-def calculate_atr(high: pd.Series, low: pd.Series, close: pd.Series,
-                  period: int = 14) -> pd.Series:
+def calculate_atr(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = None
+) -> pd.Series:
     """Calculate Average True Range."""
+    period = period or TECHNICAL_CONFIG.ATR_PERIOD
     return ta.atr(high, low, close, length=period)
 
 
-def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26,
-                   signal: int = 9) -> Dict[str, float]:
+def calculate_macd(
+    prices: pd.Series,
+    fast: int = None,
+    slow: int = None,
+    signal: int = None
+) -> Dict[str, float]:
     """Calculate MACD values for latest data point."""
+    cfg = TECHNICAL_CONFIG
+    fast = fast or cfg.MACD_FAST_PERIOD
+    slow = slow or cfg.MACD_SLOW_PERIOD
+    signal = signal or cfg.MACD_SIGNAL_PERIOD
+
     macd_df = ta.macd(prices, fast=fast, slow=slow, signal=signal)
     if macd_df is None or macd_df.empty:
         return {'macd_line': 0, 'macd_signal': 0, 'macd_histogram': 0}
@@ -133,9 +177,16 @@ def calculate_macd(prices: pd.Series, fast: int = 12, slow: int = 26,
     }
 
 
-def calculate_bollinger_bands(prices: pd.Series, period: int = 20,
-                               std_dev: float = 2.0) -> Dict[str, float]:
+def calculate_bollinger_bands(
+    prices: pd.Series,
+    period: int = None,
+    std_dev: float = None
+) -> Dict[str, float]:
     """Calculate Bollinger Bands for latest data point."""
+    cfg = TECHNICAL_CONFIG
+    period = period or cfg.BOLLINGER_PERIOD
+    std_dev = std_dev or cfg.BOLLINGER_STD_DEV
+
     bbands = ta.bbands(prices, length=period, std=std_dev)
     if bbands is None or bbands.empty:
         return {'bb_upper': 0, 'bb_middle': 0, 'bb_lower': 0}
@@ -150,9 +201,18 @@ def calculate_bollinger_bands(prices: pd.Series, period: int = 20,
     }
 
 
-def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
-                         k: int = 14, d: int = 3) -> Dict[str, float]:
+def calculate_stochastic(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    k: int = None,
+    d: int = None
+) -> Dict[str, float]:
     """Calculate Stochastic Oscillator for latest data point."""
+    cfg = TECHNICAL_CONFIG
+    k = k or cfg.STOCH_K_PERIOD
+    d = d or cfg.STOCH_D_PERIOD
+
     stoch = ta.stoch(high, low, close, k=k, d=d)
     if stoch is None or stoch.empty:
         return {'stoch_k': 0, 'stoch_d': 0}
@@ -164,9 +224,14 @@ def calculate_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
     }
 
 
-def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series,
-                  period: int = 14) -> Dict[str, float]:
+def calculate_adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = None
+) -> Dict[str, float]:
     """Calculate ADX and Directional Indicators for latest data point."""
+    period = period or TECHNICAL_CONFIG.ADX_PERIOD
     adx_df = ta.adx(high, low, close, length=period)
     if adx_df is None or adx_df.empty:
         return {'adx': 0, 'di_plus': 0, 'di_minus': 0}
@@ -185,18 +250,20 @@ def calculate_adx(high: pd.Series, low: pd.Series, close: pd.Series,
 
 def analyze_rsi(rsi_value: float) -> Dict[str, Any]:
     """Analyze RSI value and return interpretation."""
+    cfg = TECHNICAL_CONFIG
+
     if pd.isna(rsi_value):
         return {'value': None, 'signal': 'NEUTRAL', 'condition': 'unknown'}
 
     rsi = round(rsi_value, 2)
 
-    if rsi >= 70:
+    if rsi >= cfg.RSI_OVERBOUGHT:
         return {'value': rsi, 'signal': 'SELL', 'condition': 'overbought'}
-    elif rsi >= 60:
+    elif rsi >= cfg.RSI_STRONG_THRESHOLD:
         return {'value': rsi, 'signal': 'NEUTRAL', 'condition': 'strong'}
-    elif rsi <= 30:
+    elif rsi <= cfg.RSI_OVERSOLD:
         return {'value': rsi, 'signal': 'BUY', 'condition': 'oversold'}
-    elif rsi <= 40:
+    elif rsi <= cfg.RSI_WEAK_THRESHOLD:
         return {'value': rsi, 'signal': 'NEUTRAL', 'condition': 'weak'}
     else:
         return {'value': rsi, 'signal': 'NEUTRAL', 'condition': 'neutral'}
@@ -235,6 +302,8 @@ def analyze_macd(macd_line: float, signal_line: float,
 
 def analyze_stochastic(stoch_k: float, stoch_d: float) -> Dict[str, Any]:
     """Analyze Stochastic Oscillator and return interpretation."""
+    cfg = TECHNICAL_CONFIG
+
     if any(pd.isna([stoch_k, stoch_d])):
         return {'signal': 'NEUTRAL', 'condition': 'unknown'}
 
@@ -243,10 +312,10 @@ def analyze_stochastic(stoch_k: float, stoch_d: float) -> Dict[str, Any]:
         'stoch_d': round(stoch_d, 2)
     }
 
-    if stoch_k >= 80 and stoch_d >= 80:
+    if stoch_k >= cfg.STOCH_OVERBOUGHT and stoch_d >= cfg.STOCH_OVERBOUGHT:
         result['signal'] = 'SELL'
         result['condition'] = 'overbought'
-    elif stoch_k <= 20 and stoch_d <= 20:
+    elif stoch_k <= cfg.STOCH_OVERSOLD and stoch_d <= cfg.STOCH_OVERSOLD:
         result['signal'] = 'BUY'
         result['condition'] = 'oversold'
     else:
@@ -265,6 +334,8 @@ def analyze_stochastic(stoch_k: float, stoch_d: float) -> Dict[str, Any]:
 def analyze_bollinger_bands(price: float, bb_upper: float, bb_middle: float,
                             bb_lower: float, bb_bandwidth: float = 0) -> Dict[str, Any]:
     """Analyze Bollinger Bands position and return interpretation."""
+    cfg = TECHNICAL_CONFIG
+
     if any(pd.isna([price, bb_upper, bb_middle, bb_lower])):
         return {'signal': 'NEUTRAL', 'position': 'unknown'}
 
@@ -293,14 +364,16 @@ def analyze_bollinger_bands(price: float, bb_upper: float, bb_middle: float,
         else:
             result['description'] = 'Price below middle band - bearish bias'
 
-    # Squeeze detection (bandwidth < 50% of 50-day average typically)
-    result['squeeze'] = bb_bandwidth < 0.05 if bb_bandwidth else False
+    # Squeeze detection
+    result['squeeze'] = bb_bandwidth < cfg.BOLLINGER_SQUEEZE_THRESHOLD if bb_bandwidth else False
 
     return result
 
 
 def analyze_volume(current_volume: float, avg_volume: float) -> Dict[str, Any]:
     """Analyze volume relative to average."""
+    cfg = TECHNICAL_CONFIG
+
     if any(pd.isna([current_volume, avg_volume])) or avg_volume == 0:
         return {'signal': 'NEUTRAL', 'description': 'Unknown volume'}
 
@@ -312,13 +385,13 @@ def analyze_volume(current_volume: float, avg_volume: float) -> Dict[str, Any]:
         'volume_ratio': round(volume_ratio, 2)
     }
 
-    if volume_ratio >= 2.0:
+    if volume_ratio >= cfg.VOLUME_VERY_HIGH_THRESHOLD:
         result['signal'] = 'STRONG'
         result['description'] = 'Very high volume - significant activity'
-    elif volume_ratio >= 1.5:
+    elif volume_ratio >= cfg.VOLUME_HIGH_THRESHOLD:
         result['signal'] = 'HIGH'
         result['description'] = 'Above average volume'
-    elif volume_ratio <= 0.5:
+    elif volume_ratio <= cfg.VOLUME_LOW_THRESHOLD:
         result['signal'] = 'LOW'
         result['description'] = 'Very low volume - lack of interest'
     else:
@@ -374,6 +447,8 @@ def analyze_trend(price: float, sma_20: float, sma_50: float,
 
 def analyze_adx(adx: float, di_plus: float, di_minus: float) -> Dict[str, Any]:
     """Analyze ADX and Directional Movement."""
+    cfg = TECHNICAL_CONFIG
+
     if any(pd.isna([adx, di_plus, di_minus])):
         return {'signal': 'NEUTRAL', 'trend_strength': 'unknown'}
 
@@ -384,11 +459,11 @@ def analyze_adx(adx: float, di_plus: float, di_minus: float) -> Dict[str, Any]:
     }
 
     # Trend strength
-    if adx >= 50:
+    if adx >= cfg.ADX_VERY_STRONG_TREND:
         result['trend_strength'] = 'very_strong'
-    elif adx >= 25:
+    elif adx >= cfg.ADX_STRONG_TREND:
         result['trend_strength'] = 'strong'
-    elif adx >= 20:
+    elif adx >= cfg.ADX_MODERATE_TREND:
         result['trend_strength'] = 'moderate'
     else:
         result['trend_strength'] = 'weak'
@@ -396,10 +471,10 @@ def analyze_adx(adx: float, di_plus: float, di_minus: float) -> Dict[str, Any]:
     # Direction
     if di_plus > di_minus:
         result['direction'] = 'bullish'
-        result['signal'] = 'BULLISH' if adx >= 25 else 'NEUTRAL'
+        result['signal'] = 'BULLISH' if adx >= cfg.ADX_STRONG_TREND else 'NEUTRAL'
     else:
         result['direction'] = 'bearish'
-        result['signal'] = 'BEARISH' if adx >= 25 else 'NEUTRAL'
+        result['signal'] = 'BEARISH' if adx >= cfg.ADX_STRONG_TREND else 'NEUTRAL'
 
     return result
 
@@ -408,10 +483,18 @@ def analyze_adx(adx: float, di_plus: float, di_minus: float) -> Dict[str, Any]:
 # SUPPORT & RESISTANCE
 # =============================================================================
 
-def identify_support_levels(lows: np.ndarray, closes: np.ndarray,
-                            current_price: float, order: int = 5,
-                            num_levels: int = 5) -> List[Dict[str, Any]]:
+def identify_support_levels(
+    lows: np.ndarray,
+    closes: np.ndarray,
+    current_price: float,
+    order: int = None,
+    num_levels: int = None
+) -> List[Dict[str, Any]]:
     """Identify support levels using local minima."""
+    cfg = TECHNICAL_CONFIG
+    order = order or cfg.SR_LOOKBACK
+    num_levels = num_levels or cfg.SR_NUM_LEVELS
+
     if len(lows) < order * 2:
         return []
 
@@ -428,20 +511,28 @@ def identify_support_levels(lows: np.ndarray, closes: np.ndarray,
                 'price': round(level, 2),
                 'type': 'swing_low',
                 'distance_pct': round(distance_pct, 2),
-                'strength': 0.7
+                'strength': cfg.SR_DEFAULT_STRENGTH
             })
 
     # Sort by distance (nearest first)
     supports.sort(key=lambda x: x['distance_pct'])
 
     # Cluster nearby levels
-    return _cluster_levels(supports, current_price, tolerance_pct=1.0)[:num_levels]
+    return _cluster_levels(supports, current_price, tolerance_pct=cfg.SR_CLUSTER_TOLERANCE)[:num_levels]
 
 
-def identify_resistance_levels(highs: np.ndarray, closes: np.ndarray,
-                               current_price: float, order: int = 5,
-                               num_levels: int = 5) -> List[Dict[str, Any]]:
+def identify_resistance_levels(
+    highs: np.ndarray,
+    closes: np.ndarray,
+    current_price: float,
+    order: int = None,
+    num_levels: int = None
+) -> List[Dict[str, Any]]:
     """Identify resistance levels using local maxima."""
+    cfg = TECHNICAL_CONFIG
+    order = order or cfg.SR_LOOKBACK
+    num_levels = num_levels or cfg.SR_NUM_LEVELS
+
     if len(highs) < order * 2:
         return []
 
@@ -458,14 +549,14 @@ def identify_resistance_levels(highs: np.ndarray, closes: np.ndarray,
                 'price': round(level, 2),
                 'type': 'swing_high',
                 'distance_pct': round(distance_pct, 2),
-                'strength': 0.7
+                'strength': cfg.SR_DEFAULT_STRENGTH
             })
 
     # Sort by distance (nearest first)
     resistances.sort(key=lambda x: x['distance_pct'])
 
     # Cluster nearby levels
-    return _cluster_levels(resistances, current_price, tolerance_pct=1.0)[:num_levels]
+    return _cluster_levels(resistances, current_price, tolerance_pct=cfg.SR_CLUSTER_TOLERANCE)[:num_levels]
 
 
 def calculate_pivot_points(high: float, low: float, close: float) -> Dict[str, float]:
@@ -483,9 +574,15 @@ def calculate_pivot_points(high: float, low: float, close: float) -> Dict[str, f
     }
 
 
-def _cluster_levels(levels: List[Dict], current_price: float,
-                    tolerance_pct: float = 1.0) -> List[Dict]:
+def _cluster_levels(
+    levels: List[Dict],
+    current_price: float,
+    tolerance_pct: float = None
+) -> List[Dict]:
     """Cluster nearby price levels."""
+    cfg = TECHNICAL_CONFIG
+    tolerance_pct = tolerance_pct or cfg.SR_CLUSTER_TOLERANCE
+
     if not levels:
         return []
 
@@ -500,9 +597,9 @@ def _cluster_levels(levels: List[Dict], current_price: float,
                 if level.get('strength', 0) > existing.get('strength', 0):
                     existing.update(level)
                 existing['strength'] = max(
-                    existing.get('strength', 0.5),
-                    level.get('strength', 0.5)
-                ) + 0.1
+                    existing.get('strength', cfg.SR_DEFAULT_STRENGTH),
+                    level.get('strength', cfg.SR_DEFAULT_STRENGTH)
+                ) + cfg.SR_STRENGTH_INCREMENT
                 is_duplicate = True
                 break
 
@@ -516,8 +613,11 @@ def _cluster_levels(levels: List[Dict], current_price: float,
 # CHART PATTERN DETECTION
 # =============================================================================
 
-def identify_chart_patterns(df: pd.DataFrame, lookback: int = 50) -> Dict[str, Any]:
+def identify_chart_patterns(df: pd.DataFrame, lookback: int = None) -> Dict[str, Any]:
     """Identify common chart patterns."""
+    cfg = TECHNICAL_CONFIG
+    lookback = lookback or cfg.PATTERN_LOOKBACK
+
     patterns = {
         'double_bottom': None,
         'double_top': None,
@@ -542,14 +642,20 @@ def identify_chart_patterns(df: pd.DataFrame, lookback: int = 50) -> Dict[str, A
     return patterns
 
 
-def _detect_double_bottom(lows: np.ndarray, closes: np.ndarray,
-                          tolerance: float = 0.02) -> Optional[Dict[str, Any]]:
+def _detect_double_bottom(
+    lows: np.ndarray,
+    closes: np.ndarray,
+    tolerance: float = None
+) -> Optional[Dict[str, Any]]:
     """Detect double bottom pattern (W shape)."""
-    if len(lows) < 20:
+    cfg = TECHNICAL_CONFIG
+    tolerance = tolerance or cfg.PATTERN_TOLERANCE
+
+    if len(lows) < cfg.PATTERN_MIN_BARS:
         return None
 
     # Find local minima
-    minima_idx = argrelextrema(lows, np.less, order=5)[0]
+    minima_idx = argrelextrema(lows, np.less, order=cfg.PATTERN_EXTREMA_ORDER)[0]
 
     if len(minima_idx) < 2:
         return None
@@ -571,7 +677,7 @@ def _detect_double_bottom(lows: np.ndarray, closes: np.ndarray,
                 return {
                     'detected': True,
                     'signal': 'BUY',
-                    'confidence': 0.75,
+                    'confidence': cfg.PATTERN_CONFIDENCE_HIGH,
                     'neckline': round(neckline, 2),
                     'target': round(neckline + (neckline - low2), 2),
                     'description': 'Double bottom pattern - bullish reversal'
@@ -580,14 +686,20 @@ def _detect_double_bottom(lows: np.ndarray, closes: np.ndarray,
     return None
 
 
-def _detect_double_top(highs: np.ndarray, closes: np.ndarray,
-                       tolerance: float = 0.02) -> Optional[Dict[str, Any]]:
+def _detect_double_top(
+    highs: np.ndarray,
+    closes: np.ndarray,
+    tolerance: float = None
+) -> Optional[Dict[str, Any]]:
     """Detect double top pattern (M shape)."""
-    if len(highs) < 20:
+    cfg = TECHNICAL_CONFIG
+    tolerance = tolerance or cfg.PATTERN_TOLERANCE
+
+    if len(highs) < cfg.PATTERN_MIN_BARS:
         return None
 
     # Find local maxima
-    maxima_idx = argrelextrema(highs, np.greater, order=5)[0]
+    maxima_idx = argrelextrema(highs, np.greater, order=cfg.PATTERN_EXTREMA_ORDER)[0]
 
     if len(maxima_idx) < 2:
         return None
@@ -609,7 +721,7 @@ def _detect_double_top(highs: np.ndarray, closes: np.ndarray,
                 return {
                     'detected': True,
                     'signal': 'SELL',
-                    'confidence': 0.75,
+                    'confidence': cfg.PATTERN_CONFIDENCE_HIGH,
                     'neckline': round(neckline, 2),
                     'target': round(neckline - (high2 - neckline), 2),
                     'description': 'Double top pattern - bearish reversal'
@@ -618,10 +730,15 @@ def _detect_double_top(highs: np.ndarray, closes: np.ndarray,
     return None
 
 
-def _detect_bull_flag(closes: np.ndarray, highs: np.ndarray,
-                      lows: np.ndarray) -> Optional[Dict[str, Any]]:
+def _detect_bull_flag(
+    closes: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray
+) -> Optional[Dict[str, Any]]:
     """Detect bull flag pattern (consolidation after strong move up)."""
-    if len(closes) < 20:
+    cfg = TECHNICAL_CONFIG
+
+    if len(closes) < cfg.PATTERN_MIN_BARS:
         return None
 
     # Check for strong uptrend in first half
@@ -631,22 +748,27 @@ def _detect_bull_flag(closes: np.ndarray, highs: np.ndarray,
     first_move = (first_half[-1] - first_half[0]) / first_half[0]
     second_range = (max(second_half) - min(second_half)) / min(second_half)
 
-    # Bull flag: strong move up (>5%) followed by tight consolidation (<3%)
-    if first_move > 0.05 and second_range < 0.03:
+    # Bull flag: strong move up followed by tight consolidation
+    if first_move > cfg.BULL_FLAG_MIN_MOVE and second_range < cfg.BULL_FLAG_MAX_CONSOLIDATION:
         return {
             'detected': True,
             'signal': 'BUY',
-            'confidence': 0.70,
+            'confidence': cfg.PATTERN_CONFIDENCE_MEDIUM,
             'description': 'Bull flag pattern - continuation bullish'
         }
 
     return None
 
 
-def _detect_bear_flag(closes: np.ndarray, highs: np.ndarray,
-                      lows: np.ndarray) -> Optional[Dict[str, Any]]:
+def _detect_bear_flag(
+    closes: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray
+) -> Optional[Dict[str, Any]]:
     """Detect bear flag pattern (consolidation after strong move down)."""
-    if len(closes) < 20:
+    cfg = TECHNICAL_CONFIG
+
+    if len(closes) < cfg.PATTERN_MIN_BARS:
         return None
 
     # Check for strong downtrend in first half
@@ -656,12 +778,12 @@ def _detect_bear_flag(closes: np.ndarray, highs: np.ndarray,
     first_move = (first_half[-1] - first_half[0]) / first_half[0]
     second_range = (max(second_half) - min(second_half)) / min(second_half)
 
-    # Bear flag: strong move down (<-5%) followed by tight consolidation (<3%)
-    if first_move < -0.05 and second_range < 0.03:
+    # Bear flag: strong move down followed by tight consolidation
+    if first_move < -cfg.BULL_FLAG_MIN_MOVE and second_range < cfg.BULL_FLAG_MAX_CONSOLIDATION:
         return {
             'detected': True,
             'signal': 'SELL',
-            'confidence': 0.70,
+            'confidence': cfg.PATTERN_CONFIDENCE_MEDIUM,
             'description': 'Bear flag pattern - continuation bearish'
         }
 
@@ -674,14 +796,15 @@ def _detect_bear_flag(closes: np.ndarray, highs: np.ndarray,
 
 def generate_signals(data: Dict[str, Any]) -> List[str]:
     """Generate trading signals from indicator values."""
+    cfg = TECHNICAL_CONFIG
     signals = []
 
     # RSI signals
     rsi = data.get('rsi_14') or data.get('rsi')
     if rsi:
-        if rsi > 70:
+        if rsi > cfg.RSI_OVERBOUGHT:
             signals.append('RSI_OVERBOUGHT')
-        elif rsi < 30:
+        elif rsi < cfg.RSI_OVERSOLD:
             signals.append('RSI_OVERSOLD')
         else:
             signals.append('RSI_NEUTRAL')
@@ -723,15 +846,15 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
     stoch_d = data.get('stoch_d')
 
     if stoch_k and stoch_d:
-        if stoch_k > 80 and stoch_d > 80:
+        if stoch_k > cfg.STOCH_OVERBOUGHT and stoch_d > cfg.STOCH_OVERBOUGHT:
             signals.append('STOCH_OVERBOUGHT')
-        elif stoch_k < 20 and stoch_d < 20:
+        elif stoch_k < cfg.STOCH_OVERSOLD and stoch_d < cfg.STOCH_OVERSOLD:
             signals.append('STOCH_OVERSOLD')
 
     # ADX signals
     adx = data.get('adx')
     if adx:
-        if adx > 25:
+        if adx > cfg.ADX_STRONG_TREND:
             signals.append('TREND_STRONG')
         else:
             signals.append('TREND_WEAK')
@@ -741,6 +864,8 @@ def generate_signals(data: Dict[str, Any]) -> List[str]:
 
 def generate_outlook(df: pd.DataFrame) -> Dict[str, Any]:
     """Generate overall market outlook from indicators."""
+    cfg = TECHNICAL_CONFIG
+
     if df.empty:
         return {'outlook': 'NEUTRAL', 'confidence': 0}
 
@@ -753,9 +878,9 @@ def generate_outlook(df: pd.DataFrame) -> Dict[str, Any]:
     rsi = latest.get('rsi')
     if pd.notna(rsi):
         total_signals += 1
-        if rsi < 40:
+        if rsi < cfg.RSI_WEAK_THRESHOLD:
             bearish_signals += 1
-        elif rsi > 60:
+        elif rsi > cfg.RSI_STRONG_THRESHOLD:
             bullish_signals += 1
 
     # Check MACD
@@ -793,10 +918,10 @@ def generate_outlook(df: pd.DataFrame) -> Dict[str, Any]:
     bullish_pct = bullish_signals / total_signals
     bearish_pct = bearish_signals / total_signals
 
-    if bullish_pct >= 0.7:
+    if bullish_pct >= cfg.OUTLOOK_STRONG_THRESHOLD:
         outlook = 'BULLISH'
         confidence = bullish_pct
-    elif bearish_pct >= 0.7:
+    elif bearish_pct >= cfg.OUTLOOK_STRONG_THRESHOLD:
         outlook = 'BEARISH'
         confidence = bearish_pct
     elif bullish_pct > bearish_pct:
