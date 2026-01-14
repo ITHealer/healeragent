@@ -742,12 +742,20 @@ def detect_ma_crossovers(
                             'days_ago': lookback - i,
                             'description': 'SMA_20 crossed above SMA_50 - short-term bullish'
                         }
+                        # Only set signal if no major crossover (Golden/Death) detected
+                        if result['signal'] == 'NEUTRAL':
+                            result['signal'] = 'BULLISH'
+                            result['description'] = f'SMA_20/50 bullish crossover {lookback - i} days ago'
                     elif prev_diff >= 0 and curr_diff < 0:
                         result['sma_20_50_cross'] = {
                             'type': 'bearish',
                             'days_ago': lookback - i,
                             'description': 'SMA_20 crossed below SMA_50 - short-term bearish'
                         }
+                        # Only set signal if no major crossover (Golden/Death) detected
+                        if result['signal'] == 'NEUTRAL':
+                            result['signal'] = 'BEARISH'
+                            result['description'] = f'SMA_20/50 bearish crossover {lookback - i} days ago'
 
     return result
 

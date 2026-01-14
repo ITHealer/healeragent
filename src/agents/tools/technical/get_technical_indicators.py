@@ -290,12 +290,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # Calculate date range for display
         date_range = f"{first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}"
 
+        # Calculate price context (factual data)
+        price_context = self._calculate_price_context(df, current_price)
+
         result = {
             "symbol": symbol,
             "timeframe": timeframe,
             "analysis_period_days": lookback_days,
             "date_range": date_range,
             "current_price": current_price,
+            "price_context": price_context,
             "data_points": len(df),
             "timestamp": last_date.isoformat(),
             "indicators": {},
@@ -310,16 +314,19 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # =====================================================================
         rsi_value = indicator_values.get('rsi_14')
         rsi_analysis = analyze_rsi(rsi_value or 0)
+        rsi_trend = self._calculate_indicator_trend(df, 'rsi_14', lookback=5)
         result['indicators']['rsi'] = {
             "value": rsi_value,
             "period_days": self.cfg.RSI_PERIOD,
             "signal": rsi_analysis.get('signal'),
             "condition": rsi_analysis.get('condition'),
+            "trend": rsi_trend.get('trend'),
+            "trend_change_pct": rsi_trend.get('change_pct'),
             "thresholds": {
                 "overbought": self.cfg.RSI_OVERBOUGHT,
                 "oversold": self.cfg.RSI_OVERSOLD
             },
-            "explanation": self._get_rsi_explanation(rsi_value, rsi_analysis)
+            "explanation": self._get_rsi_explanation(rsi_value, rsi_analysis, rsi_trend)
         }
 
         # =====================================================================
@@ -329,10 +336,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
         macd_signal = indicator_values.get('macd_signal')
         macd_histogram = indicator_values.get('macd_histogram')
         macd_analysis = analyze_macd(macd_line or 0, macd_signal or 0, macd_histogram or 0)
+        histogram_trend = self._calculate_indicator_trend(df, 'macd_histogram', lookback=5)
         result['indicators']['macd'] = {
             "macd_line": macd_line,
             "signal_line": macd_signal,
             "histogram": macd_histogram,
+            "histogram_trend": histogram_trend.get('trend'),
             "periods": {
                 "fast": self.cfg.MACD_FAST_PERIOD,
                 "slow": self.cfg.MACD_SLOW_PERIOD,
@@ -340,7 +349,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             },
             "signal": macd_analysis.get('signal'),
             "crossover": macd_analysis.get('crossover'),
-            "explanation": self._get_macd_explanation(macd_line, macd_signal, macd_histogram, macd_analysis)
+            "explanation": self._get_macd_explanation(macd_line, macd_signal, macd_histogram, macd_analysis, histogram_trend)
         }
 
         # =====================================================================
@@ -576,27 +585,126 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         return result
 
+    def _calculate_indicator_trend(self, df: pd.DataFrame, column: str, lookback: int = 5) -> Dict[str, Any]:
+        """
+        Calculate indicator trend direction (rising/falling/flat).
+
+        Args:
+            df: DataFrame with indicator data
+            column: Column name to analyze
+            lookback: Number of periods to compare
+
+        Returns:
+            Dict with trend direction and change data
+        """
+        if column not in df.columns or len(df) < lookback:
+            return {"trend": "unknown", "change": None}
+
+        recent = df[column].tail(lookback).dropna()
+        if len(recent) < 2:
+            return {"trend": "unknown", "change": None}
+
+        start_val = recent.iloc[0]
+        end_val = recent.iloc[-1]
+
+        if start_val == 0:
+            return {"trend": "unknown", "change": None}
+
+        change_pct = (end_val - start_val) / abs(start_val) * 100
+
+        # Determine trend direction
+        if change_pct > 3:
+            trend = "rising"
+        elif change_pct < -3:
+            trend = "falling"
+        else:
+            trend = "flat"
+
+        return {
+            "trend": trend,
+            "change_pct": round(change_pct, 2),
+            "lookback_periods": lookback
+        }
+
+    def _calculate_price_context(self, df: pd.DataFrame, current_price: float) -> Dict[str, Any]:
+        """
+        Calculate factual price context for LLM understanding.
+
+        Provides:
+        - Period high/low (from available data)
+        - Price change percentages (1-day, 5-day, 20-day)
+        - Position within range (percentile)
+        """
+        if df.empty or current_price == 0:
+            return {}
+
+        # Period high/low from the analysis data
+        period_high = float(df['high'].max())
+        period_low = float(df['low'].min())
+
+        # Price position as percentile within the range
+        price_range = period_high - period_low
+        range_position_pct = ((current_price - period_low) / price_range * 100) if price_range > 0 else 50.0
+
+        # Price changes over different periods
+        price_changes = {}
+        closes = df['close']
+
+        # 1-day change
+        if len(closes) >= 2:
+            prev_close = closes.iloc[-2]
+            price_changes['1_day'] = round((current_price - prev_close) / prev_close * 100, 2)
+
+        # 5-day change
+        if len(closes) >= 5:
+            prev_close_5 = closes.iloc[-5]
+            price_changes['5_day'] = round((current_price - prev_close_5) / prev_close_5 * 100, 2)
+
+        # 20-day change
+        if len(closes) >= 20:
+            prev_close_20 = closes.iloc[-20]
+            price_changes['20_day'] = round((current_price - prev_close_20) / prev_close_20 * 100, 2)
+
+        return {
+            "period_high": round(period_high, 2),
+            "period_low": round(period_low, 2),
+            "range_position_pct": round(range_position_pct, 2),
+            "price_changes": price_changes,
+            "explanation": (
+                f"Price ${current_price:.2f} is at {range_position_pct:.0f}% of the period range "
+                f"(Low: ${period_low:.2f}, High: ${period_high:.2f}). "
+                + (f"1-day: {price_changes.get('1_day', 'N/A'):+.2f}%, " if '1_day' in price_changes else "")
+                + (f"5-day: {price_changes.get('5_day', 'N/A'):+.2f}%, " if '5_day' in price_changes else "")
+                + (f"20-day: {price_changes.get('20_day', 'N/A'):+.2f}%." if '20_day' in price_changes else "")
+            ).rstrip(", ") + "."
+        }
+
     # =========================================================================
     # Explanation Generator Methods
     # =========================================================================
 
-    def _get_rsi_explanation(self, rsi_value: float, analysis: Dict) -> str:
-        """Generate LLM-friendly RSI explanation."""
+    def _get_rsi_explanation(self, rsi_value: float, analysis: Dict, trend: Dict = None) -> str:
+        """Generate LLM-friendly RSI explanation with trend info."""
         if rsi_value is None:
             return "RSI data not available."
 
         condition = analysis.get('condition', 'unknown')
-        explanations = {
-            'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - The stock has risen significantly and may be due for a pullback. Consider taking profits or waiting for a better entry.",
-            'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - The stock has fallen significantly and may be due for a bounce. Potential buying opportunity if fundamentals are sound.",
-            'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish momentum is building but approaching overbought territory. Monitor for continuation or reversal.",
-            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK MOMENTUM - Bearish momentum present but approaching oversold territory. Watch for potential reversal signals.",
-            'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL - No extreme conditions. The stock is trading in a balanced momentum range."
-        }
-        return explanations.get(condition, f"RSI={rsi_value:.1f}: Momentum indicator based on 14-day price changes.")
+        trend_info = ""
+        if trend and trend.get('trend') != 'unknown':
+            trend_dir = trend.get('trend', 'unknown')
+            trend_info = f" RSI is {trend_dir} over the last 5 days."
 
-    def _get_macd_explanation(self, macd_line: float, signal_line: float, histogram: float, analysis: Dict) -> str:
-        """Generate LLM-friendly MACD explanation."""
+        explanations = {
+            'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - The stock has risen significantly and may be due for a pullback. Consider taking profits or waiting for a better entry.{trend_info}",
+            'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - The stock has fallen significantly and may be due for a bounce. Potential buying opportunity if fundamentals are sound.{trend_info}",
+            'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish momentum is building but approaching overbought territory. Monitor for continuation or reversal.{trend_info}",
+            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK MOMENTUM - Bearish momentum present but approaching oversold territory. Watch for potential reversal signals.{trend_info}",
+            'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL - No extreme conditions. The stock is trading in a balanced momentum range.{trend_info}"
+        }
+        return explanations.get(condition, f"RSI={rsi_value:.1f}: Momentum indicator based on 14-day price changes.{trend_info}")
+
+    def _get_macd_explanation(self, macd_line: float, signal_line: float, histogram: float, analysis: Dict, histogram_trend: Dict = None) -> str:
+        """Generate LLM-friendly MACD explanation with histogram trend."""
         if macd_line is None:
             return "MACD data not available."
 
@@ -608,13 +716,19 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             momentum = "bearish momentum (histogram negative)"
 
+        # Add histogram trend info
+        trend_info = ""
+        if histogram_trend and histogram_trend.get('trend') != 'unknown':
+            trend_dir = histogram_trend.get('trend', 'unknown')
+            trend_info = f" Histogram is {trend_dir} over the last 5 days."
+
         crossover_text = {
             'bullish': " Recent bullish crossover (MACD crossed above signal line) - potential BUY signal.",
             'bearish': " Recent bearish crossover (MACD crossed below signal line) - potential SELL signal.",
             'none': ""
         }
 
-        return f"MACD Line={macd_line:.4f}, Signal={signal_line:.4f}, Histogram={histogram:.4f}. Shows {momentum}.{crossover_text.get(crossover, '')}"
+        return f"MACD Line={macd_line:.4f}, Signal={signal_line:.4f}, Histogram={histogram:.4f}. Shows {momentum}.{trend_info}{crossover_text.get(crossover, '')}"
 
     def _get_ma_explanation(self, price: float, sma_20: float, sma_50: float, sma_200: float, analysis: Dict) -> str:
         """Generate LLM-friendly Moving Averages explanation."""
