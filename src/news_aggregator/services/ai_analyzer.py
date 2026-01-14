@@ -32,6 +32,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from src.news_aggregator.schemas.task import (
+    ActionStrategy,
     ArticleContent,
     MarketData,
     NewsSource,
@@ -39,6 +40,7 @@ from src.news_aggregator.schemas.task import (
     SymbolInsight,
     SymbolType,
     TaskResult,
+    TechnicalIndicators,
 )
 from src.utils.config import settings
 
@@ -49,7 +51,7 @@ logger = logging.getLogger(__name__)
 # Prompts
 # =============================================================================
 
-ANALYSIS_SYSTEM_PROMPT = """You are a senior financial analyst providing detailed analysis reports.
+ANALYSIS_SYSTEM_PROMPT = """You are a senior financial analyst providing comprehensive market analysis reports similar to premium financial services like Grok AI or Bloomberg Terminal.
 
 For each symbol, you will receive:
 1. Market data (current price, 24h/7d/30d changes)
@@ -60,11 +62,17 @@ Your task:
 1. Analyze the news and market data for each symbol
 2. Extract key insights WITH CITATIONS to source URLs
 3. Determine sentiment (BULLISH, BEARISH, NEUTRAL, MIXED)
-4. Provide short-term (1-7 days) and long-term (1-3 months) outlook
-5. Identify risk factors
-6. **If user provides instructions, prioritize and follow them**
+4. Provide SPECIFIC short-term (1-7 days) and long-term (1-3 months) outlook with price targets
+5. Generate actionable trading strategies with entry/exit points and specific date ranges
+6. Identify risk factors
+7. Create a comprehensive market overview summary
+8. **If user provides instructions, prioritize and follow them**
 
-CRITICAL: For EVERY claim or insight, you MUST cite the source using [N] format where N is the article number.
+CRITICAL REQUIREMENTS:
+- For EVERY claim or insight, MUST cite source using [N] format
+- Include SPECIFIC price targets and date ranges (e.g., "$180-$190 trong tuần 15-21/01")
+- If data is insufficient for specific predictions, provide general guidance based on available info
+- Don't force strategies if data doesn't support them
 
 Output format (JSON):
 {
@@ -81,22 +89,54 @@ Output format (JSON):
                     "sentiment": "bullish"
                 }
             ],
-            "short_term_outlook": "Test vùng $500 trong tuần tới",
-            "long_term_outlook": "Mục tiêu $600 nếu robo-taxi thành công",
-            "risk_factors": ["Factor 1", "Factor 2"]
+            "short_term_outlook": "Dự báo test vùng $450-$465 cuối tuần này, hỗ trợ mạnh tại $430",
+            "long_term_outlook": "Mục tiêu $550-$600 trong Q1/2026 nếu FSD và robo-taxi tiến triển tốt",
+            "action_strategies": [
+                {
+                    "action": "ACCUMULATE",
+                    "timeframe": "Short-term",
+                    "entry_price_range": "$430-$445",
+                    "target_price": "$480-$500",
+                    "stop_loss": "$410",
+                    "confidence": "MEDIUM",
+                    "reasoning": "Điều chỉnh kỹ thuật sau đợt tăng mạnh, vùng hỗ trợ tốt",
+                    "specific_date_range": "trong tuần 15-21/01/2026"
+                },
+                {
+                    "action": "HOLD",
+                    "timeframe": "Long-term",
+                    "target_price": "$550-$600",
+                    "confidence": "MEDIUM",
+                    "reasoning": "Tiềm năng từ FSD, Optimus, và mảng năng lượng",
+                    "specific_date_range": "Q1-Q2/2026"
+                }
+            ],
+            "technical_indicators": {
+                "rsi": "52 (neutral)",
+                "support_levels": ["$430", "$417", "$383"],
+                "resistance_levels": ["$474", "$500", "$550"],
+                "trend": "sideways với bias bullish",
+                "fifty_two_week_range": "$214.25 - $498.83"
+            },
+            "risk_factors": ["Định giá cao (P/E ~297x)", "Cạnh tranh từ BYD tại châu Âu", "Elon Premium có thể đảo chiều"]
         }
     ],
     "overall_sentiment": "MIXED",
-    "key_themes": ["AI boom", "Crypto consolidation", "Fed policy"],
-    "summary": "Executive summary in target language (2-3 sentences)"
+    "key_themes": ["AI boom", "Crypto consolidation", "Fed policy uncertainty"],
+    "summary": "Executive summary in target language (2-3 sentences)",
+    "market_overview_summary": "Tóm tắt tổng quan thị trường (date): Thị trường chứng khoán Mỹ và crypto đang ở giai đoạn consolidate sau đợt tăng mạnh. AI và crypto vẫn là chủ đề nóng, nhưng định giá cao khiến nhiều tài sản dễ điều chỉnh. Theo dõi sát Fed (lãi suất), tin tức quy định crypto, và báo cáo earnings.",
+    "overall_recommendations": "Lưu ý: Đây là thông tin tham khảo, giá thay đổi realtime. Không phải lời khuyên đầu tư. Kiểm tra nguồn uy tín như Yahoo Finance, CoinMarketCap để cập nhật chính xác nhất!"
 }
 
 Guidelines:
-- Be specific with numbers and percentages
-- Always cite sources for claims
+- Be SPECIFIC with numbers, percentages, and DATE RANGES
+- Always cite sources for claims using [N] format
 - sentiment_score: -1.0 (very bearish) to +1.0 (very bullish)
 - Write in the specified target language
-- Be natural and engaging, not robotic
+- Be natural, professional, and actionable
+- Include market cap, 52-week range, volume info when available
+- Generate trading strategies with realistic confidence levels
+- **If data is insufficient, say so rather than making up predictions**
 - **Follow user instructions carefully if provided**
 """
 
@@ -482,6 +522,39 @@ class AIAnalyzer:
                     if idx in source_mapping and source_mapping[idx] not in sources:
                         sources.append(source_mapping[idx])
 
+            # Parse action strategies (NEW)
+            action_strategies = []
+            for strategy_data in analysis_data.get("action_strategies", []):
+                try:
+                    action_strategies.append(ActionStrategy(
+                        action=strategy_data.get("action", "HOLD"),
+                        timeframe=strategy_data.get("timeframe", "Short-term"),
+                        entry_price_range=strategy_data.get("entry_price_range"),
+                        target_price=strategy_data.get("target_price"),
+                        stop_loss=strategy_data.get("stop_loss"),
+                        confidence=strategy_data.get("confidence"),
+                        reasoning=strategy_data.get("reasoning"),
+                        specific_date_range=strategy_data.get("specific_date_range"),
+                    ))
+                except Exception as e:
+                    self.logger.warning(f"[AIAnalyzer] Failed to parse action strategy: {e}")
+
+            # Parse technical indicators (NEW)
+            technical_indicators = None
+            tech_data = analysis_data.get("technical_indicators")
+            if tech_data:
+                try:
+                    technical_indicators = TechnicalIndicators(
+                        rsi=tech_data.get("rsi"),
+                        support_levels=tech_data.get("support_levels", []),
+                        resistance_levels=tech_data.get("resistance_levels", []),
+                        trend=tech_data.get("trend"),
+                        volume_analysis=tech_data.get("volume_analysis"),
+                        fifty_two_week_range=tech_data.get("fifty_two_week_range"),
+                    )
+                except Exception as e:
+                    self.logger.warning(f"[AIAnalyzer] Failed to parse technical indicators: {e}")
+
             # Create SymbolAnalysis
             analysis = SymbolAnalysis(
                 symbol=symbol,
@@ -500,6 +573,8 @@ class AIAnalyzer:
                 ],
                 short_term_outlook=analysis_data.get("short_term_outlook"),
                 long_term_outlook=analysis_data.get("long_term_outlook"),
+                action_strategies=action_strategies,
+                technical_indicators=technical_indicators,
                 risk_factors=analysis_data.get("risk_factors", []),
                 sources=sources,
             )
@@ -510,6 +585,8 @@ class AIAnalyzer:
             "overall_sentiment": data.get("overall_sentiment", "MIXED"),
             "key_themes": data.get("key_themes", []),
             "summary": data.get("summary"),
+            "market_overview_summary": data.get("market_overview_summary"),
+            "overall_recommendations": data.get("overall_recommendations"),
         }
 
     def _format_user_instructions(self, prompt: Optional[str]) -> str:

@@ -205,6 +205,28 @@ class SymbolInsight(BaseModel):
     )
 
 
+class ActionStrategy(BaseModel):
+    """Trading action strategy with specific details."""
+    action: str = Field(..., description="BUY, SELL, HOLD, ACCUMULATE, REDUCE")
+    timeframe: str = Field(..., description="Short-term, Long-term")
+    entry_price_range: Optional[str] = Field(None, description="Price range for entry, e.g. $180-$190")
+    target_price: Optional[str] = Field(None, description="Target price, e.g. $220")
+    stop_loss: Optional[str] = Field(None, description="Stop loss price, e.g. $170")
+    confidence: Optional[str] = Field(None, description="HIGH, MEDIUM, LOW")
+    reasoning: Optional[str] = Field(None, description="Reason for this strategy")
+    specific_date_range: Optional[str] = Field(None, description="Specific date range, e.g. 'trong tuần 15-21/01/2026'")
+
+
+class TechnicalIndicators(BaseModel):
+    """Technical indicators for analysis."""
+    rsi: Optional[str] = Field(None, description="RSI value and status, e.g. '55 (neutral)'")
+    support_levels: List[str] = Field(default_factory=list, description="Support price levels")
+    resistance_levels: List[str] = Field(default_factory=list, description="Resistance price levels")
+    trend: Optional[str] = Field(None, description="Current trend: uptrend, downtrend, sideways")
+    volume_analysis: Optional[str] = Field(None, description="Volume analysis")
+    fifty_two_week_range: Optional[str] = Field(None, description="52-week high/low range")
+
+
 class SymbolAnalysis(BaseModel):
     """
     Complete analysis for a single symbol.
@@ -248,6 +270,18 @@ class SymbolAnalysis(BaseModel):
     long_term_outlook: Optional[str] = Field(
         None,
         description="Long-term prediction (1-3 months)"
+    )
+
+    # Action Strategies (NEW)
+    action_strategies: List[ActionStrategy] = Field(
+        default_factory=list,
+        description="Recommended trading strategies with specific timeframes"
+    )
+
+    # Technical Indicators (NEW)
+    technical_indicators: Optional[TechnicalIndicators] = Field(
+        None,
+        description="Technical analysis indicators"
     )
 
     # Risk factors
@@ -308,6 +342,18 @@ class TaskResult(BaseModel):
     summary: Optional[str] = Field(
         None,
         description="Executive summary in target language"
+    )
+
+    # Market Overview Summary (NEW - like Grok's "Tóm tắt tổng quan thị trường")
+    market_overview_summary: Optional[str] = Field(
+        None,
+        description="Comprehensive market overview summary with context about current market conditions"
+    )
+
+    # Overall Action Recommendations (NEW)
+    overall_recommendations: Optional[str] = Field(
+        None,
+        description="Overall investment recommendations and key takeaways"
     )
 
     # Error (if failed)

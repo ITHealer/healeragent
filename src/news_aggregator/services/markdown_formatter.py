@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # LLM Prompts
 # =============================================================================
 
-FORMAT_SYSTEM_PROMPT = """You are a professional financial report formatter.
+FORMAT_SYSTEM_PROMPT = """You are a professional financial report formatter creating comprehensive market reports similar to Grok AI or Bloomberg Terminal.
 Your task is to convert structured analysis data into a readable markdown report with INLINE CITATIONS.
 
 CITATION FORMAT (CRITICAL - Follow exactly like ChatGPT):
@@ -41,16 +41,20 @@ CITATION FORMAT (CRITICAL - Follow exactly like ChatGPT):
 - Each insight should clearly show its source inline, not at the end
 
 Output Structure:
-1. Title
+1. Title with date
 2. Executive Summary with inline citations
 3. Overall Sentiment (🟢 bullish, 🔴 bearish, ⚪ neutral, 🟡 mixed)
 4. Key Themes
 5. Per-Symbol Analysis:
-   - Price and changes (📈/📉)
+   - Price and changes (📈/📉) with market data (52-week range, market cap, volume)
    - Key insights - EACH with inline citation link
-   - Outlook
+   - **Technical Indicators** (RSI, Support/Resistance levels, Trend)
+   - **Action Strategies** - Trading recommendations with specific entry/exit prices and timeframes
+   - Outlook (Short-term and Long-term with specific price targets and dates)
    - Risk factors (⚠️)
-6. Sources Reference (numbered list at end for quick reference)
+6. **Tóm tắt tổng quan thị trường** - Market Overview Summary section
+7. **Khuyến nghị tổng thể** - Overall recommendations and disclaimers
+8. Sources Reference (numbered list at end for quick reference)
 
 Example of correct inline citation:
 "Cổ phiếu TSLA tăng 3.5% trong tuần qua nhờ doanh số giao xe vượt kỳ vọng" ([Tesla Q4 Deliveries Beat Expectations](https://reuters.com/tesla-q4))
@@ -58,7 +62,9 @@ Example of correct inline citation:
 IMPORTANT:
 - Output ONLY markdown text, no code blocks
 - Write in the specified target language
-- Be natural and professional"""
+- Be natural and professional
+- Include specific price targets, date ranges, and actionable strategies
+- Format action strategies clearly with Entry/Target/Stop-Loss/Timeframe"""
 
 FORMAT_USER_PROMPT = """Convert this analysis result to a markdown report with INLINE CITATIONS.
 
@@ -70,11 +76,14 @@ FORMAT_USER_PROMPT = """Convert this analysis result to a markdown report with I
 {data_json}
 ```
 
-Generate a professional markdown report in {language_name}.
+Generate a professional markdown report in {language_name} similar to Grok AI's market reports.
 
 DATA STRUCTURE EXPLANATION:
-- Each key_insight now has a "sources" array with {{"title", "url"}} directly attached
-- Use these to create inline citations immediately after each insight text
+- Each key_insight has a "sources" array with {{"title", "url"}} directly attached
+- action_strategies contains trading recommendations with entry/target/stop-loss prices
+- technical_indicators contains RSI, support/resistance levels, trend analysis
+- market_overview_summary contains overall market context
+- overall_recommendations contains disclaimers and key takeaways
 
 CRITICAL CITATION FORMAT:
 For each insight, output like this:
@@ -91,24 +100,50 @@ STRUCTURE:
 1. ## Tóm tắt điều hành - Summary with key highlights
 2. ## Tâm lý thị trường - 🟢/🔴/⚪/🟡 emoji + description
 3. ## Các chủ đề chính - Bullet list
+
 4. ## Phân tích theo mã chứng khoán
    For each symbol:
    ### Symbol Name (SYMBOL)
-   - **Giá hiện tại:** $XXX
+   - **Giá hiện tại:** $XXX (Currency)
    - **Biến động:** 24h, 7d, 30d with 📈/📉
-   - **Tâm lý:** Sentiment with score
+   - **52-week range:** if available
+   - **Market cap:** if available
+   - **Volume:** if available
+   - **Tâm lý:** Sentiment emoji + description
 
    #### Các điểm nhấn chính
    For EACH insight: "text" ([Source Title](url))
 
+   #### Chỉ số kỹ thuật 📊
+   - RSI: value (status)
+   - Hỗ trợ: levels
+   - Kháng cự: levels
+   - Xu hướng: trend description
+
+   #### Chiến lược giao dịch 💡
+   For each strategy:
+   **[Timeframe] - [Action]**
+   - Vùng vào: entry_price_range
+   - Mục tiêu: target_price
+   - Cắt lỗ: stop_loss
+   - Độ tin cậy: confidence
+   - Thời điểm: specific_date_range
+   - Lý do: reasoning
+
    #### Triển vọng
-   - Ngắn hạn: outlook
-   - Dài hạn: outlook
+   - **Ngắn hạn (1-7 ngày):** outlook with SPECIFIC price targets and dates
+   - **Dài hạn (1-3 tháng):** outlook with SPECIFIC price targets
 
    #### Yếu tố rủi ro ⚠️
    Bullet list of risks
 
-5. ## Nguồn tham khảo
+5. ## Tóm tắt tổng quan thị trường 🌐
+   Insert market_overview_summary content here
+
+6. ## Khuyến nghị và Lưu ý ⚠️
+   Insert overall_recommendations with standard disclaimers
+
+7. ## Nguồn tham khảo 📚
    Numbered list: [N] [Title](url) - source_site
 
 Output only the markdown text, no code blocks."""
@@ -216,6 +251,8 @@ class MarkdownFormatter:
             "overall_sentiment": result.overall_sentiment,
             "key_themes": result.key_themes,
             "summary": result.summary,
+            "market_overview_summary": result.market_overview_summary,  # NEW
+            "overall_recommendations": result.overall_recommendations,  # NEW
             "processing_time_ms": result.processing_time_ms,
             "user_prompt": result.prompt,
             "source_map": source_map,  # Add global source mapping for easy lookup
@@ -278,6 +315,34 @@ class MarkdownFormatter:
                         }
                         for c in md.changes
                     ]
+                }
+
+            # Add action strategies if available (NEW)
+            if analysis.action_strategies:
+                symbol_data["action_strategies"] = [
+                    {
+                        "action": s.action,
+                        "timeframe": s.timeframe,
+                        "entry_price_range": s.entry_price_range,
+                        "target_price": s.target_price,
+                        "stop_loss": s.stop_loss,
+                        "confidence": s.confidence,
+                        "reasoning": s.reasoning,
+                        "specific_date_range": s.specific_date_range,
+                    }
+                    for s in analysis.action_strategies
+                ]
+
+            # Add technical indicators if available (NEW)
+            if analysis.technical_indicators:
+                ti = analysis.technical_indicators
+                symbol_data["technical_indicators"] = {
+                    "rsi": ti.rsi,
+                    "support_levels": ti.support_levels,
+                    "resistance_levels": ti.resistance_levels,
+                    "trend": ti.trend,
+                    "volume_analysis": ti.volume_analysis,
+                    "fifty_two_week_range": ti.fifty_two_week_range,
                 }
 
             data["analyses"].append(symbol_data)

@@ -408,6 +408,8 @@ class TaskWorker:
                 overall_sentiment=analysis_result.get("overall_sentiment") or "MIXED",
                 key_themes=analysis_result.get("key_themes", []),
                 summary=analysis_result.get("summary"),
+                market_overview_summary=analysis_result.get("market_overview_summary"),
+                overall_recommendations=analysis_result.get("overall_recommendations"),
             )
 
             # Update status to completed
@@ -549,12 +551,27 @@ class TaskWorker:
             try:
                 # Fetch stock news with tickers filter
                 if stock_symbols:
+                    self.logger.info(
+                        f"[TaskWorker] 📥 FMP: Fetching STOCK news | "
+                        f"tickers={stock_symbols} | limit={self.MAX_NEWS_PER_SYMBOL * len(stock_symbols)}"
+                    )
                     stock_news = await self._fmp_provider.fetch_news(
                         categories=[NewsCategory.STOCK],
                         page=0,
                         limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
                         tickers=stock_symbols,
                     )
+                    # Log sample results
+                    if stock_news:
+                        sample = stock_news[0]
+                        self.logger.info(
+                            f"[TaskWorker] 📰 FMP STOCK Sample | "
+                            f"title=\"{sample.title[:60]}...\" | "
+                            f"source={sample.source_site} | "
+                            f"symbols={sample.symbols} | "
+                            f"published={sample.published_at}"
+                        )
+
                     # Assign news to symbols using matches_symbols method
                     # FMP already filters by tickers, so we trust the results
                     for item in stock_news:
@@ -564,15 +581,33 @@ class TaskWorker:
                                 if item.matches_symbols([symbol]):
                                     fmp_result[symbol].append(item)
 
-                    self.logger.info(f"[TaskWorker] FMP: {len(stock_news)} stock news for {stock_symbols}")
+                    self.logger.info(
+                        f"[TaskWorker] ✅ FMP STOCK: {len(stock_news)} articles fetched | "
+                        f"matched: {{{', '.join(f'{s}:{len(fmp_result[s])}' for s in stock_symbols)}}}"
+                    )
 
                 # Fetch crypto news
                 if crypto_symbols:
+                    self.logger.info(
+                        f"[TaskWorker] 📥 FMP: Fetching CRYPTO news | "
+                        f"symbols={crypto_symbols} | limit={self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols)}"
+                    )
                     crypto_news = await self._fmp_provider.fetch_news(
                         categories=[NewsCategory.CRYPTO],
                         page=0,
                         limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
                     )
+                    # Log sample results
+                    if crypto_news:
+                        sample = crypto_news[0]
+                        self.logger.info(
+                            f"[TaskWorker] 📰 FMP CRYPTO Sample | "
+                            f"title=\"{sample.title[:60]}...\" | "
+                            f"source={sample.source_site} | "
+                            f"symbols={sample.symbols} | "
+                            f"published={sample.published_at}"
+                        )
+
                     for item in crypto_news:
                         for symbol in crypto_symbols:
                             if len(fmp_result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
@@ -580,7 +615,10 @@ class TaskWorker:
                                 if item.matches_symbols([symbol]):
                                     fmp_result[symbol].append(item)
 
-                    self.logger.info(f"[TaskWorker] FMP: {len(crypto_news)} crypto news")
+                    self.logger.info(
+                        f"[TaskWorker] ✅ FMP CRYPTO: {len(crypto_news)} articles fetched | "
+                        f"matched: {{{', '.join(f'{s}:{len(fmp_result[s])}' for s in crypto_symbols)}}}"
+                    )
 
             except Exception as e:
                 self.logger.error(f"[TaskWorker] FMP fetch error: {e}", exc_info=True)
@@ -594,12 +632,30 @@ class TaskWorker:
                 return []
 
             try:
-                self.logger.info(f"[TaskWorker] Tavily: Searching for symbols: {symbols}")
+                self.logger.info(
+                    f"[TaskWorker] 📥 TAVILY: Searching for symbols | "
+                    f"symbols={symbols} | max_per_symbol={self.MAX_NEWS_PER_SYMBOL}"
+                )
                 tavily_news = await self._tavily_provider.search_for_symbols(
                     symbols=symbols,
                     max_results_per_symbol=self.MAX_NEWS_PER_SYMBOL,
                 )
-                self.logger.info(f"[TaskWorker] Tavily: {len(tavily_news)} articles found")
+
+                # Log sample results
+                if tavily_news:
+                    sample = tavily_news[0]
+                    self.logger.info(
+                        f"[TaskWorker] 📰 TAVILY Sample | "
+                        f"title=\"{sample.title[:60]}...\" | "
+                        f"source={sample.source_site} | "
+                        f"url={sample.url[:50]}... | "
+                        f"relevance_score={sample.relevance_score:.2f}"
+                    )
+
+                self.logger.info(
+                    f"[TaskWorker] ✅ TAVILY: {len(tavily_news)} articles found | "
+                    f"symbols_covered={list(set(s for item in tavily_news for s in item.symbols))}"
+                )
                 return tavily_news
             except Exception as e:
                 self.logger.error(f"[TaskWorker] Tavily fetch error: {e}", exc_info=True)
@@ -624,9 +680,19 @@ class TaskWorker:
                     if item.url not in existing_urls:
                         result[symbol_upper].append(item)
 
-        # Log final results
+        # Log final aggregated results
+        self.logger.info(
+            f"[TaskWorker] 📊 FINAL NEWS AGGREGATION | "
+            f"total_sources: FMP + Tavily"
+        )
         for symbol, news_list in result.items():
-            self.logger.info(f"[TaskWorker] Final: {len(news_list)} news for {symbol}")
+            if news_list:
+                self.logger.info(
+                    f"[TaskWorker] 📊 {symbol}: {len(news_list)} articles | "
+                    f"sources: {list(set(n.source_site for n in news_list if n.source_site))[:3]}"
+                )
+            else:
+                self.logger.warning(f"[TaskWorker] ⚠️ {symbol}: No news found")
 
         return result
 
