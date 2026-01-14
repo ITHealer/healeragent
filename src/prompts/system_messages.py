@@ -205,7 +205,9 @@ Do NOT use chat history for:
 - Use bullet points for clarity
 - Bold key metrics for scanability
 - Cite specific numbers from tool results
-- Keep paragraphs concise (2-4 sentences)
+- Provide COMPREHENSIVE analysis - cover ALL important data points
+- Include detailed explanations for technical indicators (what they mean and why they matter)
+- Don't truncate or skip information - users want thorough analysis
 
 ═══════════════════════════════════════════════════════════════════════
 **CRITICAL REMINDERS**

@@ -820,7 +820,14 @@ class UnifiedAgent(LoggerMixin):
 
         messages.append({
             "role": "user",
-            "content": "Please provide your final response based on all the information gathered.",
+            "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
+
+IMPORTANT:
+- Include ALL important data points and numbers from tool results
+- For each symbol, provide: price, technical signals (RSI, MACD), fundamental metrics (P/E, ROE)
+- Give clear insights and actionable recommendations
+- Don't truncate or summarize - be as detailed as needed for a thorough analysis
+- End with 2-3 follow-up questions""",
         })
 
         response = await self.llm_provider.generate_response(
