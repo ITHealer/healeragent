@@ -311,14 +311,15 @@ class FMPNewsProvider(BaseNewsProvider):
             self.logger.warning(f"Unknown category: {category}")
             return []
 
-        self._log_fetch_start(category.value, page, limit)
+        # Log with tickers info if provided
+        tickers_info = f" | tickers={tickers}" if tickers else ""
+        self.logger.info(f"[fmp] Fetching {category.value} news - page={page}, limit={limit}{tickers_info}")
         start_time = time.time()
 
         # Add tickers filter for stock news
         extra_params = None
         if tickers and category == NewsCategory.STOCK:
             extra_params = {"tickers": ",".join(tickers)}
-            self.logger.info(f"[fmp] Filtering stock news by tickers: {tickers}")
 
         raw_items = await self._fetch_endpoint(endpoint, page, limit, extra_params)
 

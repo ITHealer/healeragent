@@ -54,6 +54,7 @@ from src.news_aggregator.schemas.fmp_news import NewsCategory
 from src.news_aggregator.schemas.unified_news import UnifiedNewsItem
 
 from src.news_aggregator.providers.fmp_provider import FMPNewsProvider
+from src.news_aggregator.providers.tavily_provider import TavilyNewsProvider
 from src.news_aggregator.services.task_queue import (
     TaskQueueService,
     get_task_queue,
@@ -117,6 +118,7 @@ class TaskWorker:
         # Services (initialized in start())
         self._queue: Optional[TaskQueueService] = None
         self._fmp_provider: Optional[FMPNewsProvider] = None
+        self._tavily_provider: Optional[TavilyNewsProvider] = None
         self._content_extractor: Optional[ContentExtractor] = None
         self._market_data: Optional[MarketDataService] = None
         self._ai_analyzer: Optional[AIAnalyzer] = None
@@ -191,6 +193,14 @@ class TaskWorker:
             except ValueError as e:
                 self.logger.warning(f"[TaskWorker] FMP provider not available: {e}")
                 self._fmp_provider = None
+
+            # Tavily provider for supplementary news search
+            try:
+                self._tavily_provider = TavilyNewsProvider()
+                self.logger.info("[TaskWorker] Tavily provider initialized")
+            except ValueError as e:
+                self.logger.warning(f"[TaskWorker] Tavily provider not available: {e}")
+                self._tavily_provider = None
 
             # Content extractor
             self._content_extractor = get_content_extractor()
@@ -501,10 +511,11 @@ class TaskWorker:
         symbols: List[str],
     ) -> Dict[str, List[UnifiedNewsItem]]:
         """
-        Fetch news articles for each symbol using FMP tickers filter.
+        Fetch news articles for each symbol using FMP and Tavily.
 
-        FMP API filters by tickers directly, so returned news is already relevant.
-        We just group by symbol without additional filtering.
+        Pipeline:
+        1. FMP API filters by tickers directly (primary source)
+        2. Tavily search for symbols with insufficient news (fallback)
 
         Args:
             symbols: List of symbols to fetch news for
@@ -512,69 +523,99 @@ class TaskWorker:
         Returns:
             Dict mapping symbol to list of news items
         """
-        if not self._fmp_provider:
-            self.logger.warning("[TaskWorker] FMP provider not available")
-            return {symbol: [] for symbol in symbols}
-
         result: Dict[str, List[UnifiedNewsItem]] = {symbol: [] for symbol in symbols}
 
-        try:
-            # Separate crypto vs stock symbols
-            crypto_symbols = []
-            stock_symbols = []
+        # Separate crypto vs stock symbols
+        crypto_symbols = []
+        stock_symbols = []
 
-            for symbol in symbols:
-                symbol_upper = symbol.upper()
-                if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"]):
-                    crypto_symbols.append(symbol_upper)
-                else:
-                    stock_symbols.append(symbol_upper)
+        for symbol in symbols:
+            symbol_upper = symbol.upper()
+            if any(crypto in symbol_upper for crypto in ["BTC", "ETH", "DOGE", "SOL", "XRP", "ADA", "DOT", "AVAX"]):
+                crypto_symbols.append(symbol_upper)
+            else:
+                stock_symbols.append(symbol_upper)
 
-            # Fetch stock news with tickers filter (FMP API filters for us)
-            if stock_symbols:
-                stock_news = await self._fmp_provider.fetch_news(
-                    categories=[NewsCategory.STOCK],
-                    page=0,
-                    limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
-                    tickers=stock_symbols,
+        # ===== Step 1: Fetch from FMP (primary source) =====
+        if self._fmp_provider:
+            try:
+                # Fetch stock news with tickers filter
+                if stock_symbols:
+                    stock_news = await self._fmp_provider.fetch_news(
+                        categories=[NewsCategory.STOCK],
+                        page=0,
+                        limit=self.MAX_NEWS_PER_SYMBOL * len(stock_symbols),
+                        tickers=stock_symbols,
+                    )
+                    # Assign news to symbols
+                    for item in stock_news:
+                        for symbol in stock_symbols:
+                            if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                                # FMP filters by ticker - check if symbol matches
+                                if symbol in [s.upper() for s in item.symbols]:
+                                    result[symbol].append(item)
+                                # If no specific symbol in item, assign to all requested
+                                elif not item.symbols:
+                                    result[symbol].append(item)
+
+                    self.logger.info(f"[TaskWorker] FMP: {len(stock_news)} stock news for {stock_symbols}")
+
+                # Fetch crypto news
+                if crypto_symbols:
+                    crypto_news = await self._fmp_provider.fetch_news(
+                        categories=[NewsCategory.CRYPTO],
+                        page=0,
+                        limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
+                    )
+                    # Assign crypto news to matching symbols
+                    for item in crypto_news:
+                        for symbol in crypto_symbols:
+                            if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
+                                item_symbols_str = " ".join(item.symbols).upper()
+                                if symbol in item_symbols_str or symbol in item.title.upper():
+                                    result[symbol].append(item)
+
+                    self.logger.info(f"[TaskWorker] FMP: {len(crypto_news)} crypto news")
+
+            except Exception as e:
+                self.logger.error(f"[TaskWorker] FMP fetch error: {e}", exc_info=True)
+        else:
+            self.logger.warning("[TaskWorker] FMP provider not available")
+
+        # ===== Step 2: Fetch from Tavily for symbols with insufficient news =====
+        symbols_needing_news = [
+            symbol for symbol in symbols
+            if len(result[symbol]) < 3  # Use Tavily if less than 3 articles from FMP
+        ]
+
+        if symbols_needing_news and self._tavily_provider:
+            self.logger.info(f"[TaskWorker] Tavily: Searching for symbols with low FMP results: {symbols_needing_news}")
+            try:
+                tavily_news = await self._tavily_provider.search_for_symbols(
+                    symbols=symbols_needing_news,
+                    max_results_per_symbol=self.MAX_NEWS_PER_SYMBOL,
                 )
-                # FMP returns news filtered by tickers - assign to symbols directly
-                for item in stock_news:
-                    for symbol in stock_symbols:
-                        if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                            # FMP filters by ticker, so all returned news is relevant
-                            if symbol in [s.upper() for s in item.symbols]:
-                                result[symbol].append(item)
-                            # If no specific symbol in item, assign to all requested
-                            elif not item.symbols:
-                                result[symbol].append(item)
 
-                self.logger.info(f"[TaskWorker] Fetched {len(stock_news)} stock news for {stock_symbols}")
+                # Assign Tavily results to symbols
+                for item in tavily_news:
+                    for symbol in item.symbols:
+                        symbol_upper = symbol.upper()
+                        if symbol_upper in result and len(result[symbol_upper]) < self.MAX_NEWS_PER_SYMBOL:
+                            # Avoid duplicates by checking URL
+                            existing_urls = {n.url for n in result[symbol_upper]}
+                            if item.url not in existing_urls:
+                                result[symbol_upper].append(item)
 
-            # Fetch crypto news
-            if crypto_symbols:
-                crypto_news = await self._fmp_provider.fetch_news(
-                    categories=[NewsCategory.CRYPTO],
-                    page=0,
-                    limit=self.MAX_NEWS_PER_SYMBOL * len(crypto_symbols),
-                )
-                # Assign crypto news to matching symbols
-                for item in crypto_news:
-                    for symbol in crypto_symbols:
-                        if len(result[symbol]) < self.MAX_NEWS_PER_SYMBOL:
-                            # Check if symbol appears in item's symbols (e.g., BTCUSD contains BTC)
-                            item_symbols_str = " ".join(item.symbols).upper()
-                            if symbol in item_symbols_str or symbol in item.title.upper():
-                                result[symbol].append(item)
+                self.logger.info(f"[TaskWorker] Tavily: {len(tavily_news)} articles found")
 
-                self.logger.info(f"[TaskWorker] Fetched {len(crypto_news)} crypto news")
+            except Exception as e:
+                self.logger.error(f"[TaskWorker] Tavily fetch error: {e}", exc_info=True)
+        elif symbols_needing_news and not self._tavily_provider:
+            self.logger.warning("[TaskWorker] Tavily provider not available for fallback search")
 
-            # Log results
-            for symbol, news_list in result.items():
-                self.logger.info(f"[TaskWorker] Found {len(news_list)} news for {symbol}")
-
-        except Exception as e:
-            self.logger.error(f"[TaskWorker] News fetch error: {e}", exc_info=True)
+        # Log final results
+        for symbol, news_list in result.items():
+            self.logger.info(f"[TaskWorker] Final: {len(news_list)} news for {symbol}")
 
         return result
 

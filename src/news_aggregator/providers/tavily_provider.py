@@ -113,8 +113,8 @@ class TavilyNewsProvider(BaseNewsProvider):
             if not title:
                 return None
             
-            # Parse published date if available
-            published_date = datetime.utcnow()
+            # Parse published date if available (don't auto-assign current date)
+            published_date = None
             if "published_date" in item and item["published_date"]:
                 try:
                     pub_str = item["published_date"]
