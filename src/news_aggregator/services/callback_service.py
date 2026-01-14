@@ -35,6 +35,10 @@ from src.news_aggregator.schemas.task import (
     CallbackPayload,
     CallbackStatus,
 )
+from src.news_aggregator.services.markdown_formatter import (
+    format_task_result_markdown,
+    format_error_markdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +93,7 @@ class CallbackService:
         self,
         request_id: int,
         result: TaskResult,
+        use_markdown: bool = True,
     ) -> Dict[str, Any]:
         """
         Build callback payload for BE .NET.
@@ -96,12 +101,15 @@ class CallbackService:
         Args:
             request_id: Original request ID from BE
             result: Task result with analysis
+            use_markdown: If True, format as markdown; else JSON
 
         Returns:
-            Dict with requestId and content (JSON string)
+            Dict with requestId and content (markdown or JSON string)
         """
-        # Serialize result to JSON string
-        content = result.model_dump_json(exclude_none=True)
+        if use_markdown:
+            content = format_task_result_markdown(result)
+        else:
+            content = result.model_dump_json(exclude_none=True)
 
         return {
             "requestId": request_id,
@@ -236,20 +244,71 @@ class CallbackService:
         Returns:
             CallbackStatus with success/failure info
         """
-        # Create minimal error result
-        error_result = TaskResult(
-            job_id=job_id or f"error_{request_id}",
+        if not callback_url:
+            self.logger.warning(f"[Callback] No callback URL for error {request_id}")
+            return CallbackStatus(
+                success=False,
+                request_id=request_id,
+                error="No callback URL provided",
+                attempts=0,
+            )
+
+        # Format error as markdown
+        content = format_error_markdown(
             request_id=request_id,
-            success=False,
-            error=error_message,
-            analyses=[],
-            processing_time_ms=0,
+            error_message=error_message,
+            job_id=job_id,
         )
 
-        return await self.send_callback(
-            callback_url=callback_url,
+        payload = {
+            "requestId": request_id,
+            "content": content,
+        }
+
+        client = await self._get_client()
+        last_error = None
+        attempts = 0
+
+        for attempt in range(self.max_retries):
+            attempts = attempt + 1
+            try:
+                response = await client.post(
+                    callback_url,
+                    json=payload,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Request-ID": str(request_id),
+                    },
+                )
+
+                if 200 <= response.status_code < 300:
+                    self.logger.info(
+                        f"[Callback] Error callback sent | request_id={request_id}"
+                    )
+                    return CallbackStatus(
+                        success=True,
+                        request_id=request_id,
+                        status_code=response.status_code,
+                        attempts=attempts,
+                        sent_at=datetime.utcnow(),
+                    )
+
+                last_error = f"HTTP {response.status_code}"
+
+            except Exception as e:
+                last_error = str(e)
+                self.logger.warning(
+                    f"[Callback] Error callback failed | attempt={attempts} | {e}"
+                )
+
+            if attempt < self.max_retries - 1:
+                await asyncio.sleep(self.base_delay * (2 ** attempt))
+
+        return CallbackStatus(
+            success=False,
             request_id=request_id,
-            result=error_result,
+            error=last_error,
+            attempts=attempts,
         )
 
 
