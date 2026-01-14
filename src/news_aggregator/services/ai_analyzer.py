@@ -292,13 +292,136 @@ class AIAnalyzer:
 
         return mapping
 
+    def _extract_partial_data(self, response: str) -> Dict[str, Any]:
+        """
+        Extract partial data from malformed JSON using regex.
+
+        When JSON parsing fails completely, try to extract:
+        - Symbol analyses
+        - Sentiments
+        - Key themes
+
+        Args:
+            response: Malformed JSON string
+
+        Returns:
+            Dict with whatever data could be extracted
+        """
+        import re
+
+        result = {"analyses": [], "key_themes": [], "overall_sentiment": "MIXED"}
+
+        # Try to extract symbol and sentiment pairs
+        # Pattern: "symbol": "XXX", ... "sentiment": "YYY"
+        symbol_pattern = r'"symbol"\s*:\s*"([^"]+)"'
+        sentiment_pattern = r'"sentiment"\s*:\s*"([^"]+)"'
+        display_name_pattern = r'"display_name"\s*:\s*"([^"]+)"'
+
+        symbols = re.findall(symbol_pattern, response)
+        sentiments = re.findall(sentiment_pattern, response)
+        display_names = re.findall(display_name_pattern, response)
+
+        # Try to extract overall_sentiment
+        overall_match = re.search(r'"overall_sentiment"\s*:\s*"([^"]+)"', response)
+        if overall_match:
+            result["overall_sentiment"] = overall_match.group(1)
+
+        # Try to extract key_themes
+        themes_match = re.search(r'"key_themes"\s*:\s*\[([^\]]+)\]', response)
+        if themes_match:
+            themes_str = themes_match.group(1)
+            themes = re.findall(r'"([^"]+)"', themes_str)
+            result["key_themes"] = themes[:5]  # Limit to 5
+
+        # Try to extract summary
+        summary_match = re.search(r'"summary"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', response)
+        if summary_match:
+            result["summary"] = summary_match.group(1).replace('\\"', '"')
+
+        # Create basic analyses from extracted symbols
+        for i, symbol in enumerate(symbols):
+            sentiment = sentiments[i] if i < len(sentiments) else "NEUTRAL"
+            display_name = display_names[i] if i < len(display_names) else symbol
+
+            # Only add if it looks like a valid symbol (not "BULLISH", "NEUTRAL", etc.)
+            if symbol.upper() not in ["BULLISH", "BEARISH", "NEUTRAL", "MIXED", "POSITIVE", "NEGATIVE"]:
+                result["analyses"].append({
+                    "symbol": symbol,
+                    "display_name": display_name,
+                    "sentiment": sentiment,
+                    "sentiment_score": 0.0,
+                    "key_insights": [],
+                    "risk_factors": [],
+                })
+
+        return result
+
+    def _repair_json(self, json_str: str) -> str:
+        """
+        Attempt to repair common JSON errors from LLM output.
+
+        Common issues:
+        - Trailing commas before ] or }
+        - Unclosed brackets/braces
+        - Truncated response
+        - Unescaped quotes in strings
+
+        Args:
+            json_str: Potentially malformed JSON string
+
+        Returns:
+            Repaired JSON string
+        """
+        import re
+
+        # Remove trailing commas before } or ]
+        json_str = re.sub(r',\s*([}\]])', r'\1', json_str)
+
+        # Count brackets to check if response is truncated
+        open_braces = json_str.count('{')
+        close_braces = json_str.count('}')
+        open_brackets = json_str.count('[')
+        close_brackets = json_str.count(']')
+
+        # If truncated, try to close properly
+        if open_braces > close_braces or open_brackets > close_brackets:
+            # Find the last complete structure
+            # Try to find a good truncation point
+
+            # Look for last complete key_insights array
+            last_insight_end = json_str.rfind('}')
+            if last_insight_end > 0:
+                # Check if we're in the middle of a string
+                test_str = json_str[:last_insight_end + 1]
+
+                # Try to close the structure properly
+                missing_brackets = open_brackets - close_brackets
+                missing_braces = open_braces - close_braces
+
+                # Add closing brackets/braces
+                json_str = json_str.rstrip()
+
+                # Remove trailing incomplete content after last }
+                if json_str.endswith(','):
+                    json_str = json_str[:-1]
+
+                # Close arrays and objects
+                json_str += ']' * max(0, missing_brackets)
+                json_str += '}' * max(0, missing_braces)
+
+        # Try to fix unescaped quotes in strings (common LLM mistake)
+        # This is tricky - we look for patterns like "text": "something with "quotes" inside"
+        # and try to escape the inner quotes
+
+        return json_str
+
     def _parse_llm_response(
         self,
         response: str,
         source_mapping: Dict[int, NewsSource],
         market_data: Dict[str, MarketData],
     ) -> Dict[str, Any]:
-        """Parse LLM JSON response."""
+        """Parse LLM JSON response with repair capability."""
         # Clean up response
         response = response.strip()
 
@@ -311,12 +434,38 @@ class AIAnalyzer:
                 lines = lines[:-1]
             response = "\n".join(lines)
 
+        # Also handle ```json at start
+        if response.startswith("json"):
+            response = response[4:].strip()
+
+        data = None
+
+        # Try 1: Parse as-is
         try:
             data = json.loads(response)
-        except json.JSONDecodeError as e:
-            self.logger.error(f"[AIAnalyzer] JSON parse error: {e}")
-            self.logger.debug(f"[AIAnalyzer] Response: {response[:500]}...")
-            return {"analyses": [], "error": str(e)}
+        except json.JSONDecodeError as e1:
+            self.logger.warning(f"[AIAnalyzer] Initial JSON parse failed: {e1}")
+
+            # Try 2: Repair and parse
+            try:
+                repaired = self._repair_json(response)
+                data = json.loads(repaired)
+                self.logger.info("[AIAnalyzer] JSON repaired successfully")
+            except json.JSONDecodeError as e2:
+                self.logger.error(f"[AIAnalyzer] JSON repair failed: {e2}")
+                self.logger.debug(f"[AIAnalyzer] Response: {response[:500]}...")
+
+                # Try 3: Extract partial data using regex
+                try:
+                    data = self._extract_partial_data(response)
+                    if data and data.get("analyses"):
+                        self.logger.info(f"[AIAnalyzer] Extracted {len(data['analyses'])} partial analyses")
+                except Exception as e3:
+                    self.logger.error(f"[AIAnalyzer] Partial extraction failed: {e3}")
+                    return {"analyses": [], "error": str(e2)}
+
+        if not data:
+            return {"analyses": [], "error": "Failed to parse LLM response"}
 
         # Process analyses and attach sources
         analyses = []
