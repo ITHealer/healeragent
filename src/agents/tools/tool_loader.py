@@ -43,7 +43,7 @@ TOOL_DEFINITIONS = {
     ],
     
     # ========================================================================
-    # FUNDAMENTALS TOOLS (5) - Require API key
+    # FUNDAMENTALS TOOLS (6) - Require API key
     # ========================================================================
     "fundamentals": [
         ("src.agents.tools.fundamentals", "GetIncomeStatementTool", "api_key"),
@@ -51,6 +51,7 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.fundamentals", "GetCashFlowTool", "api_key"),
         ("src.agents.tools.fundamentals", "GetFinancialRatiosTool", "api_key"),
         ("src.agents.tools.fundamentals", "GetGrowthMetricsTool", "api_key"),
+        ("src.agents.tools.fundamentals", "GetAnalystRatingsTool", "api_key"),
     ],
     
     # ========================================================================

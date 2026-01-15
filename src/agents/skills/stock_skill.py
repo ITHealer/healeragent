@@ -34,11 +34,8 @@ class StockSkill(BaseSkill):
                 "getBalanceSheet",
                 "getCashFlow",
                 "getFinancialRatios",
-                "getKeyMetrics",
-                "getPriceTargets",
-                "getAnalystEstimates",
-                "getInsiderTrading",
-                "getInstitutionalHoldings",
+                "getGrowthMetrics",
+                "getAnalystRatings",  # Wall Street consensus & price targets
                 "getStockNews",
                 "getSentiment",
                 "assessRisk",
@@ -91,54 +88,62 @@ class StockSkill(BaseSkill):
 - Don't use fake "confidence %" for patterns without backtest methodology"""
 
     def get_analysis_framework(self) -> str:
-        """Get analysis guidelines - comprehensive but natural."""
+        """Get analysis guidelines - concise, narrative-driven like Claude/ChatGPT."""
         return """## Response Guidelines
 
+**CRITICAL: Be CONCISE and NARRATIVE-DRIVEN**
+- Aim for ~500-800 words for comprehensive analysis (NOT 1500+ words)
+- Write in flowing paragraphs, NOT endless bullet point lists
+- Tell a story about the stock, don't just dump data
+- Only highlight KEY metrics, not every single indicator
+
 **Adapt depth to query complexity:**
-- Simple price check → Brief answer with key context
-- Analysis request → Comprehensive breakdown covering all available data
+- Simple price check → 2-3 sentences with key context
+- Analysis request → Structured but concise breakdown (~600 words)
 - Comparison request → Side-by-side metrics with clear interpretation
 
 **For comprehensive analysis, structure your response:**
 
-### 0. **TL;DR / Executive Summary** (ALWAYS START WITH THIS)
-   - 2-3 sentences: Current status, verdict, key action
-   - Example: "TSLA at $439, bearish short-term (below MA20/50). HOLD existing, avoid new longs. Key support $424, if breaks → risk to $400."
+### 0. **TL;DR** (ALWAYS START - 2-3 sentences max)
+   - Current price, overall verdict, key action
+   - Example: "AAPL at $259.96, technically weak but fundamentally solid. HOLD - avoid new longs until $270 reclaimed."
 
-### 1. **Market Context** (REQUIRED)
-   - Macro: Interest rates, Fed stance, economic conditions
-   - Benchmark: Stock vs S&P 500/NASDAQ performance (outperform/underperform)
-   - News: Recent catalysts, upcoming events (earnings, product launches)
+### 1. **Price & Market Context** (1 short paragraph)
+   - Current price, 52-week range, recent performance
+   - Market trend (S&P/NASDAQ) and sector context
+   - Key news/catalysts in 1-2 sentences
 
-### 2. **Technical Picture** (when data available)
-   - Momentum: RSI, MACD with clear interpretation
-   - Trend: Price vs MAs, trend strength (ADX)
-   - Key Levels: Support/resistance with specific prices
-   - Patterns: Chart patterns (no fake confidence % - just describe pattern)
+### 2. **Technical Picture** (1 paragraph + key levels)
+   - Summarize momentum (RSI, MACD) in plain English
+   - Trend direction and strength
+   - Support: $XXX | Resistance: $YYY
 
-### 3. **Fundamental Health** (when data available)
-   - Valuation: P/E, P/B vs sector/historical
-   - Profitability: Margins, ROE, growth rates
-   - Financial Strength: Debt levels, cash position
+### 3. **Fundamental Health** (1 paragraph)
+   - Valuation summary (P/E vs sector)
+   - Profitability & growth highlights
+   - Financial strength (debt, cash)
 
-### 4. **Scenario Analysis** (REQUIRED)
-   - **Bull Case (X% probability)**: Target price, triggers
-   - **Bear Case (Y% probability)**: Downside target, triggers
-   - Be explicit about what invalidates each scenario
+### 4. **Wall Street Consensus** (IMPORTANT - use getAnalystRatings)
+   - Analyst rating breakdown (Buy/Hold/Sell)
+   - Price target range and consensus target
+   - Key analyst views if available
 
-### 5. **Action Plan** (MUST BE LOGICALLY CONSISTENT)
-   - **LONG Setup**: Entry < Target, Stop < Entry
-   - **SHORT Setup**: Entry > Target, Stop > Entry
-   - Specify position type (LONG/SHORT)
-   - Risk/reward ratio
+### 5. **Investment Thesis** (2-3 sentences each)
+   - **Bull Case**: Target $XXX if [triggers]
+   - **Bear Case**: Risk to $YYY if [triggers]
+
+### 6. **Recommendation** (clear and logical)
+   - **Existing holders**: HOLD/SELL/ADD
+   - **New buyers**: BUY on pullback to $XXX / WAIT for confirmation
+   - Key levels to watch
 
 **Communication Style:**
-- Match the user's language naturally
-- Use tables for comparing metrics
-- Be thorough but clear - comprehensive is good, confusing is not
-- End with 2-3 follow-up questions
+- Write like you're explaining to a smart friend, not writing a textbook
+- Use narrative flow, not just data dumps
+- Highlight what matters, skip the noise
+- Match user's language naturally
 
-**Remember:** Deliver institutional-quality analysis. No logical contradictions in recommendations."""
+**Remember:** Quality over quantity. A concise, insightful analysis beats a verbose data dump."""
 
     def get_few_shot_examples(self) -> List[Dict[str, str]]:
         """Get stock analysis examples."""
