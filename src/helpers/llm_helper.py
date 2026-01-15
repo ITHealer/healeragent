@@ -561,31 +561,35 @@ class LLMGeneratorProvider(LoggerMixin):
     def clean_thinking(self, content: str) -> str:
         return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
-    async def get_llm(self, 
-                      model_name: str, 
-                      provider_type: str = ProviderType.OPENAI, 
+    async def get_llm(self,
+                      model_name: str,
+                      provider_type: str = ProviderType.OPENAI,
                       api_key: Optional[str] = None) -> Any:
         """
         Get a model provider instance
-        
+
         Args:
             model_name: Name of the model to use
             provider_type: Type of provider (ollama, openai, gemini)
-            api_key: API key for paid providers
-            
+            api_key: API key for paid providers (auto-fetched if None)
+
         Returns:
             Any: Provider instance
         """
         try:
-            # Create unique key for caching
-            cache_key = f"{provider_type}:{model_name}:{api_key}"
-            
+            # Always fetch the correct API key for the provider_type
+            # This ensures we use the right key even if caller passes wrong key for a different provider
+            effective_api_key = ModelProviderFactory._get_api_key(provider_type) or api_key
+
+            # Create unique key for caching (use effective_api_key for correct cache hit)
+            cache_key = f"{provider_type}:{model_name}:{effective_api_key}"
+
             if cache_key not in self._provider_instances:
                 # Create provider
                 provider = ModelProviderFactory.create_provider(
                     provider_type=provider_type,
                     model_name=model_name,
-                    api_key=api_key
+                    api_key=effective_api_key
                 )
                 
                 # Initialize model
