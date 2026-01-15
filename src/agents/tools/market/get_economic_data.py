@@ -103,9 +103,9 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
             returns={
                 "treasury_rates": "object - Current treasury rates (2Y, 5Y, 10Y, 30Y)",
                 "yield_curve": "object - Yield curve analysis",
-                "gdp": "object - GDP growth data",
-                "cpi": "object - CPI inflation data",
-                "unemployment": "object - Unemployment rate",
+                "gdp": "object - GDP growth rate (%) not raw GDP value",
+                "inflation": "object - Inflation rate (%) not CPI index",
+                "unemployment": "object - Unemployment rate (%)",
                 "summary": "string - Quick macro summary",
                 "timestamp": "string"
             },
@@ -161,17 +161,47 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
                     result["treasury_rates"] = treasury_data
                     result["yield_curve"] = self._analyze_yield_curve(treasury_data)
 
-            # GDP
+            # GDP Growth Rate (try realGDPGrowth first, then calculate from GDP)
             if "gdp" in indicators:
-                gdp_data = await self._fetch_economic_indicator("GDP")
-                if gdp_data:
+                gdp_data = await self._fetch_economic_indicator("realGDPGrowth")
+                if gdp_data and gdp_data.get("latest_value") is not None:
+                    gdp_data["type"] = "growth_rate"
                     result["gdp"] = gdp_data
+                else:
+                    # Fallback: fetch GDP and calculate YoY growth
+                    gdp_raw = await self._fetch_economic_indicator("GDP")
+                    if gdp_raw and gdp_raw.get("recent_data") and len(gdp_raw["recent_data"]) >= 4:
+                        current = gdp_raw["latest_value"]
+                        previous = gdp_raw["recent_data"][3]["value"] if len(gdp_raw["recent_data"]) > 3 else gdp_raw["previous_value"]
+                        if current and previous and previous > 0:
+                            yoy_growth = ((current - previous) / previous) * 100
+                            result["gdp"] = {
+                                "indicator": "GDP_YoY",
+                                "latest_value": round(yoy_growth, 2),
+                                "latest_date": gdp_raw["latest_date"],
+                                "type": "calculated_yoy",
+                                "trend": "increasing" if yoy_growth > 0 else "decreasing"
+                            }
 
-            # CPI
+            # Inflation Rate (try inflationRate first, then calculate from CPI)
             if "cpi" in indicators:
-                cpi_data = await self._fetch_economic_indicator("CPI")
-                if cpi_data:
-                    result["cpi"] = cpi_data
+                inflation_data = await self._fetch_economic_indicator("inflationRate")
+                if inflation_data and inflation_data.get("latest_value") is not None:
+                    inflation_data["type"] = "inflation_rate"
+                    result["inflation"] = inflation_data
+                else:
+                    # Fallback: fetch CPI and calculate YoY inflation
+                    cpi_raw = await self._fetch_economic_indicator("CPI")
+                    if cpi_raw and cpi_raw.get("recent_data"):
+                        # Need 12+ months of data for YoY
+                        self.logger.info("inflationRate not available, CPI index returned (need YoY calculation)")
+                        result["inflation"] = {
+                            "indicator": "CPI_index",
+                            "latest_value": cpi_raw.get("latest_value"),
+                            "latest_date": cpi_raw.get("latest_date"),
+                            "type": "index_value",
+                            "note": "This is CPI index, not inflation rate. Need 12-month data for YoY calculation."
+                        }
 
             # Unemployment
             if "unemployment" in indicators:
@@ -333,19 +363,19 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
         if yc.get("status"):
             parts.append(f"Yield curve: {yc['status']}")
 
-        # GDP
+        # GDP Growth Rate
         gdp = result.get("gdp", {})
-        if gdp.get("latest_value"):
-            parts.append(f"GDP growth: {gdp['latest_value']:.1f}%")
+        if gdp.get("latest_value") is not None:
+            parts.append(f"GDP Growth: {gdp['latest_value']:.1f}%")
 
-        # CPI
-        cpi = result.get("cpi", {})
-        if cpi.get("latest_value"):
-            parts.append(f"CPI inflation: {cpi['latest_value']:.1f}%")
+        # Inflation Rate (use 'inflation' or fallback to 'cpi')
+        inflation = result.get("inflation", {}) or result.get("cpi", {})
+        if inflation.get("latest_value") is not None:
+            parts.append(f"Inflation: {inflation['latest_value']:.1f}%")
 
         # Unemployment
         unemp = result.get("unemployment", {})
-        if unemp.get("latest_value"):
+        if unemp.get("latest_value") is not None:
             parts.append(f"Unemployment: {unemp['latest_value']:.1f}%")
 
         return " | ".join(parts) if parts else "No data available"
@@ -377,20 +407,24 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
             lines.append(f"- Signal: {yc.get('signal', 'N/A')}")
             lines.append("")
 
-        # GDP
+        # GDP Growth Rate
         gdp = result.get("gdp", {})
-        if gdp.get("latest_value"):
-            lines.append("### GDP Growth")
-            lines.append(f"- Latest: {gdp['latest_value']:.1f}% ({gdp.get('latest_date', 'N/A')})")
+        if gdp.get("latest_value") is not None:
+            gdp_type = gdp.get('type', 'unknown')
+            lines.append("### GDP Growth Rate")
+            lines.append(f"- Latest: {gdp['latest_value']:.1f}% ({gdp.get('latest_date', 'N/A')}) [{gdp_type}]")
             lines.append(f"- Trend: {gdp.get('trend', 'N/A')}")
             lines.append("")
 
-        # CPI
-        cpi = result.get("cpi", {})
-        if cpi.get("latest_value"):
-            lines.append("### CPI Inflation")
-            lines.append(f"- Latest: {cpi['latest_value']:.1f}% ({cpi.get('latest_date', 'N/A')})")
-            lines.append(f"- Trend: {cpi.get('trend', 'N/A')}")
+        # Inflation Rate (use 'inflation' or fallback to 'cpi')
+        inflation = result.get("inflation", {}) or result.get("cpi", {})
+        if inflation.get("latest_value") is not None:
+            inflation_type = inflation.get('type', 'unknown')
+            lines.append("### Inflation Rate")
+            lines.append(f"- Latest: {inflation['latest_value']:.1f}% ({inflation.get('latest_date', 'N/A')}) [{inflation_type}]")
+            lines.append(f"- Trend: {inflation.get('trend', 'N/A')}")
+            if inflation.get('note'):
+                lines.append(f"- Note: {inflation['note']}")
             lines.append("")
 
         # Unemployment

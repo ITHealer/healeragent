@@ -1385,40 +1385,83 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] Treasury fetch error: {e}")
 
-                # 2. GDP (FMP stable API)
+                # 2. GDP Growth Rate (FMP stable API)
+                # Try realGDPGrowth first, then calculate from GDP values
                 try:
                     econ_url = f"{self.FMP_STABLE_URL}/economic-indicators"
-                    response = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
+                    # First try realGDPGrowth which should return growth rate directly
+                    response = await client.get(econ_url, params={"name": "realGDPGrowth", "apikey": self.api_key})
                     if response.status_code == 200:
                         gdp_data = response.json()
                         if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
                             latest = gdp_data[0]
                             result["gdp"] = {
-                                "value": latest.get("value"),
+                                "value": latest.get("value"),  # This should be growth rate %
                                 "date": latest.get("date"),
+                                "type": "growth_rate",
                                 "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing"
                             }
+                        else:
+                            # Fallback: fetch GDP and calculate YoY growth
+                            response2 = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
+                            if response2.status_code == 200:
+                                gdp_raw = response2.json()
+                                if gdp_raw and isinstance(gdp_raw, list) and len(gdp_raw) >= 5:
+                                    # Calculate YoY growth (compare to ~4 quarters ago)
+                                    current = gdp_raw[0].get("value", 0)
+                                    previous = gdp_raw[4].get("value", 0) if len(gdp_raw) > 4 else gdp_raw[-1].get("value", 0)
+                                    if previous > 0:
+                                        yoy_growth = ((current - previous) / previous) * 100
+                                        result["gdp"] = {
+                                            "value": round(yoy_growth, 2),
+                                            "date": gdp_raw[0].get("date"),
+                                            "type": "calculated_yoy",
+                                            "raw_current": current,
+                                            "raw_previous": previous,
+                                            "trend": "increasing" if yoy_growth > 0 else "decreasing"
+                                        }
                     else:
                         self.logger.warning(f"[Economic Data] GDP API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] GDP fetch error: {e}")
 
-                # 3. CPI / Inflation (FMP stable API)
+                # 3. Inflation Rate (FMP stable API)
+                # Try inflationRate first (returns % directly), fallback to CPI YoY calculation
                 try:
-                    response = await client.get(econ_url, params={"name": "CPI", "apikey": self.api_key})
+                    response = await client.get(econ_url, params={"name": "inflationRate", "apikey": self.api_key})
                     if response.status_code == 200:
-                        cpi_data = response.json()
-                        if cpi_data and isinstance(cpi_data, list) and len(cpi_data) > 0:
-                            latest = cpi_data[0]
-                            result["cpi"] = {
-                                "value": latest.get("value"),
+                        inflation_data = response.json()
+                        if inflation_data and isinstance(inflation_data, list) and len(inflation_data) > 0:
+                            latest = inflation_data[0]
+                            result["inflation"] = {
+                                "value": latest.get("value"),  # Should be inflation rate %
                                 "date": latest.get("date"),
-                                "trend": "increasing" if len(cpi_data) > 1 and cpi_data[0].get("value", 0) > cpi_data[1].get("value", 0) else "decreasing"
+                                "type": "inflation_rate",
+                                "trend": "increasing" if len(inflation_data) > 1 and inflation_data[0].get("value", 0) > inflation_data[1].get("value", 0) else "decreasing"
                             }
+                        else:
+                            # Fallback: fetch CPI index and calculate YoY inflation
+                            response2 = await client.get(econ_url, params={"name": "CPI", "apikey": self.api_key})
+                            if response2.status_code == 200:
+                                cpi_raw = response2.json()
+                                if cpi_raw and isinstance(cpi_raw, list) and len(cpi_raw) >= 13:
+                                    # Calculate YoY inflation (compare to 12 months ago)
+                                    current_cpi = cpi_raw[0].get("value", 0)
+                                    previous_cpi = cpi_raw[12].get("value", 0) if len(cpi_raw) > 12 else cpi_raw[-1].get("value", 0)
+                                    if previous_cpi > 0:
+                                        yoy_inflation = ((current_cpi - previous_cpi) / previous_cpi) * 100
+                                        result["inflation"] = {
+                                            "value": round(yoy_inflation, 2),
+                                            "date": cpi_raw[0].get("date"),
+                                            "type": "calculated_yoy",
+                                            "cpi_current": current_cpi,
+                                            "cpi_previous": previous_cpi,
+                                            "trend": "increasing" if yoy_inflation > 2.5 else "decreasing"
+                                        }
                     else:
-                        self.logger.warning(f"[Economic Data] CPI API failed: {response.status_code} | {response.text[:200]}")
+                        self.logger.warning(f"[Economic Data] Inflation API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
-                    self.logger.warning(f"[Economic Data] CPI fetch error: {e}")
+                    self.logger.warning(f"[Economic Data] Inflation fetch error: {e}")
 
                 # 4. Unemployment Rate (FMP stable API)
                 try:
@@ -1476,15 +1519,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
             parts.append(f"Yield curve: {yc['status']}")
 
         gdp = data.get("gdp", {})
-        if gdp.get("value"):
-            parts.append(f"GDP: {gdp['value']:.1f}%")
+        if gdp.get("value") is not None:
+            parts.append(f"GDP Growth: {gdp['value']:.1f}%")
 
-        cpi = data.get("cpi", {})
-        if cpi.get("value"):
-            parts.append(f"CPI: {cpi['value']:.1f}%")
+        # Use 'inflation' (new) or fallback to 'cpi' (legacy)
+        inflation = data.get("inflation", {}) or data.get("cpi", {})
+        if inflation.get("value") is not None:
+            parts.append(f"Inflation: {inflation['value']:.1f}%")
 
         unemp = data.get("unemployment", {})
-        if unemp.get("value"):
+        if unemp.get("value") is not None:
             parts.append(f"Unemployment: {unemp['value']:.1f}%")
 
         return " | ".join(parts) if parts else "Economic data unavailable"
@@ -1509,19 +1553,21 @@ class GetTechnicalIndicatorsTool(BaseTool):
             lines.append(f"- Yield Curve: {yc.get('status', 'N/A').upper()} "
                         f"(10Y-2Y spread: {yc.get('spread_10y_2y', 'N/A')}%) - {yc.get('signal', '')}")
 
-        # GDP
+        # GDP Growth Rate
         gdp = econ_data.get("gdp", {})
-        if gdp.get("value"):
-            lines.append(f"- GDP Growth: {gdp['value']:.1f}% ({gdp.get('date', 'N/A')}) - {gdp.get('trend', 'N/A')}")
+        if gdp.get("value") is not None:
+            gdp_type = gdp.get('type', 'unknown')
+            lines.append(f"- GDP Growth: {gdp['value']:.1f}% ({gdp.get('date', 'N/A')}) [{gdp_type}] - {gdp.get('trend', 'N/A')}")
 
-        # CPI
-        cpi = econ_data.get("cpi", {})
-        if cpi.get("value"):
-            lines.append(f"- CPI Inflation: {cpi['value']:.1f}% ({cpi.get('date', 'N/A')}) - {cpi.get('trend', 'N/A')}")
+        # Inflation Rate (use 'inflation' or fallback to 'cpi')
+        inflation = econ_data.get("inflation", {}) or econ_data.get("cpi", {})
+        if inflation.get("value") is not None:
+            inflation_type = inflation.get('type', 'unknown')
+            lines.append(f"- Inflation: {inflation['value']:.1f}% ({inflation.get('date', 'N/A')}) [{inflation_type}] - {inflation.get('trend', 'N/A')}")
 
-        # Unemployment
+        # Unemployment Rate
         unemp = econ_data.get("unemployment", {})
-        if unemp.get("value"):
+        if unemp.get("value") is not None:
             lines.append(f"- Unemployment: {unemp['value']:.1f}% ({unemp.get('date', 'N/A')}) - {unemp.get('trend', 'N/A')}")
 
         # Implications
@@ -1538,9 +1584,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
         if yc.get("status") == "inverted":
             lines.append("- Inverted yield curve → Recession risk elevated, consider defensive positioning")
 
-        # Inflation
-        if cpi.get("value") and cpi["value"] > 3.0:
-            lines.append("- Elevated inflation (CPI > 3%) → Fed likely to maintain restrictive policy")
+        # Inflation implications
+        if inflation.get("value") is not None and inflation["value"] > 3.0:
+            lines.append("- Elevated inflation (> 3%) → Fed likely to maintain restrictive policy")
+        elif inflation.get("value") is not None and inflation["value"] < 2.0:
+            lines.append("- Low inflation (< 2%) → Fed may consider easing policy")
 
         return "\n".join(lines)
 
