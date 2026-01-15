@@ -2432,27 +2432,45 @@ Respond naturally and helpfully while staying in character."""
                             "content": "Agent decided no more tools needed - generating final response",
                         }
 
-                    # Add assistant message to get final response
-                    messages.append({"role": "assistant", "content": assistant_content})
+                    # If we already have content from the first LLM call, yield it directly
+                    # This avoids making a second streaming call which can lose content (especially with Gemini)
+                    if assistant_content and len(assistant_content) > 100:
+                        self.logger.info(f"[{flow_id}] Using existing response content ({len(assistant_content)} chars)")
 
-                    # Fixed max_tokens as safety cutoff - length controlled by system prompt
-                    # Per OpenAI: "max_tokens is a hard cutoff limit, not a length control"
-                    MAX_RESPONSE_TOKENS = 12000
+                        # Simulate streaming by yielding content in chunks
+                        # Split by sentences/paragraphs for natural streaming feel
+                        import re
+                        # Split on sentence boundaries while keeping the delimiter
+                        chunks = re.split(r'(?<=[.!?。\n])\s*', assistant_content)
+                        content_chunks = 0
+                        for chunk in chunks:
+                            if chunk.strip():
+                                content_chunks += 1
+                                yield {"type": "content", "content": chunk + " "}
 
-                    self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
-                    content_chunks = 0
-                    async for chunk in self.llm_provider.stream_response(
-                        model_name=effective_model,
-                        messages=messages,
-                        provider_type=effective_provider,
-                        api_key=self.api_key,
-                        max_tokens=MAX_RESPONSE_TOKENS,
-                        temperature=0.3,
-                    ):
-                        content_chunks += 1
-                        yield {"type": "content", "content": chunk}
+                        self.logger.info(f"[{flow_id}] Yielded existing content: {content_chunks} chunks")
+                    else:
+                        # No content from first call - need to make streaming call
+                        messages.append({"role": "assistant", "content": assistant_content})
 
-                    self.logger.info(f"[{flow_id}] Final response streamed: {content_chunks} chunks")
+                        # Fixed max_tokens as safety cutoff - length controlled by system prompt
+                        MAX_RESPONSE_TOKENS = 12000
+
+                        self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
+                        content_chunks = 0
+                        async for chunk in self.llm_provider.stream_response(
+                            model_name=effective_model,
+                            messages=messages,
+                            provider_type=effective_provider,
+                            api_key=self.api_key,
+                            max_tokens=MAX_RESPONSE_TOKENS,
+                            temperature=0.3,
+                        ):
+                            content_chunks += 1
+                            yield {"type": "content", "content": chunk}
+
+                        self.logger.info(f"[{flow_id}] Final response streamed: {content_chunks} chunks")
+
                     yield {
                         "type": "done",
                         "total_turns": turn_num,
