@@ -1763,7 +1763,7 @@ IMPORTANT:
                 api_key=self.api_key,
                 tools=tools,
                 tool_choice="auto",
-                max_tokens=4000,
+                max_tokens=8000,  # Increased for models with thinking (e.g., gemini-2.5-flash)
                 temperature=0.1,
             )
 

@@ -109,10 +109,31 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         
     def _format_response(self, response) -> Dict[str, Any]:
         """Format Gemini response to common structure"""
+        # Get actual finish_reason from Gemini response
+        finish_reason = "stop"
+        try:
+            if hasattr(response, 'candidates') and response.candidates:
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason'):
+                    # Map Gemini finish_reason to OpenAI-style
+                    gemini_reason = str(candidate.finish_reason)
+                    if "MAX_TOKENS" in gemini_reason:
+                        finish_reason = "length"
+                        self.logger.warning(f"[GEMINI] Response truncated due to max_tokens limit")
+                    elif "STOP" in gemini_reason:
+                        finish_reason = "stop"
+                    elif "SAFETY" in gemini_reason:
+                        finish_reason = "content_filter"
+                        self.logger.warning(f"[GEMINI] Response filtered due to safety: {gemini_reason}")
+                    else:
+                        finish_reason = gemini_reason.lower()
+        except Exception as e:
+            self.logger.debug(f"[GEMINI] Could not extract finish_reason: {e}")
+
         return {
             "content": response.text,
             "model": self.model_name,
             "id": getattr(response, "response_id", None),
-            "finish_reason": "stop",  # Gemini không có khái niệm finish_reason
+            "finish_reason": finish_reason,
             "raw_response": response
         }
