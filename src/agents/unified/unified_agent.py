@@ -524,6 +524,19 @@ class UnifiedAgent(LoggerMixin):
             session_id=session_id,
         )
 
+        # Log tool results for data integrity verification
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        for i, result in enumerate(tool_results):
+            tool_name = result.get("tool_name", "unknown")
+            status = result.get("status", "unknown")
+            symbol = result.get("symbol", "N/A")
+            formatted = result.get("formatted_context", "")[:500]  # First 500 chars
+            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
+            self.logger.info(f"[{flow_id}]     Data preview: {formatted}...")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
         # Build synthesis prompt
         messages = self._build_synthesis_messages(
             query=query,
@@ -668,6 +681,19 @@ class UnifiedAgent(LoggerMixin):
                 "action": "complete",
                 "content": f"Received {success_count}/{len(tool_results)} successful results",
             }
+
+        # Log tool results for data integrity verification
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        for i, result in enumerate(tool_results):
+            tool_name = result.get("tool_name", "unknown")
+            status = result.get("status", "unknown")
+            symbol = result.get("symbol", "N/A")
+            formatted = result.get("formatted_context", "")[:500]  # First 500 chars
+            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
+            self.logger.info(f"[{flow_id}]     Data preview: {formatted}...")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
         # Stream synthesis
         if enable_reasoning:
@@ -1991,20 +2017,40 @@ Tools to use: [{tool_list_str}]
 ## Current Context
 - Date: {current_date}
 
-## Data from Tools
+## Tool Results Data (CRITICAL - USE ALL DATA)
 
 {results_text}
 
+---
 ## Your Task
 
-Synthesize the above data into a helpful response for the user's query.
+Analyze the data above and provide a **comprehensive, data-driven response** to the user's query.
 
-**Key guidelines:**
-- Include specific numbers from the data (prices, ratios, percentages)
-- Explain what the numbers mean in context
-- Be conversational and educational
-- Match the user's language
-- End with 2-3 follow-up questions they might want to explore"""
+### Data Integrity Requirements (MANDATORY)
+1. **USE ALL DATA**: Every piece of data from tools MUST be included in your analysis
+2. **CITE SPECIFIC NUMBERS**: Always quote exact values (prices, ratios, percentages) from tool results
+3. **NO FABRICATION**: Only use numbers that appear in the data above - never make up figures
+4. **SOURCE ATTRIBUTION**: Reference which tool provided each data point when relevant
+
+### Analysis Quality Requirements
+1. **EXPLAIN SIGNIFICANCE**: For every metric, explain what it means for investment decisions
+   - Example: "RSI at 72 indicates overbought conditions, suggesting potential short-term pullback"
+2. **PROVIDE CONTEXT**: Compare metrics to benchmarks, historical ranges, or sector averages
+3. **IDENTIFY PATTERNS**: Connect data points to reveal trends, divergences, or confirmations
+4. **BALANCED VIEW**: Present both bullish and bearish signals objectively
+
+### Actionable Output Requirements
+1. **SPECIFIC RECOMMENDATIONS**: Provide clear action items based on data
+   - Entry/exit levels, support/resistance zones, key price targets
+2. **RISK ASSESSMENT**: Identify risks and suggest risk management strategies
+3. **STRATEGIC INSIGHTS**: Offer short-term and long-term perspectives
+4. **DECISION FRAMEWORK**: Help user understand when to act and what to monitor
+
+### Response Style
+- **Language**: Match the user's language naturally
+- **Depth**: Be comprehensive - longer is better if it adds value
+- **Clarity**: Structure with headers, use bullet points for key data
+- **Engagement**: End with 2-3 follow-up questions to explore deeper"""
 
         if has_web_search:
             system_prompt += """
