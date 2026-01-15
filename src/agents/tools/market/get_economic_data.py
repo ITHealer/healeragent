@@ -9,11 +9,11 @@ Provides macroeconomic data for market context:
 - CPI/Inflation
 - Unemployment rate
 
-FMP APIs:
-- /v3/treasury - Treasury rates
-- /v3/economic?name=GDP - GDP data
-- /v3/economic?name=CPI - Inflation data
-- /v3/economic?name=unemploymentRate - Unemployment
+FMP Stable APIs:
+- /stable/treasury-rates - Treasury rates
+- /stable/economic-indicators?name=GDP - GDP data
+- /stable/economic-indicators?name=CPI - Inflation data
+- /stable/economic-indicators?name=unemploymentRate - Unemployment
 """
 
 import json
@@ -42,7 +42,7 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
     """
 
     CACHE_TTL = 3600  # 1 hour - macro data doesn't change frequently
-    FMP_BASE_URL = "https://financialmodelingprep.com"
+    FMP_STABLE_URL = "https://financialmodelingprep.com/stable"
 
     def __init__(self, api_key: str):
         """
@@ -209,7 +209,7 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
     async def _fetch_treasury_rates(self) -> Optional[Dict[str, Any]]:
         """Fetch current treasury rates"""
         try:
-            url = f"{self.FMP_BASE_URL}/v3/treasury"
+            url = f"{self.FMP_STABLE_URL}/treasury-rates"
             params = {"apikey": self.api_key}
 
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -242,7 +242,7 @@ class GetEconomicDataTool(BaseTool, LoggerMixin):
     async def _fetch_economic_indicator(self, indicator_name: str) -> Optional[Dict[str, Any]]:
         """Fetch economic indicator data"""
         try:
-            url = f"{self.FMP_BASE_URL}/v3/economic"
+            url = f"{self.FMP_STABLE_URL}/economic-indicators"
             params = {
                 "name": indicator_name,
                 "apikey": self.api_key
