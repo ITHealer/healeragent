@@ -66,7 +66,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
-    FMP_V3_URL = "https://financialmodelingprep.com/v3"
+    FMP_STABLE_URL = "https://financialmodelingprep.com/stable"  # For macro/economic data
     DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "ATR", "STOCH", "ADX", "VWAP", "VOLUME"]
     MACRO_CACHE_TTL = 3600  # 1 hour - macro data doesn't change frequently
 
@@ -1355,9 +1355,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
             result = {}
 
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # 1. Treasury Rates
+                # 1. Treasury Rates (FMP stable API)
                 try:
-                    treasury_url = f"{self.FMP_V3_URL}/treasury"
+                    treasury_url = f"{self.FMP_STABLE_URL}/treasury-rates"
                     response = await client.get(treasury_url, params={"apikey": self.api_key})
                     if response.status_code == 200:
                         treasury_data = response.json()
@@ -1380,13 +1380,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                     "status": "inverted" if spread < 0 else "flat" if spread < 0.25 else "normal",
                                     "signal": "Recession warning" if spread < 0 else "Caution" if spread < 0.25 else "Normal"
                                 }
+                    else:
+                        self.logger.warning(f"[Economic Data] Treasury API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] Treasury fetch error: {e}")
 
-                # 2. GDP
+                # 2. GDP (FMP stable API)
                 try:
-                    gdp_url = f"{self.FMP_V3_URL}/economic"
-                    response = await client.get(gdp_url, params={"name": "GDP", "apikey": self.api_key})
+                    econ_url = f"{self.FMP_STABLE_URL}/economic-indicators"
+                    response = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
                     if response.status_code == 200:
                         gdp_data = response.json()
                         if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
@@ -1396,13 +1398,14 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                 "date": latest.get("date"),
                                 "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing"
                             }
+                    else:
+                        self.logger.warning(f"[Economic Data] GDP API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] GDP fetch error: {e}")
 
-                # 3. CPI (Inflation)
+                # 3. CPI / Inflation (FMP stable API)
                 try:
-                    cpi_url = f"{self.FMP_V3_URL}/economic"
-                    response = await client.get(cpi_url, params={"name": "CPI", "apikey": self.api_key})
+                    response = await client.get(econ_url, params={"name": "CPI", "apikey": self.api_key})
                     if response.status_code == 200:
                         cpi_data = response.json()
                         if cpi_data and isinstance(cpi_data, list) and len(cpi_data) > 0:
@@ -1412,13 +1415,14 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                 "date": latest.get("date"),
                                 "trend": "increasing" if len(cpi_data) > 1 and cpi_data[0].get("value", 0) > cpi_data[1].get("value", 0) else "decreasing"
                             }
+                    else:
+                        self.logger.warning(f"[Economic Data] CPI API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] CPI fetch error: {e}")
 
-                # 4. Unemployment Rate
+                # 4. Unemployment Rate (FMP stable API)
                 try:
-                    unemp_url = f"{self.FMP_V3_URL}/economic"
-                    response = await client.get(unemp_url, params={"name": "unemploymentRate", "apikey": self.api_key})
+                    response = await client.get(econ_url, params={"name": "unemploymentRate", "apikey": self.api_key})
                     if response.status_code == 200:
                         unemp_data = response.json()
                         if unemp_data and isinstance(unemp_data, list) and len(unemp_data) > 0:
@@ -1428,6 +1432,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                 "date": latest.get("date"),
                                 "trend": "increasing" if len(unemp_data) > 1 and unemp_data[0].get("value", 0) > unemp_data[1].get("value", 0) else "decreasing"
                             }
+                    else:
+                        self.logger.warning(f"[Economic Data] Unemployment API failed: {response.status_code} | {response.text[:200]}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] Unemployment fetch error: {e}")
 
