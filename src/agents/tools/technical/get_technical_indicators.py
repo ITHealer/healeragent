@@ -11,9 +11,11 @@ Key Features:
 - LLM-friendly text explanations for model understanding
 - Actionable trading recommendations (short-term and long-term)
 - Support/Resistance levels and chart patterns
+- Economic/Macro context (Treasury rates, GDP, CPI, Unemployment)
 """
 
 import httpx
+import json
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
@@ -48,6 +50,7 @@ from src.agents.tools.technical.indicator_calculations import (
     detect_ma_crossovers
 )
 from src.agents.tools.technical.technical_constants import TECHNICAL_CONFIG
+from src.helpers.redis_cache import get_redis_client_llm
 
 
 class GetTechnicalIndicatorsTool(BaseTool):
@@ -63,7 +66,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
     """
 
     FMP_BASE_URL = "https://financialmodelingprep.com/api"
+    FMP_V3_URL = "https://financialmodelingprep.com/v3"
     DEFAULT_INDICATORS = ["RSI", "MACD", "SMA", "EMA", "BB", "ATR", "STOCH", "ADX", "VWAP", "VOLUME"]
+    MACRO_CACHE_TTL = 3600  # 1 hour - macro data doesn't change frequently
 
     # Indicator aliases for flexible input
     INDICATOR_ALIASES = {
@@ -102,7 +107,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
             description=(
                 "Calculate comprehensive technical indicators from historical price data. "
                 "Returns ALL indicators with detailed analysis, calculation periods, "
-                "LLM-friendly explanations, and actionable trading recommendations."
+                "LLM-friendly explanations, actionable trading recommendations, "
+                "AND economic/macro context (Treasury rates, GDP, CPI, unemployment)."
             ),
             capabilities=[
                 "RSI (14-day) - Overbought/oversold momentum detection",
@@ -117,7 +123,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "Volume Analysis - Buying/selling pressure",
                 "Support/Resistance levels",
                 "Chart pattern detection",
-                "Actionable trading recommendations"
+                "Actionable trading recommendations",
+                "Economic context - Treasury rates, GDP, CPI, Unemployment (auto-included)"
             ],
             limitations=[
                 "Requires minimum 50 data points for accurate calculations",
@@ -162,7 +169,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "signals": "array - Summary signals",
                 "outlook": "object - Overall market outlook",
                 "support_resistance": "object - Key price levels",
-                "llm_summary": "string - Human-readable summary for LLM"
+                "economic_context": "object - Macro data (Treasury, GDP, CPI, Unemployment)",
+                "llm_summary": "string - Human-readable summary including macro context"
             },
             typical_execution_time_ms=2000,
             requires_symbol=True
@@ -221,6 +229,17 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 indicator_values=indicator_values,
                 current_price=current_price
             )
+
+            # Fetch economic/macro data for market context (cached for 1 hour)
+            try:
+                economic_data = await self._fetch_economic_data()
+                if economic_data:
+                    result["economic_context"] = economic_data
+                    # Add economic context to LLM summary
+                    result["llm_summary"] += self._format_economic_context(economic_data)
+            except Exception as e:
+                self.logger.warning(f"[{symbol}] Economic data fetch failed: {e}")
+                result["economic_context"] = {"error": str(e)}
 
             execution_time = (datetime.now() - start_time).total_seconds() * 1000
 
@@ -1302,6 +1321,222 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 data = response.json()
                 return data.get("historical", [])
             return []
+
+    # =========================================================================
+    # Economic/Macro Data Methods (for market context)
+    # =========================================================================
+
+    async def _fetch_economic_data(self) -> Dict[str, Any]:
+        """
+        Fetch economic/macro data for market context.
+        Data is cached for 1 hour since macro data doesn't change frequently.
+
+        Returns:
+            Dict with treasury rates, GDP, CPI, unemployment data
+        """
+        cache_key = "getTechnicalIndicators_economic_data"
+
+        try:
+            # Check Redis cache first
+            redis_client = await get_redis_client_llm()
+            if redis_client:
+                try:
+                    cached_bytes = await redis_client.get(cache_key)
+                    if cached_bytes:
+                        self.logger.info("[Economic Data] Cache HIT")
+                        if isinstance(cached_bytes, bytes):
+                            return json.loads(cached_bytes.decode('utf-8'))
+                        return json.loads(cached_bytes)
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] Cache read error: {e}")
+
+            # Fetch fresh data from FMP
+            self.logger.info("[Economic Data] Fetching from FMP API...")
+            result = {}
+
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # 1. Treasury Rates
+                try:
+                    treasury_url = f"{self.FMP_V3_URL}/treasury"
+                    response = await client.get(treasury_url, params={"apikey": self.api_key})
+                    if response.status_code == 200:
+                        treasury_data = response.json()
+                        if treasury_data and isinstance(treasury_data, list):
+                            latest = treasury_data[0]
+                            result["treasury"] = {
+                                "date": latest.get("date"),
+                                "year_2": latest.get("year2"),
+                                "year_5": latest.get("year5"),
+                                "year_10": latest.get("year10"),
+                                "year_30": latest.get("year30"),
+                            }
+                            # Yield curve analysis
+                            y2 = latest.get("year2")
+                            y10 = latest.get("year10")
+                            if y2 and y10:
+                                spread = y10 - y2
+                                result["yield_curve"] = {
+                                    "spread_10y_2y": round(spread, 3),
+                                    "status": "inverted" if spread < 0 else "flat" if spread < 0.25 else "normal",
+                                    "signal": "Recession warning" if spread < 0 else "Caution" if spread < 0.25 else "Normal"
+                                }
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] Treasury fetch error: {e}")
+
+                # 2. GDP
+                try:
+                    gdp_url = f"{self.FMP_V3_URL}/economic"
+                    response = await client.get(gdp_url, params={"name": "GDP", "apikey": self.api_key})
+                    if response.status_code == 200:
+                        gdp_data = response.json()
+                        if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
+                            latest = gdp_data[0]
+                            result["gdp"] = {
+                                "value": latest.get("value"),
+                                "date": latest.get("date"),
+                                "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing"
+                            }
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] GDP fetch error: {e}")
+
+                # 3. CPI (Inflation)
+                try:
+                    cpi_url = f"{self.FMP_V3_URL}/economic"
+                    response = await client.get(cpi_url, params={"name": "CPI", "apikey": self.api_key})
+                    if response.status_code == 200:
+                        cpi_data = response.json()
+                        if cpi_data and isinstance(cpi_data, list) and len(cpi_data) > 0:
+                            latest = cpi_data[0]
+                            result["cpi"] = {
+                                "value": latest.get("value"),
+                                "date": latest.get("date"),
+                                "trend": "increasing" if len(cpi_data) > 1 and cpi_data[0].get("value", 0) > cpi_data[1].get("value", 0) else "decreasing"
+                            }
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] CPI fetch error: {e}")
+
+                # 4. Unemployment Rate
+                try:
+                    unemp_url = f"{self.FMP_V3_URL}/economic"
+                    response = await client.get(unemp_url, params={"name": "unemploymentRate", "apikey": self.api_key})
+                    if response.status_code == 200:
+                        unemp_data = response.json()
+                        if unemp_data and isinstance(unemp_data, list) and len(unemp_data) > 0:
+                            latest = unemp_data[0]
+                            result["unemployment"] = {
+                                "value": latest.get("value"),
+                                "date": latest.get("date"),
+                                "trend": "increasing" if len(unemp_data) > 1 and unemp_data[0].get("value", 0) > unemp_data[1].get("value", 0) else "decreasing"
+                            }
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] Unemployment fetch error: {e}")
+
+            # Generate summary
+            result["summary"] = self._generate_economic_summary(result)
+            result["timestamp"] = datetime.now().isoformat()
+
+            # Cache the result
+            if redis_client:
+                try:
+                    json_string = json.dumps(result)
+                    await redis_client.set(cache_key, json_string, ex=self.MACRO_CACHE_TTL)
+                    self.logger.info(f"[Economic Data] Cached for {self.MACRO_CACHE_TTL}s")
+                except Exception as e:
+                    self.logger.warning(f"[Economic Data] Cache write error: {e}")
+
+            # Close Redis connection
+            if redis_client:
+                try:
+                    await redis_client.close()
+                except Exception:
+                    pass
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"[Economic Data] Error: {e}", exc_info=True)
+            return {}
+
+    def _generate_economic_summary(self, data: Dict[str, Any]) -> str:
+        """Generate a quick summary of economic conditions."""
+        parts = []
+
+        treasury = data.get("treasury", {})
+        if treasury.get("year_10"):
+            parts.append(f"10Y Treasury: {treasury['year_10']:.2f}%")
+
+        yc = data.get("yield_curve", {})
+        if yc.get("status"):
+            parts.append(f"Yield curve: {yc['status']}")
+
+        gdp = data.get("gdp", {})
+        if gdp.get("value"):
+            parts.append(f"GDP: {gdp['value']:.1f}%")
+
+        cpi = data.get("cpi", {})
+        if cpi.get("value"):
+            parts.append(f"CPI: {cpi['value']:.1f}%")
+
+        unemp = data.get("unemployment", {})
+        if unemp.get("value"):
+            parts.append(f"Unemployment: {unemp['value']:.1f}%")
+
+        return " | ".join(parts) if parts else "Economic data unavailable"
+
+    def _format_economic_context(self, econ_data: Dict[str, Any]) -> str:
+        """Format economic data as LLM-friendly context."""
+        if not econ_data:
+            return "Economic context: Data unavailable"
+
+        lines = ["", "MACRO/ECONOMIC CONTEXT:"]
+
+        # Treasury rates
+        treasury = econ_data.get("treasury", {})
+        if treasury:
+            lines.append(f"- Treasury Rates: 2Y={treasury.get('year_2', 'N/A')}%, "
+                        f"10Y={treasury.get('year_10', 'N/A')}%, "
+                        f"30Y={treasury.get('year_30', 'N/A')}%")
+
+        # Yield curve
+        yc = econ_data.get("yield_curve", {})
+        if yc:
+            lines.append(f"- Yield Curve: {yc.get('status', 'N/A').upper()} "
+                        f"(10Y-2Y spread: {yc.get('spread_10y_2y', 'N/A')}%) - {yc.get('signal', '')}")
+
+        # GDP
+        gdp = econ_data.get("gdp", {})
+        if gdp.get("value"):
+            lines.append(f"- GDP Growth: {gdp['value']:.1f}% ({gdp.get('date', 'N/A')}) - {gdp.get('trend', 'N/A')}")
+
+        # CPI
+        cpi = econ_data.get("cpi", {})
+        if cpi.get("value"):
+            lines.append(f"- CPI Inflation: {cpi['value']:.1f}% ({cpi.get('date', 'N/A')}) - {cpi.get('trend', 'N/A')}")
+
+        # Unemployment
+        unemp = econ_data.get("unemployment", {})
+        if unemp.get("value"):
+            lines.append(f"- Unemployment: {unemp['value']:.1f}% ({unemp.get('date', 'N/A')}) - {unemp.get('trend', 'N/A')}")
+
+        # Implications
+        lines.append("")
+        lines.append("MACRO IMPLICATIONS:")
+
+        # High rates = pressure on growth stocks
+        if treasury.get("year_10") and treasury["year_10"] > 4.0:
+            lines.append("- High interest rates (10Y > 4%) → Pressure on growth/tech stocks")
+        elif treasury.get("year_10") and treasury["year_10"] < 3.0:
+            lines.append("- Low interest rates (10Y < 3%) → Favorable for growth stocks")
+
+        # Yield curve inversion
+        if yc.get("status") == "inverted":
+            lines.append("- Inverted yield curve → Recession risk elevated, consider defensive positioning")
+
+        # Inflation
+        if cpi.get("value") and cpi["value"] > 3.0:
+            lines.append("- Elevated inflation (CPI > 3%) → Fed likely to maintain restrictive policy")
+
+        return "\n".join(lines)
 
 
 # =============================================================================
