@@ -713,12 +713,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
             trend_dir = trend.get('trend', 'unknown')
             trend_info = f" RSI is {trend_dir} over the last 5 days."
 
+        # More actionable RSI explanations
         explanations = {
-            'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - The stock has risen significantly and may be due for a pullback. Consider taking profits or waiting for a better entry.{trend_info}",
-            'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - The stock has fallen significantly and may be due for a bounce. Potential buying opportunity if fundamentals are sound.{trend_info}",
-            'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish momentum is building but approaching overbought territory. Monitor for continuation or reversal.{trend_info}",
-            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK MOMENTUM - Bearish momentum present but approaching oversold territory. Watch for potential reversal signals.{trend_info}",
-            'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL - No extreme conditions. The stock is trading in a balanced momentum range.{trend_info}"
+            'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - Price may be stretched. Watch for pullback or take partial profits. NOT a signal to short immediately - wait for confirmation.{trend_info}",
+            'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - Selling pressure extreme. Potential bounce setup, but confirm with volume/price action. NOT a blind buy - could stay oversold.{trend_info}",
+            'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish but approaching overbought. Existing longs can hold with trailing stop. New longs risky without pullback.{trend_info}",
+            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK/NEAR-OVERSOLD - Bearish momentum, approaching oversold zone. Could continue down OR setup for reversal. Wait for RSI divergence or price support confirmation before buying.{trend_info}",
+            'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL ZONE - No extreme momentum. Use other indicators (MACD, trend) for direction.{trend_info}"
         }
         return explanations.get(condition, f"RSI={rsi_value:.1f}: Momentum indicator based on 14-day price changes.{trend_info}")
 
@@ -1079,24 +1080,63 @@ class GetTechnicalIndicatorsTool(BaseTool):
         nearest_resistance = resistance_levels[0]['price'] if resistance_levels else current_price * 1.05
 
         # Short-term recommendation (1-5 days)
-        short_term = {
-            "action": action,
-            "timeframe": "1-5 days",
-            "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
-            "stop_loss": f"${nearest_support * 0.98:.2f}",
-            "target_1": f"${current_price * 1.03:.2f}" if action == "BUY" else f"${current_price * 0.97:.2f}",
-            "target_2": f"${nearest_resistance:.2f}" if action == "BUY" else f"${nearest_support:.2f}",
-            "risk_reward": "1:2 minimum recommended"
-        }
+        # FIX: Different logic for HOLD vs BUY/SELL
+        if action == "HOLD":
+            # HOLD = No new position, just watch levels
+            short_term = {
+                "action": "HOLD",
+                "timeframe": "1-5 days",
+                "reason": "Mixed signals - no clear edge for new positions",
+                "watch_for_long": f"Break above ${nearest_resistance:.2f} with volume",
+                "watch_for_short": f"Break below ${nearest_support:.2f} with volume",
+                "risk_reward": "Wait for better setup"
+            }
+        elif action == "BUY":
+            short_term = {
+                "action": "BUY",
+                "timeframe": "1-5 days",
+                "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
+                "stop_loss": f"${nearest_support * 0.98:.2f}",
+                "target_1": f"${current_price * 1.03:.2f}",
+                "target_2": f"${nearest_resistance:.2f}",
+                "risk_reward": "1:2 minimum recommended"
+            }
+        else:  # SELL
+            short_term = {
+                "action": "SELL/SHORT",
+                "timeframe": "1-5 days",
+                "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
+                "stop_loss": f"${nearest_resistance * 1.02:.2f}",
+                "target_1": f"${current_price * 0.97:.2f}",
+                "target_2": f"${nearest_support:.2f}",
+                "risk_reward": "1:2 minimum recommended"
+            }
 
         # Swing trade recommendation (1-4 weeks)
-        swing_trade = {
-            "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
-            "timeframe": "1-4 weeks",
-            "condition": "Enter on pullback to moving average support" if action == "BUY" else "Enter on rally to resistance" if action == "SELL" else "Wait for clearer trend",
-            "stop_loss": f"Below SMA-50 or ${nearest_support * 0.97:.2f}",
-            "target": f"${nearest_resistance:.2f}" if action == "BUY" else f"${nearest_support:.2f}"
-        }
+        if action == "HOLD":
+            swing_trade = {
+                "action": "WAIT",
+                "timeframe": "1-4 weeks",
+                "condition": "Wait for clearer trend signal (RSI extreme, MA crossover, or breakout)",
+                "key_support": f"${nearest_support:.2f}",
+                "key_resistance": f"${nearest_resistance:.2f}"
+            }
+        elif action == "BUY":
+            swing_trade = {
+                "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
+                "timeframe": "1-4 weeks",
+                "condition": "Enter on pullback to moving average support",
+                "stop_loss": f"Below SMA-50 or ${nearest_support * 0.97:.2f}",
+                "target": f"${nearest_resistance:.2f}"
+            }
+        else:  # SELL
+            swing_trade = {
+                "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
+                "timeframe": "1-4 weeks",
+                "condition": "Enter on rally to resistance",
+                "stop_loss": f"Above SMA-50 or ${nearest_resistance * 1.03:.2f}",
+                "target": f"${nearest_support:.2f}"
+            }
 
         # Key levels to watch
         key_levels = {
@@ -1179,14 +1219,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "action_strength": action_strength,
             "bullish_signals": int(bullish_count),
             "bearish_signals": int(bearish_count),
+            "neutral_signals": int(total_indicators - bullish_count - bearish_count),
             "total_signals": int(total_indicators),
-            "confidence_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
+            # Renamed for clarity: this is % of indicators agreeing on direction
+            "signal_agreement_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
             "signal_breakdown": signal_breakdown,
             "short_term_trade": short_term,
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
-            "caution": "This is technical analysis only. Always consider fundamentals, news, and your risk tolerance before trading."
+            "note": "Signal Agreement = % of indicators pointing in same direction. Higher = stronger consensus."
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
@@ -1213,9 +1255,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
         rsi_trend = rsi_data.get('trend', 'unknown')
         macd_hist_trend = macd_data.get('histogram_trend', 'unknown')
 
-        # Count signal agreement
-        bullish_signals = [s for s in signals if 'BULLISH' in s or 'GOLDEN' in s or 'BUY' in s or 'OVERSOLD' in s]
-        bearish_signals = [s for s in signals if 'BEARISH' in s or 'DEATH' in s or 'SELL' in s or 'OVERBOUGHT' in s]
+        # Use signal_breakdown from trading_recommendation for consistency
+        # (Don't re-count from signals array - causes mismatch!)
+        signal_breakdown = rec.get('signal_breakdown', {})
+        bullish_indicators = signal_breakdown.get('bullish_indicators', [])
+        bearish_indicators = signal_breakdown.get('bearish_indicators', [])
+        neutral_indicators = signal_breakdown.get('neutral_indicators', [])
 
         # Build summary
         lines = [
@@ -1261,10 +1306,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
         ma_cross_sig = indicators.get('ma_crossovers', {}).get('signal', 'N/A')
         ma_alignment = (indicators.get('ma_crossovers', {}).get('current_alignment') or 'N/A').upper()
 
+        # Clarify confidence metrics:
+        # - Trend Confidence = outlook.confidence (how strong is the price trend)
+        # - Signal Agreement = % of indicators pointing same direction
+        trend_conf = outlook.get('confidence', 0)
+        signal_agree = rec.get('signal_agreement_pct', rec.get('confidence_pct', 0))
+
         lines.extend([
             "",
-            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Confidence: {outlook.get('confidence', 0):.0%})",
-            f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')})",
+            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Trend Strength: {trend_conf:.0%})",
+            f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')}) | Signal Agreement: {signal_agree:.0f}%",
             "",
             "KEY INDICATORS (with trends):",
             f"- RSI (14d): {rsi_val_str} - {rsi_cond} | Trend: {rsi_trend.upper()}",
@@ -1277,13 +1328,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- MA Crossover: {ma_cross_sig} | Alignment: {ma_alignment}",
         ])
 
-        # Signal confluence section
+        # Signal confluence section - use signal_breakdown for consistency
+        total_signals = len(bullish_indicators) + len(bearish_indicators) + len(neutral_indicators)
         lines.extend([
             f"",
-            f"SIGNAL CONFLUENCE:",
-            f"- Bullish signals ({len(bullish_signals)}): {', '.join(bullish_signals[:5]) if bullish_signals else 'None'}",
-            f"- Bearish signals ({len(bearish_signals)}): {', '.join(bearish_signals[:5]) if bearish_signals else 'None'}",
-            f"- Net bias: {'BULLISH' if len(bullish_signals) > len(bearish_signals) else 'BEARISH' if len(bearish_signals) > len(bullish_signals) else 'MIXED'}",
+            f"SIGNAL CONFLUENCE ({total_signals} indicators analyzed):",
+            f"- Bullish ({len(bullish_indicators)}): {', '.join(bullish_indicators) if bullish_indicators else 'None'}",
+            f"- Bearish ({len(bearish_indicators)}): {', '.join(bearish_indicators) if bearish_indicators else 'None'}",
+            f"- Neutral ({len(neutral_indicators)}): {', '.join(neutral_indicators) if neutral_indicators else 'None'}",
+            f"- Net bias: {'BULLISH' if len(bullish_indicators) > len(bearish_indicators) else 'BEARISH' if len(bearish_indicators) > len(bullish_indicators) else 'MIXED'}",
         ])
 
         # Support/Resistance
@@ -1297,15 +1350,33 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Resistance: ${resistance_levels[0].get('price', 0):.2f} ({resistance_levels[0].get('distance_pct', 0):.1f}% above)" if resistance_levels else "- Resistance: N/A",
         ])
 
+        # Build recommendation section based on action type
+        short_term = rec.get('short_term_trade', {})
+        swing = rec.get('swing_trade', {})
+        action = rec.get('overall_action', 'HOLD')
+
+        if action == "HOLD":
+            lines.extend([
+                f"",
+                f"RECOMMENDATION: {action} ({rec.get('action_strength', 'NEUTRAL')})",
+                f"- Reason: {short_term.get('reason', 'Mixed signals')}",
+                f"- Watch for LONG: {short_term.get('watch_for_long', 'N/A')}",
+                f"- Watch for SHORT: {short_term.get('watch_for_short', 'N/A')}",
+                f"- Swing outlook: {swing.get('condition', 'Wait for clearer signal')}",
+            ])
+        else:
+            lines.extend([
+                f"",
+                f"RECOMMENDATION: {action} ({rec.get('action_strength', 'NEUTRAL')})",
+                f"Short-term (1-5d): Entry: {short_term.get('entry_zone', 'N/A')} | Target: {short_term.get('target_1', 'N/A')} | Stop: {short_term.get('stop_loss', 'N/A')}",
+                f"Swing (1-4w): {swing.get('action', 'N/A')} - {swing.get('condition', 'N/A')}",
+            ])
+
         lines.extend([
             f"",
-            f"RECOMMENDATION:",
-            f"Short-term (1-5d): {rec.get('short_term_trade', {}).get('action', 'N/A')} | Target: {rec.get('short_term_trade', {}).get('target_1', 'N/A')} | Stop: {rec.get('short_term_trade', {}).get('stop_loss', 'N/A')}",
-            f"Swing (1-4w): {rec.get('swing_trade', {}).get('action', 'N/A')} - {rec.get('swing_trade', {}).get('condition', 'N/A')}",
+            f"Risk Level: {rec.get('risk_level', 'N/A')} | Signal Agreement: {signal_agree:.0f}%",
             f"",
-            f"Risk Level: {rec.get('risk_level', 'N/A')} | Confidence: {rec.get('confidence_pct', 0):.0f}%",
-            f"",
-            f"Note: Technical analysis only. Combine with fundamental analysis and risk management."
+            f"Note: Technical analysis only. {rec.get('note', 'Combine with fundamental analysis.')}"
         ])
 
         return "\n".join(lines)
