@@ -420,8 +420,10 @@ class UnifiedAgent(LoggerMixin):
                     model_name=effective_model,
                     provider_type=effective_provider,
                 ):
-                    yield {"type": "content", "content": chunk}
+                    yield {"type": "content", "content": chunk, "is_final": False}
 
+                # Signal end of content stream
+                yield {"type": "content", "content": "", "is_final": True}
                 yield {"type": "done", "total_turns": 1, "total_tool_calls": 0}
                 return
 
@@ -694,8 +696,10 @@ class UnifiedAgent(LoggerMixin):
             max_tokens=16000,  # Allow longer responses
             temperature=0.3,
         ):
-            yield {"type": "content", "content": chunk}
+            yield {"type": "content", "content": chunk, "is_final": False}
 
+        # Signal end of content stream
+        yield {"type": "content", "content": "", "is_final": True}
         yield {
             "type": "done",
             "total_turns": 1,
@@ -946,8 +950,10 @@ IMPORTANT:
                     max_tokens=MAX_RESPONSE_TOKENS,
                     temperature=0.3,
                 ):
-                    yield {"type": "content", "content": chunk}
+                    yield {"type": "content", "content": chunk, "is_final": False}
 
+                # Signal end of content stream
+                yield {"type": "content", "content": "", "is_final": True}
                 yield {
                     "type": "done",
                     "total_turns": turn_num,
@@ -1049,8 +1055,10 @@ IMPORTANT:
             max_tokens=MAX_RESPONSE_TOKENS,
             temperature=0.3,
         ):
-            yield {"type": "content", "content": chunk}
+            yield {"type": "content", "content": chunk, "is_final": False}
 
+        # Signal end of content stream
+        yield {"type": "content", "content": "", "is_final": True}
         yield {
             "type": "done",
             "total_turns": max_turns,
@@ -2315,8 +2323,10 @@ Respond naturally and helpfully while staying in character."""
                     provider_type=effective_provider,
                     system_prompt_override=system_prompt_override,  # Pass character persona
                 ):
-                    yield {"type": "content", "content": chunk}
+                    yield {"type": "content", "content": chunk, "is_final": False}
 
+                # Signal end of content stream
+                yield {"type": "content", "content": "", "is_final": True}
                 yield {"type": "done", "total_turns": 1, "total_tool_calls": 0}
                 return
 
@@ -2441,23 +2451,27 @@ Respond naturally and helpfully while staying in character."""
                         # Split by sentences/paragraphs for natural streaming feel
                         import re
                         # Split on sentence boundaries while keeping the delimiter
-                        chunks = re.split(r'(?<=[.!?。\n])\s*', assistant_content)
-                        content_chunks = 0
-                        for chunk in chunks:
-                            if chunk.strip():
-                                content_chunks += 1
-                                yield {"type": "content", "content": chunk + " "}
+                        chunks = [c for c in re.split(r'(?<=[.!?。\n])\s*', assistant_content) if c.strip()]
+                        total_chunks = len(chunks)
 
-                        self.logger.info(f"[{flow_id}] Yielded existing content: {content_chunks} chunks")
+                        for i, chunk in enumerate(chunks):
+                            is_last = (i == total_chunks - 1)
+                            yield {
+                                "type": "content",
+                                "content": chunk + (" " if not is_last else ""),
+                                "is_final": is_last
+                            }
+
+                        self.logger.info(f"[{flow_id}] Yielded existing content: {total_chunks} chunks")
                     else:
                         # No content from first call - need to make streaming call
                         messages.append({"role": "assistant", "content": assistant_content})
 
-                        # Fixed max_tokens as safety cutoff - length controlled by system prompt
-                        MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
+                        # High limit - let model generate full responses
+                        MAX_RESPONSE_TOKENS = 32000
 
                         self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
-                        content_chunks = 0
+                        content_chunks = []
                         async for chunk in self.llm_provider.stream_response(
                             model_name=effective_model,
                             messages=messages,
@@ -2466,10 +2480,15 @@ Respond naturally and helpfully while staying in character."""
                             max_tokens=MAX_RESPONSE_TOKENS,
                             temperature=0.3,
                         ):
-                            content_chunks += 1
-                            yield {"type": "content", "content": chunk}
+                            content_chunks.append(chunk)
+                            # Emit chunks as they come, mark all as not final initially
+                            yield {"type": "content", "content": chunk, "is_final": False}
 
-                        self.logger.info(f"[{flow_id}] Final response streamed: {content_chunks} chunks")
+                        # Emit final empty chunk to signal completion if we had content
+                        if content_chunks:
+                            yield {"type": "content", "content": "", "is_final": True}
+
+                        self.logger.info(f"[{flow_id}] Final response streamed: {len(content_chunks)} chunks")
 
                     yield {
                         "type": "done",
@@ -2724,8 +2743,10 @@ IMPORTANT:
                 temperature=0.3,
             ):
                 content_chunks += 1
-                yield {"type": "content", "content": chunk}
+                yield {"type": "content", "content": chunk, "is_final": False}
 
+            # Signal end of content stream
+            yield {"type": "content", "content": "", "is_final": True}
             self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
             yield {
                 "type": "done",
