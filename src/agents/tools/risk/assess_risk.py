@@ -178,7 +178,7 @@ class AssessRiskTool(BaseTool):
         symbol_upper = symbol.upper()
 
         original_lookback = lookback_days
-        lookback_days = max(30, min(252, lookback_days))
+        lookback_days = int(max(30, min(252, lookback_days)))  # Ensure int
         
         if original_lookback != lookback_days:
             self.logger.warning(

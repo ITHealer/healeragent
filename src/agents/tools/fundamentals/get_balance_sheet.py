@@ -180,10 +180,11 @@ class GetBalanceSheetTool(BaseTool):
         period = period.lower()
 
         # Enforce minimum limit for quarterly data to ensure enough history
+        # Ensure int for slicing (LLM may pass float)
         if period in ["quarter", "quarterly"]:
-            limit = max(8, min(20, limit))  # At least 8 quarters (2 years)
+            limit = int(max(8, min(20, limit)))  # At least 8 quarters (2 years)
         else:
-            limit = max(4, min(10, limit))  # At least 4 years for annual
+            limit = int(max(4, min(10, limit)))  # At least 4 years for annual
 
         self.logger.info(
             f"[getBalanceSheet] Executing: symbol={symbol_upper}, "

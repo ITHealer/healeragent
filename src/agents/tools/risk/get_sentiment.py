@@ -114,7 +114,8 @@ class GetSentimentTool(BaseTool):
         """
         start_time = datetime.now()
         symbol_upper = symbol.upper()
-        
+        lookback_days = int(max(1, min(30, lookback_days)))  # Ensure int for slicing
+
         self.logger.info(
             f"[getSentiment] Executing: symbol={symbol_upper}, lookback={lookback_days}"
         )

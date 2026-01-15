@@ -143,8 +143,8 @@ class GetSupportResistanceTool(BaseTool):
         """
         symbol_upper = symbol.upper()
         
-        # Validate lookback_days
-        lookback_days = max(30, min(252, lookback_days))
+        # Validate lookback_days - ensure int for slicing
+        lookback_days = int(max(30, min(252, lookback_days)))
         
         self.logger.info(
             f"[getSupportResistance] Executing for symbol={symbol_upper}, "

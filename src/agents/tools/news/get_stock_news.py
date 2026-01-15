@@ -118,7 +118,7 @@ class GetStockNewsTool(BaseTool):
         symbol = symbol.upper()
         
         # Validate limits
-        limit = min(max(1, limit), 50)
+        limit = int(min(max(1, limit), 50))  # Ensure int for slicing
         page = max(0, page)
         
         self.logger.info(

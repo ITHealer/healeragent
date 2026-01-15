@@ -144,8 +144,8 @@ class GetCompanyEventsTool(BaseTool):
         start_time = datetime.now()
         symbol = symbol.upper().strip()
         
-        # Validate lookback
-        lookback_days = min(max(30, lookback_days), 730)
+        # Validate lookback - ensure int for slicing
+        lookback_days = int(min(max(30, lookback_days), 730))
         
         self.logger.info(
             f"[getCompanyEvents] Executing: symbol={symbol}, lookback_days={lookback_days}"

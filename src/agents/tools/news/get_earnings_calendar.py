@@ -130,7 +130,7 @@ class GetEarningsCalendarTool(BaseTool):
         symbol = symbol.upper()
         
         # Validate limit
-        limit = min(max(1, limit), 20)
+        limit = int(min(max(1, limit), 20))  # Ensure int for slicing
         
         self.logger.info(
             f"[getEarningsCalendar] Executing: symbol={symbol}, limit={limit}"

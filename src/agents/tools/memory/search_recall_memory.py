@@ -144,7 +144,7 @@ class SearchRecallMemoryTool(BaseTool):
                 error_type="validation_error"
             )
         
-        limit = min(max(limit, 1), 20)  # Clamp to 1-20
+        limit = int(min(max(limit, 1), 20))  # Clamp to 1-20, ensure int
         
         try:
             # Import here to avoid circular imports

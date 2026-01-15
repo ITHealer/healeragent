@@ -132,7 +132,7 @@ class SearchArchivalMemoryTool(BaseTool):
                 error_type="validation_error"
             )
         
-        limit = min(max(limit, 1), 10)  # Clamp to 1-10
+        limit = int(min(max(limit, 1), 10))  # Clamp to 1-10, ensure int
         
         try:
             # Import here to avoid circular imports

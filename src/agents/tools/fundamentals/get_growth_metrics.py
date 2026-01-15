@@ -145,7 +145,8 @@ class GetGrowthMetricsTool(BaseTool):
         """
         symbol_upper = symbol.upper()
         # Clamp lookback_years between 1 and 10 to prevent API overload
-        lookback_years = max(1, min(10, lookback_years))
+        # Also ensure it's an integer (can be passed as float from LLM)
+        lookback_years = int(max(1, min(10, lookback_years)))
         
         self.logger.info(
             f"[getGrowthMetrics] Executing with params: "
