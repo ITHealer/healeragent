@@ -1914,68 +1914,19 @@ Tools to use: [{tool_list_str}]
         system_prompt = f"""{skill_prompt}
 
 ---
-## RUNTIME CONTEXT
-
-Current Date: {current_date}
-Response Language: {system_language.upper()}
-{symbols_hint}
-{categories_hint}
+## Current Context
+- Date: {current_date}
+- Language: {system_language.upper()}
+{f'- {symbols_hint}' if symbols_hint else ''}
+{f'- {categories_hint}' if categories_hint else ''}
 {user_context}
 
 {execution_guidelines}
 
-## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
-
-**1. DATA PRESENTATION FORMAT (MANDATORY):**
-Your response MUST follow this structure:
-
-```
-### 📊 Dữ liệu từ [Tool Name] | Nguồn: [Data Source]
-| Chỉ tiêu | Giá trị | Ghi chú |
-|----------|---------|---------|
-| ...      | ...     | ...     |
-
-### 💡 Phân tích & Nhận định
-[Your analysis based on the data above]
-```
-
-**2. RAW DATA FIRST - ALWAYS SHOW COMPLETE DATA:**
-- Display ALL raw data from tool results in TABLE format
-- NEVER skip or summarize data - users need exact numbers for verification
-- Include data timestamp/period clearly (e.g., "Q4 FY2025 (Oct-Jan)" or "Q4 CY2025 (Oct-Dec)")
-- For financial data, always specify: Fiscal Year (FY) vs Calendar Year (CY)
-  - NVDA fiscal year ends in January: Q4 FY2025 = Oct 2024 - Jan 2025
-  - AAPL fiscal year ends in September: Q1 FY2025 = Oct-Dec 2024
-
-**3. DATA SOURCE CITATION (REQUIRED):**
-- ALWAYS cite data source: "Nguồn: FMP API" or "Nguồn: Yahoo Finance"
-- Include timestamp when available
-
-**4. STRUCTURED TABLE FORMATS:**
-
-For Financial Data:
-| Chỉ tiêu | Giá trị | YoY Change |
-|----------|---------|------------|
-| Revenue | $XX.XX B | +XX.X% |
-| Net Income | $XX.XX B | +XX.X% |
-| EPS | $X.XX | +XX.X% |
-
-For Technical Analysis:
-| Indicator | Value | Signal |
-|-----------|-------|--------|
-| RSI(14) | XX.X | Bullish/Bearish |
-| MACD | XX.X | Bullish/Bearish |
-
-**5. ANALYSIS AFTER DATA:**
-- Insights come AFTER showing raw data in tables
-- Reference specific numbers from tables
-- Explain what the numbers mean
-- Include actionable recommendations
-
-**6. DATA INTEGRITY:**
-- NEVER make up numbers - only use tool results
-- If data is missing: "⚠️ Không có dữ liệu cho [item]"
-- Clarify fiscal year vs calendar year when relevant
+## Data Integrity
+- Only use actual numbers from tool results (never fabricate)
+- Cite data sources when presenting financial data
+- Acknowledge missing data clearly
 """
 
         messages = [{"role": "system", "content": system_prompt}]
