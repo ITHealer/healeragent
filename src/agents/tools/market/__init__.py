@@ -4,6 +4,7 @@ from src.agents.tools.market.get_market_movers import GetMarketMoversTool
 from src.agents.tools.market.get_market_breadth import GetMarketBreadthTool
 from src.agents.tools.market.get_stock_heatmap import GetStockHeatmapTool
 from src.agents.tools.market.get_market_news import GetMarketNewsTool
+from src.agents.tools.market.get_economic_data import GetEconomicDataTool
 
 from src.agents.tools.market.get_top_gainers import GetTopGainersTool
 from src.agents.tools.market.get_top_losers import GetTopLosersTool
@@ -16,7 +17,8 @@ __all__ = [
     "GetMarketBreadthTool",
     "GetStockHeatmapTool",
     "GetMarketNewsTool",
+    "GetEconomicDataTool",
     "GetTopGainersTool",
-    "GetTopLosersTool", 
+    "GetTopLosersTool",
     "GetMostActivesTool",
 ]

@@ -63,7 +63,7 @@ TOOL_DEFINITIONS = {
     ],
     
     # ========================================================================
-    # MARKET TOOLS (5) - Require API key
+    # MARKET TOOLS (10) - Require API key
     # ========================================================================
     "market": [
         ("src.agents.tools.market", "GetMarketIndicesTool", "api_key"),
@@ -72,10 +72,10 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.market", "GetMarketBreadthTool", "api_key"),
         ("src.agents.tools.market", "GetStockHeatmapTool", "api_key"),
         ("src.agents.tools.market", "GetMarketNewsTool", "api_key"),
+        ("src.agents.tools.market", "GetEconomicDataTool", "api_key"),  # NEW: Macro data
         ("src.agents.tools.market", "GetTopGainersTool", "api_key"),
         ("src.agents.tools.market", "GetTopLosersTool", "api_key"),
         ("src.agents.tools.market", "GetMostActivesTool", "api_key"),
-        
     ],
     
     # ========================================================================
