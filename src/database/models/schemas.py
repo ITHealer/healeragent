@@ -59,7 +59,7 @@ class Messages(Base):
     __tablename__ = "messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, nullable=False)
-    content = Column(String(10000), nullable=True)
+    content = Column(Text, nullable=True)  # Changed from String(10000) to Text for unlimited length
     created_by = Column(String(255), nullable=True)
     question_id = Column(UUID(as_uuid=True), nullable=True)
     session_id = Column(UUID(as_uuid=True), ForeignKey('chat_sessions.id'), nullable=True)

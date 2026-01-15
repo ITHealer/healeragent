@@ -539,7 +539,7 @@ class UnifiedAgent(LoggerMixin):
             messages=messages,
             provider_type=self.provider_type,
             api_key=self.api_key,
-            max_tokens=2000,
+            max_tokens=16000,  # Allow longer responses
             temperature=0.3,
         )
 
@@ -691,7 +691,7 @@ class UnifiedAgent(LoggerMixin):
             messages=messages,
             provider_type=effective_provider,
             api_key=self.api_key,
-            max_tokens=2000,
+            max_tokens=16000,  # Allow longer responses
             temperature=0.3,
         ):
             yield {"type": "content", "content": chunk}
@@ -835,7 +835,7 @@ IMPORTANT:
             messages=messages,
             provider_type=self.provider_type,
             api_key=self.api_key,
-            max_tokens=4000,
+            max_tokens=16000,  # Allow longer responses
             temperature=0.3,
         )
 
@@ -936,7 +936,7 @@ IMPORTANT:
 
                 # Fixed max_tokens as safety cutoff - output length controlled by system prompt
                 # Per OpenAI: "max_tokens is a hard cutoff limit, not a length control"
-                MAX_RESPONSE_TOKENS = 12000
+                MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
 
                 async for chunk in self.llm_provider.stream_response(
                     model_name=effective_model,
@@ -1039,7 +1039,7 @@ IMPORTANT:
         })
 
         # Fixed max_tokens as safety cutoff - length controlled by system prompt
-        MAX_RESPONSE_TOKENS = 12000
+        MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
 
         async for chunk in self.llm_provider.stream_response(
             model_name=effective_model,
@@ -1175,7 +1175,7 @@ IMPORTANT:
             messages=messages,
             provider_type=self.provider_type,
             api_key=self.api_key,
-            max_tokens=2000,
+            max_tokens=16000,  # Allow longer responses
             temperature=0.7,
         )
 
@@ -1227,7 +1227,7 @@ IMPORTANT:
             messages=messages,
             provider_type=effective_provider,
             api_key=self.api_key,
-            max_tokens=2000,
+            max_tokens=16000,  # Allow longer responses
             temperature=0.7,
         ):
             yield chunk
@@ -1763,7 +1763,7 @@ IMPORTANT:
                 api_key=self.api_key,
                 tools=tools,
                 tool_choice="auto",
-                max_tokens=8000,  # Increased for models with thinking (e.g., gemini-2.5-flash)
+                max_tokens=16000,  # High limit for tool calls with thinking models
                 temperature=0.1,
             )
 
@@ -2454,7 +2454,7 @@ Respond naturally and helpfully while staying in character."""
                         messages.append({"role": "assistant", "content": assistant_content})
 
                         # Fixed max_tokens as safety cutoff - length controlled by system prompt
-                        MAX_RESPONSE_TOKENS = 12000
+                        MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
 
                         self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
                         content_chunks = 0
@@ -2711,7 +2711,7 @@ IMPORTANT:
             })
 
             # Fixed max_tokens as safety cutoff - length controlled by system prompt
-            MAX_RESPONSE_TOKENS = 12000
+            MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
 
             self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={MAX_RESPONSE_TOKENS})")
             content_chunks = 0
