@@ -2011,15 +2011,14 @@ For Technical Analysis:
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
         # Get domain-specific skill based on classification
-        market_type = "stock"  # Default
+        market_type = "stock"
         if classification:
             market_type = getattr(classification, "market_type", "stock") or "stock"
 
-        # Select skill and get analysis framework
         skill = self.skill_registry.select_skill(market_type)
         analysis_framework = skill.get_analysis_framework()
 
-        # Check if web search results are present for source citation
+        # Check if web search results are present
         has_web_search = any(
             r.get("tool_name", "").lower() == "websearch"
             for r in tool_results
@@ -2033,85 +2032,34 @@ For Technical Analysis:
             if r.get("status") in ["success", "200"]
         ])
 
-        # Source citation instructions when web search is used
-        source_citation_instructions = ""
-        if has_web_search:
-            source_citation_instructions = """
-## ⚠️ MANDATORY SOURCE CITATION (CRITICAL - DO NOT SKIP!)
-
-You MUST include ALL web search citations in your response:
-
-1. **IN YOUR ANALYSIS**: When citing web search info, reference by number: "Theo [1], ..." or "According to [1], ..."
-
-2. **AT THE END**: ALWAYS add this section with ALL URLs from webSearch:
-```
----
-## 📚 Nguồn tham khảo / Sources
-- [1] [Article Title](https://full-url-here.com)
-- [2] [Article Title](https://full-url-here.com)
-...
-```
-
-**RULES:**
-- Include EVERY citation URL from webSearch results
-- Use the EXACT URLs provided - do not modify or shorten them
-- Make URLs clickable: [Title](URL) format
-- This section is MANDATORY when webSearch was used
-"""
-
-        # Count symbols for adaptive response length guidance
-        num_symbols = sum(1 for r in tool_results if r.get("status") in ["success", "200"])
-
         system_prompt = f"""You are a {skill.config.description}.
 
-Current Date: {current_date}
-Response Language: {system_language.upper()}
-
 {analysis_framework}
-{source_citation_instructions}
+
 ---
-## TOOL RESULTS TO SYNTHESIZE
+## Current Context
+- Date: {current_date}
 
-<tool_results>
+## Data from Tools
+
 {results_text}
-</tool_results>
 
-## YOUR TASK
+## Your Task
 
-Synthesize the above tool results into a **COMPREHENSIVE, DETAILED** response:
+Synthesize the above data into a helpful response for the user's query.
 
-**DATA SYNTHESIS REQUIREMENTS (CRITICAL):**
-- Include **ALL important numbers** from tool results (prices, percentages, ratios, indicators)
-- For EACH symbol, provide: current price, 52-week position, technical signals, fundamental metrics
-- **DON'T skip or summarize data** - users want specific numbers and detailed analysis!
-- If P/E, ROE, debt ratios are available, explain what they mean for the stock
+**Key guidelines:**
+- Include specific numbers from the data (prices, ratios, percentages)
+- Explain what the numbers mean in context
+- Be conversational and educational
+- Match the user's language
+- End with 2-3 follow-up questions they might want to explore"""
 
-**ADAPTIVE RESPONSE LENGTH:**
-- You have data for approximately {num_symbols} data sources
-- Simple query (1 symbol) → Medium response (300-500 words)
-- Complex query (3+ symbols) → Detailed response (800-1500 words)
-- Comparison queries → Include comparison table + detailed per-symbol analysis
-- **NEVER truncate just to be brief** - be as detailed as the data requires
+        if has_web_search:
+            system_prompt += """
 
-**STRUCTURED FORMAT:**
-For each symbol analyzed, include:
-1. Price & Position: Current price, 52-week high/low, support/resistance levels
-2. Technical Signals: RSI, MACD, moving averages with interpretation
-3. Fundamental Health: P/E, PEG, ROE, debt ratios with meaning
-4. Key Insight: Overall assessment - bullish/bearish/neutral? Why?
-5. Risk Factors: What could go wrong?
-
-**ENGAGEMENT STYLE:**
-- Write like a knowledgeable friend/advisor, not a formal report
-- Explain technical terms briefly (e.g., "RSI = 72 (overbought - có thể điều chỉnh)")
-- Highlight actionable insights and recommendations
-- End with 2-3 relevant follow-up questions
-
-**LANGUAGE:**
-- Respond in {system_language.upper()}
-- Be natural and engaging, avoid robotic/template language
-{"- ⚠️ CRITICAL: You MUST include the '## Nguồn tham khảo' section with ALL webSearch URLs at the END" if has_web_search else ""}
-"""
+**Source Citations:**
+Include web sources at the end: [Title](URL)"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -2777,16 +2725,7 @@ IMPORTANT:
         """
         Build messages for agent with ALL tools.
 
-        Key difference: Agent sees ALL tools, prompt encourages smart selection.
-
-        Args:
-            merged_symbols: Pre-merged symbols from intent_result + working_memory.
-                            If provided, these override intent_result.validated_symbols.
-            enable_think_tool: If True, add STRONG instruction to ALWAYS use think tool.
-            enable_web_search: If True, add STRONG instruction to ALWAYS search web.
-            system_prompt_override: If provided, use this as the base system prompt
-                (character persona) instead of skill-based prompt. Tool guidelines
-                will still be appended for proper tool usage.
+        Uses skill-based prompts for natural, conversational responses.
         """
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -2801,304 +2740,61 @@ IMPORTANT:
 
         # Select base prompt: use override for character agents, otherwise skill-based
         if system_prompt_override:
-            # Character agent mode: use the character persona as base prompt
             base_prompt = system_prompt_override
         else:
-            # Standard mode: use skill-based prompt
             skill = self.skill_registry.select_skill(market_type)
             base_prompt = skill.get_full_prompt()
 
-        # Build context hints - be EXPLICIT about which symbols to analyze
-        symbols_hint = ""
-        if validated_symbols:
-            if len(validated_symbols) == 1:
-                symbols_hint = f"**PRIMARY SYMBOL TO ANALYZE: {validated_symbols[0]}** - Focus your analysis on this symbol only."
-            else:
-                symbols_hint = f"**SYMBOLS TO ANALYZE: {', '.join(validated_symbols)}** - Focus on these specific symbols."
+        # Build context section
+        context_parts = [f"Current Date: {current_date}"]
 
+        if validated_symbols:
+            symbols_str = ', '.join(validated_symbols)
+            context_parts.append(f"Symbols to analyze: {symbols_str}")
+
+        if intent_summary:
+            context_parts.append(f"User intent: {intent_summary}")
+
+        # User context (core_memory, conversation_summary)
         user_context = ""
         if core_memory:
             user_context += f"\n\n<USER_PROFILE>\n{core_memory}\n</USER_PROFILE>"
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
-        # Build tool list for reference
-        tool_names = [t.get("function", {}).get("name", "") for t in tools if t.get("function")]
-
+        # Build system prompt - simplified and natural
         system_prompt = f"""{base_prompt}
 
 ---
-## RUNTIME CONTEXT
-
-Current Date: {current_date}
-Response Language: {system_language.upper()}
-{symbols_hint}
-Intent: {intent_summary}
+## Current Context
+{chr(10).join('- ' + p for p in context_parts)}
 {user_context}
 
-## TOOL EXECUTION GUIDELINES
+## Tool Usage
 
-**You have access to {len(tool_names)} tools including a special "think" tool.**
+You have access to various data tools. Use them to gather real data before responding.
 
-**IMPORTANT - ReAct Pattern (Reasoning + Acting):**
-1. **THINK FIRST**: Use the `think` tool to analyze the query and plan your approach
-2. **ACT**: Call the most relevant data tools based on your plan
-3. **THINK AGAIN**: After receiving data, use `think` to analyze results and decide next steps
-4. **REPEAT**: Continue until you have enough data
-5. **RESPOND**: Generate your final response with data-backed insights
+**Key principles:**
+1. **Call tools first** - Get actual data before making claims
+2. **Use the `think` tool** - Plan your approach and analyze results
+3. **Cite data sources** - Reference where numbers come from
+4. **Be accurate** - Never fabricate numbers, only use tool results
+5. **Respond naturally** - Match the user's language, be conversational"""
 
-**🧠 THE THINK TOOL - USE IT!**
-
-The `think` tool lets you reason explicitly. Use it:
-- **BEFORE calling tools**: Plan what data you need and why
-- **AFTER receiving data**: Analyze results, identify patterns, decide if more data needed
-- **BEFORE final response**: Synthesize insights, formulate recommendations
-
-Example flow for "So sánh NVDA và AMD để đầu tư":
-```
-Turn 1: think(planning) → "User wants investment comparison. Need: valuation (P/E),
-        growth rates, technical momentum. User profile: growth investor."
-        + getKeyMetrics(NVDA, AMD)
-
-Turn 2: think(analyzing) → "NVDA P/E=65 vs AMD P/E=45. Higher valuation needs
-        growth justification. Will check revenue growth."
-        + getFinancialGrowth(NVDA, AMD)
-
-Turn 3: think(deciding) → "NVDA 120% growth justifies premium. For growth investor,
-        NVDA better fit. Check RSI for entry timing."
-        + getTechnicalIndicators(NVDA)
-
-Turn 4: Final response with data-backed, personalized recommendation
-```
-
-**Tool Selection Strategy - MANDATORY for Symbol Queries:**
-
-⚠️ **ALWAYS CALL THESE TOOLS WHEN SYMBOLS ARE DETECTED:**
-1. **getStockPrice/getCryptoPrice** - Get real-time price data (ALWAYS FIRST)
-2. **getStockNews** - Get latest news for context
-3. **webSearch/serpSearch** - Search for recent news, events, analyst opinions
-
-Then add based on query type:
-- Technical analysis: getTechnicalIndicators, getSupportResistance
-- Fundamental analysis: getFinancialRatios, getIncomeStatement, getKeyMetrics
-- Comparison: Get same tools for all symbols
-
-**CRITICAL - Always Include External Context:**
-- Use `webSearch` for latest market sentiment, analyst ratings, and recent news
-- webSearch uses OpenAI (primary) or Tavily (fallback) automatically
-- Include source URLs and publication dates in your response with proper citations
-- Web search results include verified citations - display them to user
-- NOTE: When news tools are called, web search is AUTO-triggered for additional context
-
-## RESPONSE QUALITY REQUIREMENTS (CRITICAL)
-
-**1. DATA PRESENTATION FORMAT (MANDATORY):**
-Your response MUST follow this structure:
-
-```
-### 📊 Dữ liệu từ [Tool Name] | Nguồn: [Data Source]
-| Chỉ tiêu | Giá trị | Ghi chú |
-|----------|---------|---------|
-| ...      | ...     | ...     |
-
-### 💡 Phân tích & Nhận định
-[Your analysis based on the data above]
-```
-
-**2. RAW DATA FIRST - ALWAYS SHOW COMPLETE DATA:**
-- Display ALL raw data from tool results in TABLE format
-- NEVER skip or summarize data - users need exact numbers for verification
-- Include data timestamp/period clearly (e.g., "Q4 FY2025 (Oct-Jan)" or "Q4 CY2025 (Oct-Dec)")
-- For financial data, always specify: Fiscal Year (FY) vs Calendar Year (CY)
-  - Example: "NVDA Q4 FY2025 = kết thúc 26/01/2025" (NVDA fiscal year ends in January)
-  - Example: "AAPL Q1 FY2025 = Oct-Dec 2024" (AAPL fiscal year starts in October)
-
-**3. DATA SOURCE CITATION (REQUIRED):**
-- ALWAYS cite the data source for each table: FMP API, Yahoo Finance, TradingView, etc.
-- Include the data retrieval timestamp when available
-- Format: "Nguồn: [Source] | Thời điểm: [Timestamp]"
-
-**4. STRUCTURED TABLE FORMATS:**
-
-For Income Statement:
-| Chỉ tiêu | Giá trị | So với kỳ trước |
-|----------|---------|-----------------|
-| Doanh thu | $X.XX tỷ | +X.X% |
-| Lợi nhuận gộp | $X.XX tỷ | +X.X% |
-| Chi phí hoạt động | $X.XX tỷ | +X.X% |
-| EBITDA | $X.XX tỷ | +X.X% |
-| Lợi nhuận ròng | $X.XX tỷ | +X.X% |
-| EPS | $X.XX | +X.X% |
-
-For Technical Analysis:
-| Chỉ báo | Giá trị | Tín hiệu |
-|---------|---------|----------|
-| RSI(14) | XX.X | Bullish/Bearish/Neutral |
-| MACD | XX.X | Bullish/Bearish |
-| MA(50) | $XXX.XX | Trên/Dưới giá |
-| MA(200) | $XXX.XX | Trên/Dưới giá |
-
-**5. ANALYSIS AFTER DATA:**
-- Analysis and insights come AFTER showing raw data
-- Reference specific numbers from the tables above
-- Explain what the numbers mean in context
-- Include actionable recommendations
-
-**6. DATA INTEGRITY:**
-- NEVER make up numbers - only use data from tool results
-- If a tool failed or data is missing, explicitly state: "⚠️ Không có dữ liệu cho [item]"
-- Be honest about data limitations or conflicting signals
-- If fiscal year differs from calendar year, ALWAYS clarify
-
-## OUTPUT VERBOSITY & STRUCTURE CONTROL
-
-<output_verbosity_spec>
-Adapt response length to query complexity - let content dictate length naturally:
-
-- **Simple queries** (giá hiện tại, 1 chỉ báo): 2-4 câu với data table
-- **Standard analysis** (1 symbol, technical/fundamental): Đầy đủ data + phân tích ngắn gọn
-- **Complex analysis** (so sánh, multi-symbol, comprehensive):
-  - Structured sections với headers
-  - Tables cho data comparison
-  - Detailed analysis với reasoning
-- **Research queries** (tin tức, sự kiện, xu hướng): Include web search results với citations
-
-Avoid long narrative paragraphs - prefer compact bullets, tables, and short focused sections.
-Do not rephrase the user's request unless it changes semantics.
-</output_verbosity_spec>
-
-## WEB SEARCH & RESEARCH GUIDELINES
-
-<web_research_rules>
-**Web Search Integration:**
-- Use `webSearch` tool for latest news, events, and market information
-- webSearch uses OpenAI web search (primary) with Tavily fallback
-- Returns verified citations with URLs - always include them in your response
-- Web search is AUTO-triggered when news tools are called for additional context
-- When `enable_web_search=true`, web search runs automatically on first turn
-
-**When using web search tools:**
-- Default to comprehensive, well-structured answers grounded in reliable sources
-- Include citations (source name + URL) for ALL web-derived information
-- Research until you have sufficient information for accurate, comprehensive answers
-- For time-sensitive topics: explicitly compare publish dates and event dates
-- Prioritize primary sources: Bloomberg, Reuters, official company sites, SEC filings
-</web_research_rules>
-
-<citation_format>
-When citing web sources, use this format:
-- Inline: "Theo [Source Name], ... [URL]"
-- Or footnote style: "... tin tức mới nhất.¹" with sources listed at end
-- ALWAYS include publication date when available
-- For OpenAI web search citations: display title + URL from the citations array
-</citation_format>
-
-## RESPONSE STRUCTURE (Adapt to query complexity)
-
-**For Comprehensive Analysis:**
-1. **📊 Tổng quan** - Price, key metrics, market context
-2. **📈 Phân tích kỹ thuật** - Indicators, signals, levels (if relevant)
-3. **💰 Phân tích cơ bản** - Financials, valuation, growth (if relevant)
-4. **📰 Tin tức & Context** - Recent news with sources and dates
-5. **⚠️ Rủi ro & Cơ hội** - Key factors to consider
-6. **💡 Kết luận** - Summary and actionable recommendation
-
-**For Simple Queries:**
-- Direct answer with supporting data
-- Skip irrelevant sections
-- Use tables for numeric data
-
-## HANDLING UNCERTAINTY
-
-<uncertainty_and_ambiguity>
-- If query is ambiguous: state your interpretation, then answer comprehensively
-- When external facts may have changed: answer in general terms, note details may have changed
-- Never fabricate exact figures or citations when uncertain
-- Prefer language like "Dựa trên dữ liệu có sẵn..." instead of absolute claims
-- If data is missing or tool failed: explicitly state "⚠️ Không có dữ liệu cho [item]"
-</uncertainty_and_ambiguity>
-
-## QUALITY CHECKLIST (Before responding)
-
-Before finalizing, verify:
-1. Did you answer ALL parts of the query?
-2. Did you include concrete data/numbers from tools?
-3. Did you cite sources for web-derived information?
-4. Are there any unstated assumptions or unverifiable claims?
-5. Is the response length appropriate for query complexity?
-"""
-
-        # ====================================================================
-        # DYNAMIC INSTRUCTIONS BASED ON FLAGS
-        # ====================================================================
-
-        # Add STRONG think tool instructions when enabled
+        # Add think tool instruction if enabled
         if enable_think_tool:
-            think_tool_instruction = """
+            system_prompt += """
 
-## 🧠 MANDATORY: USE THE THINK TOOL (enable_think_tool=True)
+**Think Tool (RECOMMENDED):**
+Use the `think` tool to plan your approach and analyze data before responding.
+Pattern: think(plan) → call tools → think(analyze) → respond"""
 
-**⚠️ CRITICAL REQUIREMENT - YOU MUST USE THE THINK TOOL!**
-
-The `think` tool is MANDATORY for this conversation. You MUST:
-
-1. **ALWAYS START with think()**: Before calling ANY data tool, call `think` first to:
-   - Analyze what the user is asking
-   - Plan which tools you need to call
-   - Identify what data will answer the question
-
-2. **ALWAYS THINK AFTER DATA**: After receiving tool results, call `think` to:
-   - Analyze the data you received
-   - Identify key insights and patterns
-   - Decide if you need more data or can respond
-
-3. **THINK BEFORE RESPONDING**: Before generating your final response, call `think` to:
-   - Synthesize all the information
-   - Formulate your recommendations
-   - Structure your response
-
-**Example MANDATORY Pattern:**
-```
-Turn 1: think("Planning: User asks X. I need to call Y, Z tools.") → getStockPrice()
-Turn 2: think("Data received: Price is $X. Now analyzing...") → getTechnicalIndicators()
-Turn 3: think("Synthesizing: Price + indicators suggest...") → Final response
-```
-
-**DO NOT skip think() calls. This is not optional!**
-"""
-            system_prompt += think_tool_instruction
-
-        # Add STRONG web search instructions when enabled
+        # Add web search instruction if enabled
         if enable_web_search:
-            web_search_instruction = """
+            system_prompt += """
 
-## 🌐 MANDATORY: USE WEB SEARCH (enable_web_search=True)
-
-**⚠️ CRITICAL REQUIREMENT - YOU MUST SEARCH THE WEB!**
-
-Web search is MANDATORY for this conversation. You MUST:
-
-1. **ALWAYS call webSearch or serpSearch** in your first turn (or early turns):
-   - Search for latest news about the symbols/topics
-   - Search for recent analyst opinions and ratings
-   - Search for any recent events that affect the analysis
-
-2. **Include web sources in your response**:
-   - Cite the source name and URL for all web-derived information
-   - Include publication dates when available
-   - Prioritize recent and authoritative sources
-
-3. **Do NOT skip web search**: Even if you have financial data from other tools,
-   web search provides crucial context about recent events, sentiment, and news.
-
-**Example Search Queries:**
-- "NVDA stock news today January 2025"
-- "NVIDIA earnings announcement 2025"
-- "AMD vs NVDA analyst ratings 2025"
-
-**Both webSearch (Tavily) and serpSearch (Google) are available - use either or both.**
-"""
-            system_prompt += web_search_instruction
+**Web Search (RECOMMENDED):**
+Use `webSearch` for latest news and market context. Include source citations."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
