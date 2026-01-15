@@ -135,10 +135,6 @@ class Settings(BaseSettings):
     TASK_WORKER_MODEL: str = Field("gpt-4.1-nano", env='TASK_WORKER_MODEL')
     TASK_WORKER_PROVIDER: str = Field("openai", env='TASK_WORKER_PROVIDER')
 
-    # Minimal Prompt Mode - use shorter prompts to maximize response length
-    # Set to "true" if using models that struggle with long prompts (gpt-4.1-mini, gpt-4.1-nano)
-    MINIMAL_PROMPT_MODE: bool = Field(False, env='MINIMAL_PROMPT_MODE')
-
 # Avoid having to re-read the .env file and create the Settings object every time you access it
 @lru_cache()
 def get_settings():

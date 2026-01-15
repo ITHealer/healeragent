@@ -178,30 +178,16 @@ class BaseSkill(ABC, LoggerMixin):
         """
         return {}
 
-    def get_full_prompt(self, context: Optional[SkillContext] = None, minimal: bool = False) -> str:
+    def get_full_prompt(self, context: Optional[SkillContext] = None) -> str:
         """
         Get complete prompt combining system prompt and framework.
 
         Args:
             context: Optional runtime context for dynamic generation
-            minimal: If True, return minimal prompt to maximize response length
 
         Returns:
             Combined prompt ready for use in LLM call
         """
-        # Minimal mode - for models that struggle with long prompts (e.g., gpt-4.1-mini)
-        if minimal:
-            return f"""You are a {self.config.description}.
-
-Provide COMPREHENSIVE, DETAILED analysis. Include ALL data points from tools:
-- Specific prices and percentage changes
-- All technical indicators with explanations
-- Support/resistance levels
-- Clear trading recommendations with entry/stop/target prices
-- Risk assessment
-
-Do NOT summarize or truncate. Users want thorough analysis."""
-
         parts = [
             self.get_system_prompt(),
             "\n---\n",

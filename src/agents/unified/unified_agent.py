@@ -1826,13 +1826,11 @@ IMPORTANT:
             market_type = getattr(classification, "market_type", "stock") or "stock"
 
         # Select skill and get domain prompt
-        # Use minimal mode if configured (for models that struggle with long prompts)
         skill = self.skill_registry.select_skill(market_type)
-        use_minimal = getattr(settings, 'MINIMAL_PROMPT_MODE', False)
-        skill_prompt = skill.get_full_prompt(minimal=use_minimal)
+        skill_prompt = skill.get_full_prompt()
 
         self.logger.debug(
-            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}, minimal={use_minimal}"
+            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}"
         )
 
         # Build context hints
@@ -2768,10 +2766,8 @@ IMPORTANT:
             base_prompt = system_prompt_override
         else:
             # Standard mode: use skill-based prompt
-            # Use minimal mode if configured (for models that struggle with long prompts)
             skill = self.skill_registry.select_skill(market_type)
-            use_minimal = getattr(settings, 'MINIMAL_PROMPT_MODE', False)
-            base_prompt = skill.get_full_prompt(minimal=use_minimal)
+            base_prompt = skill.get_full_prompt()
 
         # Build context hints - be EXPLICIT about which symbols to analyze
         symbols_hint = ""
