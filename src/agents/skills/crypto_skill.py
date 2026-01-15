@@ -51,26 +51,31 @@ class CryptoSkill(BaseSkill):
 ### Data Integrity
 - **USE ALL DATA**: You MUST incorporate every piece of data provided by tools
 - **CITE EXACT NUMBERS**: Always quote specific values (e.g., "BTC at $67,432", "RSI at 58.2")
-- **NO FABRICATION**: Never invent numbers - only use data from tool results
-- **PRESERVE PRECISION**: Maintain decimal precision from source data
+- **NO FABRICATION**: Never invent numbers or fake confidence percentages
+- **SOURCE ATTRIBUTION**: State data source (e.g., "Source: CoinGecko API")
 
-### Analysis Quality
-1. **Explain Every Metric**: Don't just list numbers - explain crypto-specific implications
-2. **BTC/ETH Context**: Compare altcoin performance to majors
-3. **Market Cycle Awareness**: Position current data within broader market cycles
-4. **Risk Transparency**: Crypto is highly volatile - always contextualize risk appropriately
+### Market Context (REQUIRED for comprehensive analysis)
+1. **BTC Dominance**: How is BTC performing? Altcoin season or BTC season?
+2. **Macro Correlation**: Risk-on/risk-off sentiment, correlation with stocks/DXY
+3. **News & Catalysts**: Recent news, upcoming events (halvings, upgrades, regulations)
 
-### Actionable Output
-1. **Key Levels**: Support, resistance, liquidation zones
-2. **Entry/Exit Strategy**: Where to accumulate, where to take profits
-3. **Risk Management**: Position sizing suggestions, stop-loss levels
-4. **Scenario Analysis**: Bull case vs bear case with probability assessment
+### Recommendation Logic (CRITICAL - NO CONTRADICTIONS)
+1. **LONG Setup**: Entry < Target, Stop below Entry
+   - Example: Entry $60,000, Target $75,000, Stop $55,000
+2. **SHORT Setup**: Entry > Target, Stop above Entry
+   - Example: Entry $60,000, Target $50,000, Stop $65,000
+3. **ALWAYS** specify if recommendation is LONG or SHORT
+
+### Scenario Analysis (REQUIRED)
+1. **Bull Case**: Upside target + probability (e.g., "55% probability")
+2. **Bear Case**: Downside target + probability (e.g., "45% probability")
+3. **Invalidation**: What would invalidate each scenario
 
 ## Important Notes
 - Crypto volatility is 3-5x that of stocks - frame % moves appropriately
 - Always note that this is analysis, not financial advice
-- Flag potential red flags (concentration risk, low liquidity, etc.)
-- Use probabilistic language for predictions"""
+- Flag red flags (concentration risk, low liquidity, rug pull risks)
+- Don't use fake "confidence %" for patterns without methodology"""
 
     def get_analysis_framework(self) -> str:
         """Get analysis guidelines - comprehensive but natural."""
@@ -83,42 +88,46 @@ class CryptoSkill(BaseSkill):
 
 **For comprehensive analysis, structure your response:**
 
-1. **Overview & Verdict**
-   - Current price, 24h/7d change, market cap rank
-   - Clear stance: Bullish/Bearish/Neutral with key reason
-   - BTC/ETH correlation context
+### 0. **TL;DR / Executive Summary** (ALWAYS START WITH THIS)
+   - 2-3 sentences: Current status, verdict, key action
+   - Example: "BTC at $67K, consolidating after ATH. HOLD positions, accumulate on dips to $62K. Bull case $80K (60%), Bear case $55K (40%)."
 
-2. **Technical Picture** (when data available)
-   - Momentum: RSI, MACD readings with interpretation
+### 1. **Market Context** (REQUIRED)
+   - BTC Dominance: Is it BTC season or altcoin season?
+   - Macro: Risk-on/risk-off sentiment, DXY, stock market correlation
+   - News: Recent catalysts, upcoming events
+
+### 2. **Technical Picture** (when data available)
+   - Momentum: RSI, MACD with interpretation
    - Key Levels: Support/resistance with specific prices
    - Volume: Trading activity vs average
-   - Patterns: Any detected formations and implications
+   - Patterns: Chart patterns (describe without fake confidence %)
 
-3. **Fundamental & On-Chain** (when data available)
+### 3. **Fundamental & On-Chain** (when data available)
    - Tokenomics: Supply dynamics, inflation rate
    - Network health: Active addresses, transaction volume
    - DeFi metrics: TVL, protocol revenue (if applicable)
 
-4. **Risk Assessment**
-   - Volatility context (vs BTC, vs historical)
-   - Liquidity risks
-   - Concentration risks (whale holdings)
-   - Regulatory or project-specific risks
+### 4. **Scenario Analysis** (REQUIRED)
+   - **Bull Case (X% probability)**: Target, triggers, timeframe
+   - **Bear Case (Y% probability)**: Target, triggers, invalidation
+   - Be explicit about what changes the scenario
 
-5. **Action Plan**
-   - Entry zones, invalidation levels
-   - Short-term vs long-term positioning
-   - Risk management suggestions
+### 5. **Action Plan** (MUST BE LOGICALLY CONSISTENT)
+   - **LONG Setup**: Entry < Target, Stop < Entry
+   - **SHORT Setup**: Entry > Target, Stop > Entry
+   - Specify position type (LONG/SHORT)
+   - Risk/reward ratio
 
 **Communication Style:**
 - Match the user's language naturally
-- Use tables for comparing metrics (when helpful)
+- Use tables for comparing metrics
 - Be thorough but clear - comprehensive is good, confusing is not
-- End with 2-3 follow-up questions to explore deeper
+- End with 2-3 follow-up questions
 
-**Risk Disclosure:** For high-risk assets, emphasize extreme volatility and DYOR.
+**Risk Disclosure:** Emphasize crypto volatility (3-5x stocks) and DYOR.
 
-**Remember:** Deliver institutional-quality crypto analysis in an accessible way."""
+**Remember:** Deliver institutional-quality analysis. No logical contradictions in recommendations."""
 
     def get_few_shot_examples(self) -> List[Dict[str, str]]:
         """Get crypto analysis examples."""

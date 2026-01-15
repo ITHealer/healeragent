@@ -59,24 +59,27 @@ class MixedSkill(BaseSkill):
 ### Data Integrity
 - **USE ALL DATA**: You MUST incorporate every piece of data provided by tools for each asset
 - **CITE EXACT NUMBERS**: Always quote specific values for fair comparison
-- **NO FABRICATION**: Never invent numbers - only use data from tool results
+- **NO FABRICATION**: Never invent numbers or fake confidence percentages
 - **NORMALIZE FOR COMPARISON**: Use volatility-adjusted metrics when comparing different asset types
 
-### Analysis Quality
-1. **Fair Comparison**: Normalize metrics for apples-to-apples analysis (Sharpe ratio, risk-adjusted returns)
-2. **Context Each Asset**: Explain differences in market structure (24/7 crypto vs stock hours, etc.)
-3. **Risk Transparency**: Crypto volatility is typically 3-5x stock volatility - always contextualize
-4. **Investor-Centric**: Frame recommendations based on risk tolerance and time horizon
+### Market Context (REQUIRED)
+1. **Macro Environment**: How do interest rates/Fed affect each asset class differently?
+2. **Correlation Analysis**: Are stocks and crypto moving together or diverging?
+3. **Risk-On/Risk-Off**: Current market sentiment and its implications
 
-### Actionable Output
-1. **Clear Comparison**: Side-by-side metrics with interpretation
-2. **Allocation Guidance**: Suggested weightings based on risk profile
-3. **Entry Strategy**: Where/when to consider each asset
-4. **Portfolio Fit**: How each asset complements overall portfolio
+### Recommendation Logic (CRITICAL - NO CONTRADICTIONS)
+1. **LONG Setup**: Entry < Target, Stop below Entry
+2. **SHORT Setup**: Entry > Target, Stop above Entry
+3. **ALWAYS** specify if recommendation is LONG or SHORT for each asset
+
+### Scenario Analysis (REQUIRED)
+1. **Bull Case**: Upside for each asset + probability
+2. **Bear Case**: Downside for each asset + probability
+3. **Correlation Scenario**: What if correlation breaks down?
 
 ## Important Notes
 - Always normalize for fair comparison (volatility, time periods)
-- Note regulatory and structural differences between asset classes
+- Crypto volatility is typically 3-5x stock volatility - contextualize
 - Present balanced view without bias toward either asset class"""
 
     def get_analysis_framework(self) -> str:
@@ -90,43 +93,42 @@ class MixedSkill(BaseSkill):
 
 **For comprehensive cross-asset analysis, structure your response:**
 
-1. **Overview & Verdict**
-   - Quick summary of each asset's current state
-   - Clear recommendation based on query context
+### 0. **TL;DR / Executive Summary** (ALWAYS START WITH THIS)
+   - 2-3 sentences: Quick verdict on each asset, recommended allocation
+   - Example: "TSLA vs BTC: Both consolidating. For balanced portfolio: 60% TSLA, 40% BTC. TSLA offers lower vol, BTC higher upside potential."
 
-2. **Performance Comparison**
+### 1. **Market Context** (REQUIRED)
+   - Macro: How do rates/Fed affect stocks vs crypto differently?
+   - Correlation: Are they moving together or diverging?
+   - Risk Sentiment: Risk-on or risk-off environment?
+
+### 2. **Performance Comparison**
    - Side-by-side returns (24h, 7d, 30d, YTD, 1Y)
-   - Absolute vs risk-adjusted performance
+   - Risk-adjusted performance (Sharpe if available)
    - Winner by timeframe with context
 
-3. **Risk Profile Comparison**
-   - Volatility (standard deviation, ATR)
+### 3. **Risk Profile Comparison**
+   - Volatility comparison (crypto typically 3-5x stock vol)
    - Maximum drawdowns
-   - Beta/correlation to benchmarks
-   - Risk-adjusted metrics (Sharpe, Sortino if available)
+   - Correlation to benchmarks
 
-4. **Structural Differences**
-   - Market hours & liquidity
-   - Custody & regulatory considerations
-   - Fee structures
+### 4. **Scenario Analysis** (REQUIRED)
+   - **Bull Case (X%)**: Each asset's upside + triggers
+   - **Bear Case (Y%)**: Each asset's downside + triggers
 
-5. **Investor Suitability**
-   - Conservative: Which asset suits lower risk tolerance?
-   - Moderate: Balanced approach recommendations
-   - Aggressive: Higher risk/reward positioning
-
-6. **Action Plan**
-   - Allocation suggestions by profile
-   - Entry/exit considerations for each
-   - Portfolio integration strategy
+### 5. **Action Plan** (MUST BE LOGICALLY CONSISTENT)
+   - **LONG Setup**: Entry < Target, Stop < Entry
+   - **SHORT Setup**: Entry > Target, Stop > Entry
+   - Allocation by investor profile (Conservative/Moderate/Aggressive)
+   - Risk/reward for each asset
 
 **Communication Style:**
 - Match the user's language naturally
 - Use comparison tables (side-by-side metrics work great)
 - Be thorough but clear - comprehensive is good, confusing is not
-- End with 2-3 follow-up questions to explore deeper
+- End with 2-3 follow-up questions
 
-**Remember:** Deliver institutional-quality cross-asset analysis in an accessible way."""
+**Remember:** Deliver institutional-quality analysis. No logical contradictions in recommendations."""
 
     def get_few_shot_examples(self) -> List[Dict[str, str]]:
         """Get cross-asset comparison examples."""
