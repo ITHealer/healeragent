@@ -397,15 +397,66 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
 
                             # Extract thought_signature (CRITICAL for Gemini 3+)
                             # This MUST be preserved and sent back in subsequent turns
+                            # Try multiple attribute patterns (SDK versions may differ)
                             thought_sig = None
-                            if hasattr(part, 'thought_signature'):
+
+                            # Pattern 1: part.thought_signature (snake_case)
+                            if hasattr(part, 'thought_signature') and part.thought_signature:
                                 thought_sig = part.thought_signature
-                            elif hasattr(fc, 'thought_signature'):
+                                self.logger.debug(f"[GEMINI] Found thought_signature on part (snake_case)")
+
+                            # Pattern 2: part.thoughtSignature (camelCase)
+                            if not thought_sig and hasattr(part, 'thoughtSignature') and part.thoughtSignature:
+                                thought_sig = part.thoughtSignature
+                                self.logger.debug(f"[GEMINI] Found thought_signature on part (camelCase)")
+
+                            # Pattern 3: function_call.thought_signature
+                            if not thought_sig and hasattr(fc, 'thought_signature') and fc.thought_signature:
                                 thought_sig = fc.thought_signature
+                                self.logger.debug(f"[GEMINI] Found thought_signature on function_call (snake_case)")
+
+                            # Pattern 4: function_call.thoughtSignature
+                            if not thought_sig and hasattr(fc, 'thoughtSignature') and fc.thoughtSignature:
+                                thought_sig = fc.thoughtSignature
+                                self.logger.debug(f"[GEMINI] Found thought_signature on function_call (camelCase)")
+
+                            # Pattern 5: Check _pb attribute for protobuf access
+                            if not thought_sig:
+                                try:
+                                    if hasattr(part, '_pb') and hasattr(part._pb, 'thought_signature'):
+                                        thought_sig = part._pb.thought_signature
+                                        self.logger.debug(f"[GEMINI] Found thought_signature via protobuf")
+                                except Exception:
+                                    pass
+
+                            # Log all available attributes for debugging
+                            if not thought_sig:
+                                part_attrs = [a for a in dir(part) if not a.startswith('_')]
+                                fc_attrs = [a for a in dir(fc) if not a.startswith('_')]
+                                self.logger.debug(
+                                    f"[GEMINI] No thought_signature found for {fc.name}. "
+                                    f"Part attrs: {part_attrs[:10]}... FC attrs: {fc_attrs[:10]}..."
+                                )
+
+                                # For Gemini 3+ models: use skip_thought_signature_validator as fallback
+                                # This is a documented workaround but may affect model performance
+                                # See: https://ai.google.dev/gemini-api/docs/thought-signatures
+                                is_gemini3_model = any(x in self.model_name.lower() for x in [
+                                    "gemini-3", "flash-preview", "pro-preview"
+                                ])
+                                if is_gemini3_model and idx == 0:  # Only for first function call
+                                    thought_sig = "skip_thought_signature_validator"
+                                    self.logger.warning(
+                                        f"[GEMINI] Using skip_thought_signature_validator for {fc.name} "
+                                        f"(Gemini 3+ fallback - may affect performance)"
+                                    )
 
                             if thought_sig:
                                 tool_call["thought_signature"] = thought_sig
-                                self.logger.debug(f"[GEMINI] Function call {fc.name} has thought_signature")
+                                if thought_sig != "skip_thought_signature_validator":
+                                    self.logger.info(f"[GEMINI] Function call {fc.name} has thought_signature (len={len(str(thought_sig))})")
+                                else:
+                                    self.logger.info(f"[GEMINI] Function call {fc.name} using skip_thought_signature_validator")
 
                             tool_calls.append(tool_call)
                             finish_reason = "tool_calls"
