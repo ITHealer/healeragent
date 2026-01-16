@@ -1644,35 +1644,64 @@ IMPORTANT:
         # ============================================================
         # DEBUG: Log tool results before sending to LLM
         # ============================================================
-        for res in processed:
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        self.logger.info(f"[{flow_id}] TOOL RESULTS DETAIL (before sending to LLM)")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
+        for i, res in enumerate(processed):
             tool_name = res.get("tool_name", "unknown")
             status = res.get("status", "unknown")
-            self.logger.info(f"[{flow_id}] 📊 TOOL RESULT: {tool_name} | status={status}")
+            formatted_context = res.get("formatted_context")
+            data = res.get("data", {})
+            data_keys = list(data.keys()) if isinstance(data, dict) else []
 
-            # Log key data from financial tools
-            if status == "success" and "data" in res:
-                data = res["data"]
-                if isinstance(data, dict):
-                    # Income Statement specific logging
-                    if "revenue" in data:
-                        rev = data.get('revenue')
-                        net = data.get('net_income')
-                        eps = data.get('eps')
-                        rev_str = f"{rev:,.0f}" if isinstance(rev, (int, float)) else str(rev)
-                        net_str = f"{net:,.0f}" if isinstance(net, (int, float)) else str(net)
-                        self.logger.info(
-                            f"[{flow_id}]   └─ revenue={rev_str} | "
-                            f"net_income={net_str} | eps={eps}"
-                        )
-                    # Log first statement if available
-                    if "statements" in data and data["statements"]:
-                        stmt = data["statements"][0]
-                        stmt_rev = stmt.get('revenue')
-                        rev_str = f"{stmt_rev:,.0f}" if isinstance(stmt_rev, (int, float)) else "N/A"
-                        self.logger.info(
-                            f"[{flow_id}]   └─ Latest: date={stmt.get('date')} | "
-                            f"period={stmt.get('period')} | revenue={rev_str}"
-                        )
+            self.logger.info(f"[{flow_id}] [{i+1}] 📊 {tool_name} | status={status}")
+
+            # Log formatted_context status
+            if formatted_context:
+                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
+                # Show preview (first 500 chars for technical indicators)
+                preview = formatted_context[:500].replace('\n', ' | ')
+                self.logger.info(f"[{flow_id}]     Preview: {preview}...")
+            else:
+                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING")
+                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")
+
+            # Log key data from specific tools
+            if status == "success" and isinstance(data, dict):
+                # Technical Indicators
+                if tool_name == "getTechnicalIndicators":
+                    outlook = data.get("outlook", {})
+                    rec = data.get("trading_recommendation", {})
+                    self.logger.info(
+                        f"[{flow_id}]     📊 outlook={outlook.get('outlook')} | "
+                        f"action={rec.get('overall_action')} | "
+                        f"signal_agreement={rec.get('signal_agreement_pct')}%"
+                    )
+
+                # Income Statement specific logging
+                if "revenue" in data:
+                    rev = data.get('revenue')
+                    net = data.get('net_income')
+                    eps = data.get('eps')
+                    rev_str = f"{rev:,.0f}" if isinstance(rev, (int, float)) else str(rev)
+                    net_str = f"{net:,.0f}" if isinstance(net, (int, float)) else str(net)
+                    self.logger.info(
+                        f"[{flow_id}]     └─ revenue={rev_str} | "
+                        f"net_income={net_str} | eps={eps}"
+                    )
+
+                # Log first statement if available
+                if "statements" in data and data["statements"]:
+                    stmt = data["statements"][0]
+                    stmt_rev = stmt.get('revenue')
+                    rev_str = f"{stmt_rev:,.0f}" if isinstance(stmt_rev, (int, float)) else "N/A"
+                    self.logger.info(
+                        f"[{flow_id}]     └─ Latest: date={stmt.get('date')} | "
+                        f"period={stmt.get('period')} | revenue={rev_str}"
+                    )
+
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
         return processed
 
