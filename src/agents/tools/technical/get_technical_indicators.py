@@ -617,17 +617,34 @@ class GetTechnicalIndicatorsTool(BaseTool):
             Dict with trend direction and change data
         """
         if column not in df.columns or len(df) < lookback:
-            return {"trend": "unknown", "change": None}
+            return {"trend": "unknown", "change": None, "reason": "insufficient_data"}
 
-        recent = df[column].tail(lookback).dropna()
+        # Use forward fill to handle sparse NaN values, then take recent data
+        filled_series = df[column].ffill()
+        recent = filled_series.tail(lookback).dropna()
+
         if len(recent) < 2:
-            return {"trend": "unknown", "change": None}
+            return {"trend": "unknown", "change": None, "reason": "insufficient_valid_points"}
 
         start_val = recent.iloc[0]
         end_val = recent.iloc[-1]
 
-        if start_val == 0:
-            return {"trend": "unknown", "change": None}
+        # Handle edge case where start_val is zero or very small
+        # For indicators like RSI (0-100), a value of 0 is extremely rare but valid
+        if abs(start_val) < 0.001:
+            # Use absolute change instead of percentage for near-zero values
+            abs_change = end_val - start_val
+            if abs_change > 1:
+                trend = "rising"
+            elif abs_change < -1:
+                trend = "falling"
+            else:
+                trend = "flat"
+            return {
+                "trend": trend,
+                "change_abs": round(abs_change, 2),
+                "lookback_periods": lookback
+            }
 
         change_pct = (end_val - start_val) / abs(start_val) * 100
 
@@ -846,7 +863,14 @@ class GetTechnicalIndicatorsTool(BaseTool):
         return f"ATR=${atr:.2f} ({atr_pct:.1f}% of price). {volatility} VOLATILITY. Average daily range over 14 days. Use for stop-loss placement (e.g., 1.5-2x ATR from entry)."
 
     def _get_vwap_explanation(self, price: float, vwap: float, analysis: Dict) -> str:
-        """Generate LLM-friendly VWAP explanation."""
+        """
+        Generate LLM-friendly VWAP explanation.
+
+        NOTE: This is PERIOD VWAP (calculated from daily OHLCV over the analysis window),
+        NOT intraday VWAP (which requires minute/tick data). Interpretation differs:
+        - Period VWAP = average cost of volume over days/weeks
+        - Intraday VWAP = average cost within a single trading day
+        """
         if vwap is None:
             return "VWAP data not available."
 
@@ -854,11 +878,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
         diff_pct = analysis.get('diff_pct', 0)
 
         if diff_pct > 0:
-            return f"Price ${price:.2f} is {diff_pct:.1f}% ABOVE VWAP (${vwap:.2f}). Institutional buyers likely paid more - BULLISH sentiment. Good for intraday long positions."
+            return f"Price ${price:.2f} is {diff_pct:.1f}% ABOVE period VWAP (${vwap:.2f}). Average cost for recent volume was lower - BULLISH bias. Price premium indicates demand."
         elif diff_pct < 0:
-            return f"Price ${price:.2f} is {abs(diff_pct):.1f}% BELOW VWAP (${vwap:.2f}). Price below institutional average cost - BEARISH sentiment. Consider waiting for VWAP reclaim."
+            return f"Price ${price:.2f} is {abs(diff_pct):.1f}% BELOW period VWAP (${vwap:.2f}). Price below volume-weighted average cost - BEARISH bias. Potential value zone if trend reverses."
         else:
-            return f"Price ${price:.2f} at VWAP (${vwap:.2f}). Fair value zone. Watch for directional breakout."
+            return f"Price ${price:.2f} at period VWAP (${vwap:.2f}). Fair value zone based on recent volume distribution. Watch for directional breakout."
 
     def _get_volume_explanation(self, volume: int, avg_volume: int, ratio: float, analysis: Dict) -> str:
         """Generate LLM-friendly Volume explanation."""
@@ -1214,21 +1238,33 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             signal_breakdown["neutral_indicators"].append("MA Crossover")
 
+        # Use list lengths for accurate indicator counts (not weighted scores)
+        # This ensures consistency between JSON counts and breakdown lists
+        num_bullish = len(signal_breakdown["bullish_indicators"])
+        num_bearish = len(signal_breakdown["bearish_indicators"])
+        num_neutral = len(signal_breakdown["neutral_indicators"])
+        total_indicator_count = num_bullish + num_bearish + num_neutral
+
         return {
             "overall_action": action,
             "action_strength": action_strength,
-            "bullish_signals": int(bullish_count),
-            "bearish_signals": int(bearish_count),
-            "neutral_signals": int(total_indicators - bullish_count - bearish_count),
-            "total_signals": int(total_indicators),
-            # Renamed for clarity: this is % of indicators agreeing on direction
+            # Use list lengths (not weighted counts) for consistency
+            "bullish_signals": num_bullish,
+            "bearish_signals": num_bearish,
+            "neutral_signals": num_neutral,
+            "total_signals": total_indicator_count,
+            # Weighted score used for action decision (internal)
+            "weighted_bullish_score": round(bullish_count, 2),
+            "weighted_bearish_score": round(bearish_count, 2),
+            "weighted_total": round(total_indicators, 2),
+            # Signal agreement % based on weighted scores (used for BUY/SELL threshold)
             "signal_agreement_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
             "signal_breakdown": signal_breakdown,
             "short_term_trade": short_term,
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
-            "note": "Signal Agreement = % of indicators pointing in same direction. Higher = stronger consensus."
+            "note": "Signal counts = indicator count. Weighted scores factor in signal strength (divergence=1.5x, VWAP=0.5x). Action threshold: 60% weighted score."
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
@@ -1307,14 +1343,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
         ma_alignment = (indicators.get('ma_crossovers', {}).get('current_alignment') or 'N/A').upper()
 
         # Clarify confidence metrics:
-        # - Trend Confidence = outlook.confidence (how strong is the price trend)
-        # - Signal Agreement = % of indicators pointing same direction
-        trend_conf = outlook.get('confidence', 0)
+        # - Outlook Consensus = outlook.confidence (% of basic signals agreeing on direction)
+        # - Signal Agreement = % of weighted indicators pointing same direction (for action decision)
+        # - Trend Strength = ADX-based (actual trend strength, not signal %)
+        outlook_consensus = outlook.get('confidence', 0)
         signal_agree = rec.get('signal_agreement_pct', rec.get('confidence_pct', 0))
 
         lines.extend([
             "",
-            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Trend Strength: {trend_conf:.0%})",
+            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Consensus: {outlook_consensus:.0%}, ADX Trend: {adx_strength})",
             f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')}) | Signal Agreement: {signal_agree:.0f}%",
             "",
             "KEY INDICATORS (with trends):",
@@ -1435,11 +1472,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         if treasury_data and isinstance(treasury_data, list):
                             latest = treasury_data[0]
                             result["treasury"] = {
-                                "date": latest.get("date"),
+                                "as_of_date": latest.get("date"),  # Date of observation (market close)
+                                "date": latest.get("date"),        # Kept for backwards compat
                                 "year_2": latest.get("year2"),
                                 "year_5": latest.get("year5"),
                                 "year_10": latest.get("year10"),
                                 "year_30": latest.get("year30"),
+                                "note": "Rates as of market close on as_of_date. May lag 1 business day."
                             }
                             # Yield curve analysis
                             y2 = latest.get("year2")
@@ -1468,9 +1507,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
                             latest = gdp_data[0]
                             result["gdp"] = {
                                 "value": latest.get("value"),  # This should be growth rate %
-                                "date": latest.get("date"),
+                                "as_of_date": latest.get("date"),  # Release date of the data
+                                "date": latest.get("date"),        # Kept for backwards compat
                                 "type": "growth_rate",
-                                "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing"
+                                "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing",
+                                "note": "GDP growth rate (%). Released quarterly, may lag current quarter."
                             }
                         else:
                             # Fallback: fetch GDP and calculate YoY growth
@@ -1485,11 +1526,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                         yoy_growth = ((current - previous) / previous) * 100
                                         result["gdp"] = {
                                             "value": round(yoy_growth, 2),
-                                            "date": gdp_raw[0].get("date"),
+                                            "as_of_date": gdp_raw[0].get("date"),  # Date of latest GDP reading
+                                            "date": gdp_raw[0].get("date"),        # Kept for backwards compat
                                             "type": "calculated_yoy",
                                             "raw_current": current,
                                             "raw_previous": previous,
-                                            "trend": "increasing" if yoy_growth > 0 else "decreasing"
+                                            "trend": "increasing" if yoy_growth > 0 else "decreasing",
+                                            "note": "YoY GDP growth (%) calculated from nominal GDP. Released quarterly."
                                         }
                     else:
                         self.logger.warning(f"[Economic Data] GDP API failed: {response.status_code} | {response.text[:200]}")
@@ -1506,9 +1549,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
                             latest = inflation_data[0]
                             result["inflation"] = {
                                 "value": latest.get("value"),  # Should be inflation rate %
-                                "date": latest.get("date"),
+                                "as_of_date": latest.get("date"),  # Release date of the data
+                                "date": latest.get("date"),        # Kept for backwards compat
                                 "type": "inflation_rate",
-                                "trend": "increasing" if len(inflation_data) > 1 and inflation_data[0].get("value", 0) > inflation_data[1].get("value", 0) else "decreasing"
+                                "trend": "increasing" if len(inflation_data) > 1 and inflation_data[0].get("value", 0) > inflation_data[1].get("value", 0) else "decreasing",
+                                "note": "Inflation rate (CPI YoY %). Released monthly, typically mid-month for prior month."
                             }
                         else:
                             # Fallback: fetch CPI index and calculate YoY inflation
@@ -1523,11 +1568,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                         yoy_inflation = ((current_cpi - previous_cpi) / previous_cpi) * 100
                                         result["inflation"] = {
                                             "value": round(yoy_inflation, 2),
-                                            "date": cpi_raw[0].get("date"),
+                                            "as_of_date": cpi_raw[0].get("date"),  # Date of latest CPI reading
+                                            "date": cpi_raw[0].get("date"),        # Kept for backwards compat
                                             "type": "calculated_yoy",
                                             "cpi_current": current_cpi,
                                             "cpi_previous": previous_cpi,
-                                            "trend": "increasing" if yoy_inflation > 2.5 else "decreasing"
+                                            "trend": "increasing" if yoy_inflation > 2.5 else "decreasing",
+                                            "note": "YoY inflation (%) calculated from CPI index. Released monthly."
                                         }
                     else:
                         self.logger.warning(f"[Economic Data] Inflation API failed: {response.status_code} | {response.text[:200]}")
@@ -1543,8 +1590,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
                             latest = unemp_data[0]
                             result["unemployment"] = {
                                 "value": latest.get("value"),
-                                "date": latest.get("date"),
-                                "trend": "increasing" if len(unemp_data) > 1 and unemp_data[0].get("value", 0) > unemp_data[1].get("value", 0) else "decreasing"
+                                "as_of_date": latest.get("date"),  # Release date of the data
+                                "date": latest.get("date"),        # Kept for backwards compat
+                                "trend": "increasing" if len(unemp_data) > 1 and unemp_data[0].get("value", 0) > unemp_data[1].get("value", 0) else "decreasing",
+                                "note": "Unemployment rate (%). Released monthly (first Friday of month)."
                             }
                     else:
                         self.logger.warning(f"[Economic Data] Unemployment API failed: {response.status_code} | {response.text[:200]}")

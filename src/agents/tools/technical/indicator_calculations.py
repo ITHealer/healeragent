@@ -1299,10 +1299,14 @@ def generate_outlook(df: pd.DataFrame) -> Dict[str, Any]:
 
     return {
         'outlook': outlook,
-        'confidence': round(confidence, 2),
+        # Renamed from 'confidence' to 'consensus' for clarity
+        # This is % of basic signals agreeing, NOT trend strength (use ADX for that)
+        'confidence': round(confidence, 2),  # Keep for backwards compat
+        'consensus': round(confidence, 2),   # New clearer name
         'bullish_signals': bullish_signals,
         'bearish_signals': bearish_signals,
-        'total_signals': total_signals
+        'total_signals': total_signals,
+        'note': 'Consensus = % of RSI/MACD/MA signals agreeing. For trend strength, check ADX indicator.'
     }
 
 
