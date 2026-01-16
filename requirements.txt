@@ -48,9 +48,12 @@ apscheduler
 lxml[html_clean]
 rapidocr-onnxruntime==1.4.4
 aioredis==2.0.1
-# Gemini 3+ thought_signature requires latest protobuf definitions
-# The google-ai-generativelanguage package contains the protobuf definitions for Part
-# Consider migrating to google-genai (new SDK) for full support
+# Gemini SDK - Using NEW google-genai SDK (recommended for Gemini 2.5+/3+)
+# The new SDK handles thought_signature automatically
+# Old SDK (google-generativeai) was EOL'd November 30, 2025
+# Migration guide: https://ai.google.dev/gemini-api/docs/migrate-to-genai-sdk
+google-genai>=1.0.0
+# Keep old SDK for backward compatibility (can be removed after full migration)
 google-generativeai>=0.8.6
 google-ai-generativelanguage>=0.6.15
 tavily-python>=0.3.0
