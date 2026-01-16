@@ -118,10 +118,11 @@ class GetGrowthMetricsTool(BaseTool):
             ],
             returns={
                 "symbol": "string",
-                "revenue_growth": "object - YoY and Average",
-                "earnings_growth": "object - YoY and Average",
-                "eps_growth": "object",
-                "growth_analysis": "object - Trends and Consistency",
+                "period_type": "string - annual or quarterly",
+                "period_count": "number - Number of periods analyzed",
+                "latest_period_date": "string - Date of most recent data",
+                "growth_summary": "object - Contains revenue_growth_latest, revenue_growth_avg, revenue_trend, net_income_growth_latest, eps_growth_latest, fcf_growth_latest",
+                "historical_periods": "array - Detailed growth metrics for each period",
                 "timestamp": "string"
             },
             typical_execution_time_ms=1600,

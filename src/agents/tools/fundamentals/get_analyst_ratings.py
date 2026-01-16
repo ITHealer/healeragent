@@ -5,15 +5,16 @@ GetAnalystRatingsTool - Analyst Ratings, Price Targets & Recommendations
 
 Fetches Wall Street analyst data including:
 - Price Target Consensus (high, low, median, average)
-- Analyst Grades Summary (Strong Buy, Buy, Hold, Sell, Strong Sell counts)
+- Analyst Grades Consensus (Strong Buy, Buy, Hold, Sell, Strong Sell counts)
 - Price Target Summary with historical trends
 
 FMP Stable APIs:
 - /stable/price-target-consensus - Consensus price targets
-- /stable/grades-summary - Analyst grades/ratings
+- /stable/grades-consensus - Analyst grades/ratings (NOT grades-summary!)
 - /stable/price-target-summary - Price target history
 """
 
+import asyncio
 import logging
 import os
 from typing import Dict, Any, Optional, List
@@ -115,12 +116,11 @@ class GetAnalystRatingsTool(BaseTool):
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # Fetch data from multiple endpoints in parallel
-                price_target_task = self._fetch_price_target_consensus(client, symbol_upper)
-                grades_task = self._fetch_grades_summary(client, symbol_upper)
-
-                # Wait for both
-                price_target_data, grades_data = await price_target_task, await grades_task
+                # Fetch data from multiple endpoints in TRUE parallel using asyncio.gather
+                price_target_data, grades_data = await asyncio.gather(
+                    self._fetch_price_target_consensus(client, symbol_upper),
+                    self._fetch_grades_summary(client, symbol_upper),
+                )
 
             # Combine results
             result = self._combine_analyst_data(
@@ -185,9 +185,10 @@ class GetAnalystRatingsTool(BaseTool):
         client: httpx.AsyncClient,
         symbol: str
     ) -> Optional[Dict[str, Any]]:
-        """Fetch analyst grades summary from FMP stable API"""
+        """Fetch analyst grades consensus from FMP stable API"""
         try:
-            url = f"{self.FMP_STABLE_URL}/grades-summary"
+            # NOTE: FMP uses /grades-consensus NOT /grades-summary
+            url = f"{self.FMP_STABLE_URL}/grades-consensus"
             params = {"symbol": symbol, "apikey": self.api_key}
 
             response = await client.get(url, params=params)

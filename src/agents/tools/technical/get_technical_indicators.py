@@ -1430,7 +1430,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 try:
                     treasury_url = f"{self.FMP_STABLE_URL}/treasury-rates"
                     response = await client.get(treasury_url, params={"apikey": self.api_key})
-                    if response.status_code == 200:
+                    if response.status_code == 200 and response.text.strip():
                         treasury_data = response.json()
                         if treasury_data and isinstance(treasury_data, list):
                             latest = treasury_data[0]
@@ -1462,7 +1462,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     econ_url = f"{self.FMP_STABLE_URL}/economic-indicators"
                     # First try realGDPGrowth which should return growth rate directly
                     response = await client.get(econ_url, params={"name": "realGDPGrowth", "apikey": self.api_key})
-                    if response.status_code == 200:
+                    if response.status_code == 200 and response.text.strip():
                         gdp_data = response.json()
                         if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
                             latest = gdp_data[0]
@@ -1475,7 +1475,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         else:
                             # Fallback: fetch GDP and calculate YoY growth
                             response2 = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
-                            if response2.status_code == 200:
+                            if response2.status_code == 200 and response2.text.strip():
                                 gdp_raw = response2.json()
                                 if gdp_raw and isinstance(gdp_raw, list) and len(gdp_raw) >= 5:
                                     # Calculate YoY growth (compare to ~4 quarters ago)
@@ -1500,7 +1500,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 # Try inflationRate first (returns % directly), fallback to CPI YoY calculation
                 try:
                     response = await client.get(econ_url, params={"name": "inflationRate", "apikey": self.api_key})
-                    if response.status_code == 200:
+                    if response.status_code == 200 and response.text.strip():
                         inflation_data = response.json()
                         if inflation_data and isinstance(inflation_data, list) and len(inflation_data) > 0:
                             latest = inflation_data[0]
@@ -1513,7 +1513,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         else:
                             # Fallback: fetch CPI index and calculate YoY inflation
                             response2 = await client.get(econ_url, params={"name": "CPI", "apikey": self.api_key})
-                            if response2.status_code == 200:
+                            if response2.status_code == 200 and response2.text.strip():
                                 cpi_raw = response2.json()
                                 if cpi_raw and isinstance(cpi_raw, list) and len(cpi_raw) >= 13:
                                     # Calculate YoY inflation (compare to 12 months ago)
@@ -1537,7 +1537,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 # 4. Unemployment Rate (FMP stable API)
                 try:
                     response = await client.get(econ_url, params={"name": "unemploymentRate", "apikey": self.api_key})
-                    if response.status_code == 200:
+                    if response.status_code == 200 and response.text.strip():
                         unemp_data = response.json()
                         if unemp_data and isinstance(unemp_data, list) and len(unemp_data) > 0:
                             latest = unemp_data[0]
