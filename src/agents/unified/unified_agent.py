@@ -847,6 +847,34 @@ class UnifiedAgent(LoggerMixin):
             turns.append(turn)
             total_tool_calls += len(tool_calls)
 
+            # ============================================================
+            # DETAILED LOGGING: Show tool results being sent to LLM
+            # ============================================================
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+            self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM (Turn {turn_num})")
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+            for i, (tc, result) in enumerate(zip(tool_calls, tool_results)):
+                tool_name = tc.name
+                status = result.get("status", "unknown")
+                formatted_context = result.get("formatted_context")
+                data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
+
+                self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | status={status}")
+
+                if formatted_context:
+                    self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
+                    self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:400]}...")
+                else:
+                    self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING")
+                    self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")
+
+                if tool_name == "getTechnicalIndicators" and result.get("data"):
+                    data = result["data"]
+                    outlook = data.get("outlook", {})
+                    rec = data.get("trading_recommendation", {})
+                    self.logger.info(f"[{flow_id}]     📊 outlook={outlook.get('outlook')} | action={rec.get('overall_action')}")
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
             # Update messages (preserves thought_signature for Gemini 3+)
             messages.append({
                 "role": "assistant",
@@ -1029,6 +1057,36 @@ IMPORTANT:
             )
 
             total_tool_calls += len(tool_calls)
+
+            # ============================================================
+            # DETAILED LOGGING: Show tool results being sent to LLM
+            # ============================================================
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+            self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM (Turn {turn_num})")
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+            for i, (tc, result) in enumerate(zip(tool_calls, tool_results)):
+                tool_name = tc.name
+                status = result.get("status", "unknown")
+                formatted_context = result.get("formatted_context")
+                data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
+
+                self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | status={status}")
+
+                if formatted_context:
+                    self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
+                    # Show first 400 chars to see key indicators
+                    self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:400]}...")
+                else:
+                    self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING")
+                    self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")
+
+                # For technical indicators, show key data
+                if tool_name == "getTechnicalIndicators" and result.get("data"):
+                    data = result["data"]
+                    outlook = data.get("outlook", {})
+                    rec = data.get("trading_recommendation", {})
+                    self.logger.info(f"[{flow_id}]     📊 outlook={outlook.get('outlook')} | action={rec.get('overall_action')}")
+            self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
             # Emit results
             yield {
