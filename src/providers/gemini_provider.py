@@ -1,9 +1,10 @@
 import json
+import base64
 import google.generativeai as genai
 from google.generativeai import protos
 from google.protobuf import struct_pb2
 from google.protobuf import json_format
-from typing import Dict, Any, List, Optional, AsyncGenerator
+from typing import Dict, Any, List, Optional, AsyncGenerator, Union
 
 from src.providers.base_provider import ModelProvider
 from src.utils.logger.custom_logging import LoggerMixin
@@ -292,13 +293,13 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         except json.JSONDecodeError:
                             args = {}
 
-                        # Build function call part using protobuf types
-                        # This is required because the SDK's to_part() doesn't
-                        # recognize raw dicts with 'function_call' key
+                        # Build function call part
+                        # Priority: Use original proto bytes (preserves thought_signature)
                         fc_part = self._build_function_call_part(
                             name=func.get("name", ""),
                             args=args,
-                            thought_signature=tc.get("thought_signature")
+                            thought_signature=tc.get("thought_signature"),
+                            part_proto_bytes=tc.get("_part_proto_bytes")  # Original Part proto
                         )
                         parts.append(fc_part)
 
@@ -336,7 +337,8 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         self,
         name: str,
         args: Dict[str, Any],
-        thought_signature: Optional[str] = None
+        thought_signature: Optional[str] = None,
+        part_proto_bytes: Optional[str] = None
     ) -> protos.Part:
         """
         Build a Gemini Part with FunctionCall using protobuf types.
@@ -348,68 +350,79 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             name: Function name
             args: Function arguments as dict
             thought_signature: Encrypted thought signature from previous response
+            part_proto_bytes: Base64-encoded original Part proto bytes (preserves thought_signature)
 
         Returns:
             protos.Part with function_call set
         """
-        # Check if SDK supports thought_signature
-        if thought_signature and not _THOUGHT_SIGNATURE_SUPPORTED:
-            self.logger.warning(
-                f"[GEMINI] SDK does not support thought_signature field. "
-                f"Please upgrade: pip install -U google-ai-generativelanguage google-generativeai"
-            )
-
-        # Method 1: Use json_format.Parse to build Part from JSON
-        # This allows setting fields even if not exposed via Python wrapper
-        if thought_signature:
+        # Method 1 (BEST): Deserialize original Part proto bytes
+        # This preserves thought_signature even if SDK doesn't expose it
+        if part_proto_bytes:
             try:
-                # Build JSON structure with camelCase keys (API format)
-                part_dict = {
-                    "functionCall": {
-                        "name": name,
-                        "args": args
-                    },
-                    "thoughtSignature": thought_signature
-                }
+                proto_bytes = base64.b64decode(part_proto_bytes)
                 part = protos.Part()
-                json_format.ParseDict(part_dict, part, ignore_unknown_fields=False)
-                self.logger.debug(f"[GEMINI] Built Part with thought_signature via json_format for {name}")
+                # Try to parse from bytes (preserves all fields including thought_signature)
+                if hasattr(part, 'ParseFromString'):
+                    part.ParseFromString(proto_bytes)
+                elif hasattr(part, '_pb'):
+                    part._pb.ParseFromString(proto_bytes)
+                self.logger.info(f"[GEMINI] Restored Part from proto bytes for {name}")
                 return part
             except Exception as e:
-                self.logger.debug(f"[GEMINI] json_format.ParseDict failed: {e}")
+                self.logger.warning(f"[GEMINI] Could not restore Part from proto bytes: {e}")
                 # Fall through to other methods
 
-        # Method 2: Build Part using protobuf types directly
-        # Convert args dict to Struct protobuf
+        # Method 2: Try json_format.ParseDict if SDK supports thought_signature
+        if thought_signature and thought_signature not in ["__FROM_PROTO_BYTES__", "skip_thought_signature_validator"]:
+            if _THOUGHT_SIGNATURE_SUPPORTED:
+                try:
+                    part_dict = {
+                        "functionCall": {
+                            "name": name,
+                            "args": args
+                        },
+                        "thoughtSignature": thought_signature
+                    }
+                    part = protos.Part()
+                    json_format.ParseDict(part_dict, part, ignore_unknown_fields=False)
+                    self.logger.debug(f"[GEMINI] Built Part with thought_signature via json_format for {name}")
+                    return part
+                except Exception as e:
+                    self.logger.debug(f"[GEMINI] json_format.ParseDict failed: {e}")
+
+        # Method 3: Build Part using protobuf types directly
         args_struct = struct_pb2.Struct()
         args_struct.update(args)
 
-        # Create FunctionCall protobuf
         fc = protos.FunctionCall(
             name=name,
             args=args_struct
         )
 
-        # Create Part with function_call
         part = protos.Part(function_call=fc)
 
-        # Try to add thought_signature if present
-        if thought_signature:
+        # Try to set thought_signature if present and valid
+        if thought_signature and thought_signature not in ["__FROM_PROTO_BYTES__"]:
+            sig_to_use = thought_signature
+            if thought_signature == "skip_thought_signature_validator":
+                # Use the skip validator value
+                sig_to_use = "skip_thought_signature_validator"
+
             sig_set = False
 
             # Try direct attribute
             try:
-                part.thought_signature = thought_signature
+                part.thought_signature = sig_to_use
                 sig_set = True
                 self.logger.debug(f"[GEMINI] Set thought_signature directly for {name}")
             except (AttributeError, TypeError):
                 pass
 
-            # Try via _pb (internal protobuf)
+            # Try via _pb
             if not sig_set:
                 try:
                     if hasattr(part, '_pb') and hasattr(part._pb, 'thought_signature'):
-                        part._pb.thought_signature = thought_signature
+                        part._pb.thought_signature = sig_to_use
                         sig_set = True
                         self.logger.debug(f"[GEMINI] Set thought_signature via _pb for {name}")
                 except Exception:
@@ -418,8 +431,7 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             if not sig_set:
                 self.logger.warning(
                     f"[GEMINI] Could not set thought_signature for {name}. "
-                    f"Gemini 3+ function calling may fail with 400 error. "
-                    f"Upgrade: pip install -U google-ai-generativelanguage>=0.8.5"
+                    f"Gemini 3+ function calling may fail with 400 error."
                 )
 
         return part
@@ -533,9 +545,21 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                                 }
                             }
 
-                            # Extract thought_signature (CRITICAL for Gemini 3+)
-                            # This MUST be preserved and sent back in subsequent turns
-                            # Try multiple attribute patterns (SDK versions may differ)
+                            # CRITICAL: Store the original Part proto as base64 bytes
+                            # This preserves thought_signature even if SDK doesn't expose it
+                            # When sending back, we deserialize and reuse the original Part
+                            try:
+                                # Serialize the Part proto to bytes (preserves all fields including unknown)
+                                part_bytes = part.SerializeToString() if hasattr(part, 'SerializeToString') else None
+                                if not part_bytes and hasattr(part, '_pb'):
+                                    part_bytes = part._pb.SerializeToString()
+                                if part_bytes:
+                                    tool_call["_part_proto_bytes"] = base64.b64encode(part_bytes).decode('ascii')
+                                    self.logger.debug(f"[GEMINI] Stored Part proto bytes for {fc.name} (size={len(part_bytes)})")
+                            except Exception as e:
+                                self.logger.debug(f"[GEMINI] Could not serialize Part proto: {e}")
+
+                            # Also try to extract thought_signature for logging/debugging
                             thought_sig = None
 
                             # Pattern 1: part.thought_signature (snake_case)
@@ -543,22 +567,7 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                                 thought_sig = part.thought_signature
                                 self.logger.debug(f"[GEMINI] Found thought_signature on part (snake_case)")
 
-                            # Pattern 2: part.thoughtSignature (camelCase)
-                            if not thought_sig and hasattr(part, 'thoughtSignature') and part.thoughtSignature:
-                                thought_sig = part.thoughtSignature
-                                self.logger.debug(f"[GEMINI] Found thought_signature on part (camelCase)")
-
-                            # Pattern 3: function_call.thought_signature
-                            if not thought_sig and hasattr(fc, 'thought_signature') and fc.thought_signature:
-                                thought_sig = fc.thought_signature
-                                self.logger.debug(f"[GEMINI] Found thought_signature on function_call (snake_case)")
-
-                            # Pattern 4: function_call.thoughtSignature
-                            if not thought_sig and hasattr(fc, 'thoughtSignature') and fc.thoughtSignature:
-                                thought_sig = fc.thoughtSignature
-                                self.logger.debug(f"[GEMINI] Found thought_signature on function_call (camelCase)")
-
-                            # Pattern 5: Check _pb attribute for protobuf access
+                            # Pattern 2: Check _pb attribute for protobuf access
                             if not thought_sig:
                                 try:
                                     if hasattr(part, '_pb') and hasattr(part._pb, 'thought_signature'):
@@ -567,22 +576,17 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                                 except Exception:
                                     pass
 
-                            # Log all available attributes for debugging
-                            if not thought_sig:
-                                part_attrs = [a for a in dir(part) if not a.startswith('_')]
-                                fc_attrs = [a for a in dir(fc) if not a.startswith('_')]
-                                self.logger.debug(
-                                    f"[GEMINI] No thought_signature found for {fc.name}. "
-                                    f"Part attrs: {part_attrs[:10]}... FC attrs: {fc_attrs[:10]}..."
-                                )
+                            # For Gemini 3+ models without thought_signature, use skip validator
+                            is_gemini3_model = any(x in self.model_name.lower() for x in [
+                                "gemini-3", "flash-preview", "pro-preview", "gemini-2.5"
+                            ])
 
-                                # For Gemini 3+ models: use skip_thought_signature_validator as fallback
-                                # This is a documented workaround but may affect model performance
-                                # See: https://ai.google.dev/gemini-api/docs/thought-signatures
-                                is_gemini3_model = any(x in self.model_name.lower() for x in [
-                                    "gemini-3", "flash-preview", "pro-preview"
-                                ])
-                                if is_gemini3_model and idx == 0:  # Only for first function call
+                            if not thought_sig and is_gemini3_model and idx == 0:
+                                # If we have proto bytes, the thought_signature is preserved there
+                                if "_part_proto_bytes" in tool_call:
+                                    thought_sig = "__FROM_PROTO_BYTES__"  # Marker to use bytes
+                                    self.logger.info(f"[GEMINI] Function call {fc.name} - will use preserved proto bytes")
+                                else:
                                     thought_sig = "skip_thought_signature_validator"
                                     self.logger.warning(
                                         f"[GEMINI] Using skip_thought_signature_validator for {fc.name} "
@@ -591,10 +595,6 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
 
                             if thought_sig:
                                 tool_call["thought_signature"] = thought_sig
-                                if thought_sig != "skip_thought_signature_validator":
-                                    self.logger.info(f"[GEMINI] Function call {fc.name} has thought_signature (len={len(str(thought_sig))})")
-                                else:
-                                    self.logger.info(f"[GEMINI] Function call {fc.name} using skip_thought_signature_validator")
 
                             tool_calls.append(tool_call)
                             finish_reason = "tool_calls"
