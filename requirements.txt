@@ -48,9 +48,11 @@ apscheduler
 lxml[html_clean]
 rapidocr-onnxruntime==1.4.4
 aioredis==2.0.1
-# Gemini 3+ thought_signature requires SDK >= 0.8.6
+# Gemini 3+ thought_signature requires latest protobuf definitions
+# The google-ai-generativelanguage package contains the protobuf definitions for Part
 # Consider migrating to google-genai (new SDK) for full support
 google-generativeai>=0.8.6
+google-ai-generativelanguage>=0.6.15
 tavily-python>=0.3.0
 lingua-language-detector==2.1.0
 pika==1.3.2

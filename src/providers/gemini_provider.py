@@ -2,10 +2,27 @@ import json
 import google.generativeai as genai
 from google.generativeai import protos
 from google.protobuf import struct_pb2
+from google.protobuf import json_format
 from typing import Dict, Any, List, Optional, AsyncGenerator
 
 from src.providers.base_provider import ModelProvider
 from src.utils.logger.custom_logging import LoggerMixin
+
+
+# Check if protos.Part supports thought_signature field
+def _check_thought_signature_support():
+    """Check if the installed SDK supports thought_signature field on Part."""
+    try:
+        part = protos.Part()
+        descriptor = part.DESCRIPTOR
+        field_names = [f.name for f in descriptor.fields]
+        return 'thought_signature' in field_names
+    except Exception:
+        return False
+
+
+# Cache the check result
+_THOUGHT_SIGNATURE_SUPPORTED = _check_thought_signature_support()
 
 
 class GeminiModelProvider(ModelProvider, LoggerMixin):
@@ -335,6 +352,34 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         Returns:
             protos.Part with function_call set
         """
+        # Check if SDK supports thought_signature
+        if thought_signature and not _THOUGHT_SIGNATURE_SUPPORTED:
+            self.logger.warning(
+                f"[GEMINI] SDK does not support thought_signature field. "
+                f"Please upgrade: pip install -U google-ai-generativelanguage google-generativeai"
+            )
+
+        # Method 1: Use json_format.Parse to build Part from JSON
+        # This allows setting fields even if not exposed via Python wrapper
+        if thought_signature:
+            try:
+                # Build JSON structure with camelCase keys (API format)
+                part_dict = {
+                    "functionCall": {
+                        "name": name,
+                        "args": args
+                    },
+                    "thoughtSignature": thought_signature
+                }
+                part = protos.Part()
+                json_format.ParseDict(part_dict, part, ignore_unknown_fields=False)
+                self.logger.debug(f"[GEMINI] Built Part with thought_signature via json_format for {name}")
+                return part
+            except Exception as e:
+                self.logger.debug(f"[GEMINI] json_format.ParseDict failed: {e}")
+                # Fall through to other methods
+
+        # Method 2: Build Part using protobuf types directly
         # Convert args dict to Struct protobuf
         args_struct = struct_pb2.Struct()
         args_struct.update(args)
@@ -348,50 +393,33 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         # Create Part with function_call
         part = protos.Part(function_call=fc)
 
-        # Add thought_signature if present (CRITICAL for Gemini 3+)
-        # The SDK >= 0.8.6 should have this field, older versions may not
+        # Try to add thought_signature if present
         if thought_signature:
             sig_set = False
-            # Method 1: Direct attribute (preferred)
+
+            # Try direct attribute
             try:
                 part.thought_signature = thought_signature
                 sig_set = True
-                self.logger.debug(f"[GEMINI] Set thought_signature on Part for {name}")
-            except AttributeError:
+                self.logger.debug(f"[GEMINI] Set thought_signature directly for {name}")
+            except (AttributeError, TypeError):
                 pass
 
-            # Method 2: Try setting via protobuf _pb if available
+            # Try via _pb (internal protobuf)
             if not sig_set:
                 try:
-                    if hasattr(part, '_pb'):
+                    if hasattr(part, '_pb') and hasattr(part._pb, 'thought_signature'):
                         part._pb.thought_signature = thought_signature
                         sig_set = True
                         self.logger.debug(f"[GEMINI] Set thought_signature via _pb for {name}")
                 except Exception:
                     pass
 
-            # Method 3: Check if Part has DESCRIPTOR for field info
-            if not sig_set:
-                try:
-                    # Get the protobuf descriptor to check available fields
-                    descriptor = part.DESCRIPTOR if hasattr(part, 'DESCRIPTOR') else None
-                    if descriptor:
-                        field_names = [f.name for f in descriptor.fields]
-                        self.logger.debug(f"[GEMINI] Part fields: {field_names}")
-                        if 'thought_signature' not in field_names:
-                            self.logger.warning(
-                                f"[GEMINI] SDK version does not support thought_signature field. "
-                                f"Upgrade to google-generativeai>=0.8.6 or migrate to google-genai SDK. "
-                                f"Available fields: {field_names}"
-                            )
-                except Exception as e:
-                    self.logger.warning(f"[GEMINI] Could not check Part fields: {e}")
-
             if not sig_set:
                 self.logger.warning(
                     f"[GEMINI] Could not set thought_signature for {name}. "
-                    f"Gemini 3+ function calling may fail. "
-                    f"Please upgrade SDK: pip install -U google-generativeai>=0.8.6"
+                    f"Gemini 3+ function calling may fail with 400 error. "
+                    f"Upgrade: pip install -U google-ai-generativelanguage>=0.8.5"
                 )
 
         return part
