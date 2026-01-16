@@ -248,6 +248,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
             return create_success_output(
                 tool_name="getTechnicalIndicators",
                 data=result,
+                # CRITICAL: Pass llm_summary as formatted_context for synthesis
+                # This ensures ALL indicators are included in the LLM prompt
+                formatted_context=result.get("llm_summary", ""),
                 metadata={
                     "source": "FMP + pandas_ta",
                     "execution_time_ms": int(execution_time),

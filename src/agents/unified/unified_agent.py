@@ -538,9 +538,19 @@ class UnifiedAgent(LoggerMixin):
             tool_name = result.get("tool_name", "unknown")
             status = result.get("status", "unknown")
             symbol = result.get("symbol", "N/A")
-            formatted = result.get("formatted_context", "")[:500]  # First 500 chars
+            formatted_context = result.get("formatted_context")
+            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
+
+            # Log tool info
             self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-            self.logger.info(f"[{flow_id}]     Data preview: {formatted}...")
+
+            # Log formatted_context status with length
+            if formatted_context:
+                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
+                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
+            else:
+                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
+                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
         self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
         # Build synthesis prompt
@@ -696,9 +706,19 @@ class UnifiedAgent(LoggerMixin):
             tool_name = result.get("tool_name", "unknown")
             status = result.get("status", "unknown")
             symbol = result.get("symbol", "N/A")
-            formatted = result.get("formatted_context", "")[:500]  # First 500 chars
+            formatted_context = result.get("formatted_context")
+            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
+
+            # Log tool info
             self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-            self.logger.info(f"[{flow_id}]     Data preview: {formatted}...")
+
+            # Log formatted_context status with length
+            if formatted_context:
+                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
+                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
+            else:
+                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
+                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
         self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
         # Stream synthesis
