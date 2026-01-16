@@ -166,15 +166,19 @@ class GetRelativeStrengthTool(BaseTool):
                 )
             
             formatted_data = self._format_rs_data(
-                rs_results, 
-                symbol_upper, 
+                rs_results,
+                symbol_upper,
                 benchmark_upper,
                 timeframe
             )
-            
+
+            # Generate LLM-friendly summary
+            llm_summary = self._generate_llm_summary(formatted_data)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=llm_summary,
                 metadata={
                     "source": "RelativeStrengthHandler",
                     "symbol_queried": symbol_upper,
@@ -220,7 +224,7 @@ class GetRelativeStrengthTool(BaseTool):
         try:
             one_m = relative_perf.get("1M", {}).get("relative_strength", 0)
             three_m = relative_perf.get("3M", {}).get("relative_strength", 0)
-            
+
             if one_m > three_m + 2:
                 return "improving"
             elif one_m < three_m - 2:
@@ -228,6 +232,42 @@ class GetRelativeStrengthTool(BaseTool):
             return "stable"
         except:
             return "unknown"
+
+    def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
+        """Generate LLM-friendly summary for relative strength data."""
+        symbol = data.get("symbol", "N/A")
+        benchmark = data.get("benchmark", "SPY")
+        timeframe = data.get("timeframe", "3M")
+        is_outperforming = data.get("is_outperforming", False)
+        trend = data.get("trend", "unknown")
+        percentile = data.get("percentile_rank", 50)
+        strength_score = data.get("strength_score", 0)
+        summary = data.get("summary", "")
+        relative_perf = data.get("relative_performance", {})
+
+        lines = [
+            f"=== RELATIVE STRENGTH: {symbol} vs {benchmark} ===",
+            f"Timeframe: {timeframe}",
+            "",
+            f"OUTPERFORMING: {'YES ✅' if is_outperforming else 'NO ❌'}",
+            f"Trend: {trend.upper()}",
+            f"Percentile Rank: {percentile}",
+            f"Strength Score: {strength_score:+.2f}%",
+            "",
+            "PERFORMANCE BY PERIOD:",
+        ]
+
+        # Add relative performance by period
+        for period, perf_data in relative_perf.items():
+            if isinstance(perf_data, dict):
+                rs = perf_data.get("relative_strength", 0)
+                sign = "+" if rs >= 0 else ""
+                lines.append(f"- {period}: {sign}{rs:.2f}%")
+
+        if summary:
+            lines.extend(["", f"Summary: {summary}"])
+
+        return "\n".join(lines)
 
 
 # ============================================================================

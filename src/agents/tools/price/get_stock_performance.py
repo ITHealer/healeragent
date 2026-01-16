@@ -133,10 +133,14 @@ class GetStockPerformanceTool(BaseTool):
             
             # Format to schema
             formatted_data = self._format_performance_data(raw_data, symbol_upper)
-            
+
+            # Generate LLM-friendly summary
+            llm_summary = self._generate_llm_summary(formatted_data)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=llm_summary,
                 metadata={
                     "source": "FMP /v3/stock-price-change",
                     "symbol_queried": symbol_upper,
@@ -282,6 +286,38 @@ class GetStockPerformanceTool(BaseTool):
             return "mixed"
         else:
             return "downtrend"
+
+    def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
+        """Generate LLM-friendly summary for performance data."""
+        symbol = data.get("symbol", "N/A")
+        timeframes = data.get("timeframes", {})
+        best_tf = data.get("best_timeframe", "N/A")
+        best_ret = data.get("best_return", 0)
+        worst_tf = data.get("worst_timeframe", "N/A")
+        worst_ret = data.get("worst_return", 0)
+        momentum = data.get("momentum_trend", "unknown")
+
+        lines = [
+            f"=== STOCK PERFORMANCE: {symbol} ===",
+            "",
+            "RETURNS BY TIMEFRAME:",
+        ]
+
+        # Add each timeframe
+        for key, tf_data in timeframes.items():
+            ret = tf_data.get("return_percent", 0)
+            label = tf_data.get("label", key)
+            sign = "+" if ret >= 0 else ""
+            lines.append(f"- {label}: {sign}{ret:.2f}%")
+
+        lines.extend([
+            "",
+            f"BEST PERIOD: {best_tf} ({'+' if best_ret >= 0 else ''}{best_ret:.2f}%)",
+            f"WORST PERIOD: {worst_tf} ({'+' if worst_ret >= 0 else ''}{worst_ret:.2f}%)",
+            f"MOMENTUM: {momentum.upper().replace('_', ' ')}",
+        ])
+
+        return "\n".join(lines)
 
 
 # ============================================================================
