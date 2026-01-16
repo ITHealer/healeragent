@@ -147,9 +147,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 ToolParameter(
                     name="timeframe",
                     type="string",
-                    description="Analysis timeframe: 1M (30 days), 3M (90 days), 6M (180 days), 1Y (252 days)",
+                    description="Analysis timeframe: 1M (30 days), 3M (90 days), 6M (180 days), 1Y (252 days). Default 1Y for SMA200 calculation.",
                     required=False,
-                    default="3M",
+                    default="1Y",
                     allowed_values=["1M", "3M", "6M", "1Y"]
                 ),
                 ToolParameter(
@@ -180,7 +180,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
         self,
         symbol: str,
         indicators: Optional[List[str]] = None,
-        timeframe: str = "3M",
+        timeframe: str = "1Y",
         **kwargs
     ) -> Dict[str, Any]:
         """Execute comprehensive technical indicators calculation."""
@@ -619,31 +619,58 @@ class GetTechnicalIndicatorsTool(BaseTool):
         if column not in df.columns or len(df) < lookback:
             return {"trend": "unknown", "change": None, "reason": "insufficient_data"}
 
-        # Use forward fill to handle sparse NaN values, then take recent data
-        filled_series = df[column].ffill()
-        recent = filled_series.tail(lookback).dropna()
+        # Strategy: Take 2x lookback, drop NaN, then take last lookback points
+        # This avoids NaN gaps at the end of the series while getting enough points
+        extended_lookback = lookback * 2
+        raw_data = df[column].tail(extended_lookback).dropna()
 
-        if len(recent) < 2:
+        # If not enough points after dropna, try ffill as fallback
+        if len(raw_data) < 2:
+            filled_series = df[column].ffill().bfill()  # ffill then bfill for edge cases
+            raw_data = filled_series.tail(lookback).dropna()
+
+        if len(raw_data) < 2:
             return {"trend": "unknown", "change": None, "reason": "insufficient_valid_points"}
 
-        start_val = recent.iloc[0]
-        end_val = recent.iloc[-1]
+        # Take the last 'lookback' valid points
+        recent = raw_data.tail(lookback) if len(raw_data) >= lookback else raw_data
 
-        # Handle edge case where start_val is zero or very small
-        # For indicators like RSI (0-100), a value of 0 is extremely rare but valid
-        if abs(start_val) < 0.001:
-            # Use absolute change instead of percentage for near-zero values
+        start_val = float(recent.iloc[0])
+        end_val = float(recent.iloc[-1])
+
+        # For RSI (0-100) or other bounded indicators, use absolute thresholds
+        # Check if this looks like an RSI (values between 0-100)
+        is_bounded = 0 <= start_val <= 100 and 0 <= end_val <= 100
+
+        if is_bounded:
+            # For RSI: use absolute change thresholds (more intuitive)
             abs_change = end_val - start_val
-            if abs_change > 1:
+            if abs_change > 5:  # RSI moved up by more than 5 points
                 trend = "rising"
-            elif abs_change < -1:
+            elif abs_change < -5:  # RSI moved down by more than 5 points
                 trend = "falling"
             else:
                 trend = "flat"
             return {
                 "trend": trend,
                 "change_abs": round(abs_change, 2),
-                "lookback_periods": lookback
+                "start_value": round(start_val, 2),
+                "end_value": round(end_val, 2),
+                "lookback_periods": len(recent)
+            }
+
+        # For unbounded indicators (MACD histogram, etc), use percentage change
+        if abs(start_val) < 0.001:
+            # Near-zero: use absolute change
+            abs_change = end_val - start_val
+            if abs(abs_change) > 0.01:
+                trend = "rising" if abs_change > 0 else "falling"
+            else:
+                trend = "flat"
+            return {
+                "trend": trend,
+                "change_abs": round(abs_change, 4),
+                "lookback_periods": len(recent)
             }
 
         change_pct = (end_val - start_val) / abs(start_val) * 100
@@ -659,7 +686,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
         return {
             "trend": trend,
             "change_pct": round(change_pct, 2),
-            "lookback_periods": lookback
+            "lookback_periods": len(recent)
         }
 
     def _calculate_price_context(self, df: pd.DataFrame, current_price: float) -> Dict[str, Any]:
@@ -1007,86 +1034,129 @@ class GetTechnicalIndicatorsTool(BaseTool):
     ) -> Dict[str, Any]:
         """Generate actionable trading recommendations."""
 
-        # Count bullish/bearish signals
-        bullish_count = 0
-        bearish_count = 0
-        total_indicators = 0
+        # =======================================================================
+        # EXPLICIT WEIGHTS MAPPING for transparency
+        # Each indicator has a base weight, modified by signal strength
+        # =======================================================================
+        indicator_weights = {
+            "RSI": 1.0,           # Standard weight
+            "MACD": 1.0,          # Standard weight
+            "MA_TREND": 1.0,      # Standard weight
+            "STOCH": 1.0,         # Standard weight
+            "ADX": 1.0,           # Standard weight
+            "VWAP": 0.5,          # Half weight (less reliable without intraday data)
+            "OBV": 1.0,           # Base weight (1.5x if divergence)
+            "MA_CROSSOVER": 1.0,  # Base weight (1.5x if Golden/Death cross)
+        }
+
+        # Track weighted scores
+        bullish_count = 0.0
+        bearish_count = 0.0
+        total_weighted = 0.0
+
+        # Track actual weights used (for transparency)
+        weights_used = {}
 
         # RSI signal
+        rsi_weight = indicator_weights["RSI"]
+        weights_used["RSI"] = rsi_weight
         if rsi_analysis.get('signal') == 'BUY':
-            bullish_count += 1
+            bullish_count += rsi_weight
         elif rsi_analysis.get('signal') == 'SELL':
-            bearish_count += 1
-        total_indicators += 1
+            bearish_count += rsi_weight
+        total_weighted += rsi_weight
 
         # MACD signal
+        macd_weight = indicator_weights["MACD"]
+        weights_used["MACD"] = macd_weight
         if macd_analysis.get('signal') == 'BULLISH':
-            bullish_count += 1
+            bullish_count += macd_weight
         elif macd_analysis.get('signal') == 'BEARISH':
-            bearish_count += 1
-        total_indicators += 1
+            bearish_count += macd_weight
+        total_weighted += macd_weight
 
-        # Trend signal
+        # Trend signal (MA Trend)
+        trend_weight = indicator_weights["MA_TREND"]
+        weights_used["MA_TREND"] = trend_weight
         if trend_analysis.get('signal') == 'BULLISH':
-            bullish_count += 1
+            bullish_count += trend_weight
         elif trend_analysis.get('signal') == 'BEARISH':
-            bearish_count += 1
-        total_indicators += 1
+            bearish_count += trend_weight
+        total_weighted += trend_weight
 
         # Stochastic signal
+        stoch_weight = indicator_weights["STOCH"]
+        weights_used["STOCH"] = stoch_weight
         if stoch_analysis.get('signal') == 'BUY':
-            bullish_count += 1
+            bullish_count += stoch_weight
         elif stoch_analysis.get('signal') == 'SELL':
-            bearish_count += 1
-        total_indicators += 1
+            bearish_count += stoch_weight
+        total_weighted += stoch_weight
 
         # ADX with direction
+        adx_weight = indicator_weights["ADX"]
+        weights_used["ADX"] = adx_weight
         adx_signal = adx_analysis.get('signal', 'NEUTRAL')
         if adx_signal == 'BULLISH':
-            bullish_count += 1
+            bullish_count += adx_weight
         elif adx_signal == 'BEARISH':
-            bearish_count += 1
-        total_indicators += 1
+            bearish_count += adx_weight
+        total_weighted += adx_weight
 
-        # VWAP signal
+        # VWAP signal (reduced weight - less reliable with daily data)
+        vwap_weight = indicator_weights["VWAP"]
+        weights_used["VWAP"] = vwap_weight
         vwap_signal = vwap_analysis.get('signal', 'NEUTRAL')
         if 'BULLISH' in vwap_signal:
-            bullish_count += 0.5  # Half weight for VWAP
+            bullish_count += vwap_weight
         elif 'BEARISH' in vwap_signal:
-            bearish_count += 0.5
-        total_indicators += 0.5
+            bearish_count += vwap_weight
+        total_weighted += vwap_weight
 
-        # OBV signal (divergence is strong signal)
+        # OBV signal (divergence = stronger signal)
         obv_signal = obv_analysis.get('signal', 'NEUTRAL')
+        if 'DIVERGENCE' in obv_signal:
+            obv_weight = 1.5  # Divergence is strong signal
+        else:
+            obv_weight = indicator_weights["OBV"]
+        weights_used["OBV"] = obv_weight
         if obv_signal == 'BULLISH_DIVERGENCE':
-            bullish_count += 1.5  # Divergence is strong signal
+            bullish_count += obv_weight
         elif obv_signal == 'BEARISH_DIVERGENCE':
-            bearish_count += 1.5
+            bearish_count += obv_weight
         elif obv_signal == 'BULLISH':
-            bullish_count += 0.5
+            bullish_count += obv_weight
         elif obv_signal == 'BEARISH':
-            bearish_count += 0.5
-        total_indicators += 1
+            bearish_count += obv_weight
+        total_weighted += obv_weight
 
-        # MA Crossover signal (Golden/Death Cross is strong signal)
+        # MA Crossover signal (Golden/Death Cross = stronger signal)
         ma_signal = ma_crossovers.get('signal', 'NEUTRAL')
-        if ma_signal == 'BULLISH':  # Golden Cross detected
-            bullish_count += 1.5  # Strong signal
-        elif ma_signal == 'BEARISH':  # Death Cross detected
-            bearish_count += 1.5
-
-        # Also consider short-term SMA 20/50 crossover
         sma_20_50 = ma_crossovers.get('sma_20_50_cross', {})
-        if isinstance(sma_20_50, dict):
-            if sma_20_50.get('type') == 'bullish':
-                bullish_count += 0.5
-            elif sma_20_50.get('type') == 'bearish':
-                bearish_count += 0.5
-        total_indicators += 1
 
-        # Calculate bias
-        bullish_pct = bullish_count / total_indicators if total_indicators > 0 else 0
-        bearish_pct = bearish_count / total_indicators if total_indicators > 0 else 0
+        # Determine MA crossover weight
+        if ma_signal in ['BULLISH', 'BEARISH']:  # Golden or Death Cross
+            ma_cross_weight = 1.5  # Strong signal
+        elif isinstance(sma_20_50, dict) and sma_20_50.get('type') in ['bullish', 'bearish']:
+            ma_cross_weight = 1.0  # Normal crossover
+        else:
+            ma_cross_weight = indicator_weights["MA_CROSSOVER"]
+        weights_used["MA_CROSSOVER"] = ma_cross_weight
+
+        if ma_signal == 'BULLISH':  # Golden Cross detected
+            bullish_count += ma_cross_weight
+        elif ma_signal == 'BEARISH':  # Death Cross detected
+            bearish_count += ma_cross_weight
+        elif isinstance(sma_20_50, dict):
+            if sma_20_50.get('type') == 'bullish':
+                bullish_count += ma_cross_weight
+            elif sma_20_50.get('type') == 'bearish':
+                bearish_count += ma_cross_weight
+        total_weighted += ma_cross_weight
+
+        # Calculate bias using weighted totals
+        bullish_pct = bullish_count / total_weighted if total_weighted > 0 else 0
+        bearish_pct = bearish_count / total_weighted if total_weighted > 0 else 0
 
         # Determine overall action
         if bullish_pct >= 0.6:
@@ -1253,10 +1323,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "bearish_signals": num_bearish,
             "neutral_signals": num_neutral,
             "total_signals": total_indicator_count,
-            # Weighted score used for action decision (internal)
+            # Explicit weights mapping for full transparency
+            "indicator_weights": weights_used,
+            # Weighted score used for action decision
             "weighted_bullish_score": round(bullish_count, 2),
             "weighted_bearish_score": round(bearish_count, 2),
-            "weighted_total": round(total_indicators, 2),
+            "weighted_total": round(total_weighted, 2),
             # Signal agreement % based on weighted scores (used for BUY/SELL threshold)
             "signal_agreement_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
             "signal_breakdown": signal_breakdown,
@@ -1264,7 +1336,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
-            "note": "Signal counts = indicator count. Weighted scores factor in signal strength (divergence=1.5x, VWAP=0.5x). Action threshold: 60% weighted score."
+            "note": "Signal counts = indicator count. weighted_total = sum(indicator_weights). Action threshold: 60% of weighted_total."
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
@@ -1340,19 +1412,36 @@ class GetTechnicalIndicatorsTool(BaseTool):
         obv_div = indicators.get('obv', {}).get('divergence') or 'No divergence'
 
         ma_cross_sig = indicators.get('ma_crossovers', {}).get('signal', 'N/A')
-        ma_alignment = (indicators.get('ma_crossovers', {}).get('current_alignment') or 'N/A').upper()
+        ma_alignment_raw = indicators.get('ma_crossovers', {}).get('current_alignment')
+        ma_alignment = (ma_alignment_raw or 'N/A').upper()
 
-        # Clarify confidence metrics:
-        # - Outlook Consensus = outlook.confidence (% of basic signals agreeing on direction)
-        # - Signal Agreement = % of weighted indicators pointing same direction (for action decision)
-        # - Trend Strength = ADX-based (actual trend strength, not signal %)
-        outlook_consensus = outlook.get('confidence', 0)
-        signal_agree = rec.get('signal_agreement_pct', rec.get('confidence_pct', 0))
+        # Explain N/A alignment (usually due to insufficient data for SMA200)
+        if ma_alignment == 'N/A':
+            data_points = result.get('data_points', 0)
+            if data_points < 200:
+                ma_alignment = f"N/A (need 200+ days, got {data_points})"
+            else:
+                ma_alignment = "N/A (SMA200 not available)"
+
+        # Use weighted signal_agreement_pct for accuracy (not simple outlook.confidence which can show 100%)
+        # ADX strength shows actual trend strength (weak/moderate/strong/very_strong)
+        signal_agree = rec.get('signal_agreement_pct', 50)  # Weighted agreement from all 8 indicators
+        weighted_total = rec.get('weighted_total', 8)
+        weighted_bull = rec.get('weighted_bullish_score', 0)
+        weighted_bear = rec.get('weighted_bearish_score', 0)
+
+        # Show the dominant score
+        if weighted_bear > weighted_bull:
+            score_str = f"Bearish {weighted_bear:.1f}/{weighted_total:.1f}"
+        elif weighted_bull > weighted_bear:
+            score_str = f"Bullish {weighted_bull:.1f}/{weighted_total:.1f}"
+        else:
+            score_str = f"Mixed {max(weighted_bull, weighted_bear):.1f}/{weighted_total:.1f}"
 
         lines.extend([
             "",
-            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Consensus: {outlook_consensus:.0%}, ADX Trend: {adx_strength})",
-            f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')}) | Signal Agreement: {signal_agree:.0f}%",
+            f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Agreement: {signal_agree:.0f}%, Trend Strength: {adx_strength})",
+            f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')}) | Weighted: {score_str}",
             "",
             "KEY INDICATORS (with trends):",
             f"- RSI (14d): {rsi_val_str} - {rsi_cond} | Trend: {rsi_trend.upper()}",
