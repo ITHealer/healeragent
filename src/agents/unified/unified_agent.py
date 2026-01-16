@@ -136,6 +136,9 @@ class ToolCall:
     # Gemini 3+ requires thought_signature to be preserved and sent back
     # See: https://ai.google.dev/gemini-api/docs/thought-signatures
     thought_signature: Optional[str] = None
+    # Original Part proto bytes - preserves thought_signature even if SDK doesn't expose it
+    # This is CRITICAL for Gemini 3+ function calling to work
+    _part_proto_bytes: Optional[str] = None
 
 
 @dataclass
@@ -1794,8 +1797,8 @@ IMPORTANT:
         """
         Parse tool calls from LLM response.
 
-        For Gemini 3+ models, also extracts thought_signature which must be
-        preserved and sent back in subsequent turns.
+        For Gemini 3+ models, also extracts thought_signature and _part_proto_bytes
+        which must be preserved and sent back in subsequent turns.
         See: https://ai.google.dev/gemini-api/docs/thought-signatures
         """
         tool_calls = []
@@ -1818,12 +1821,18 @@ IMPORTANT:
                     # This MUST be preserved and sent back for function calling to work
                     thought_signature = call.get("thought_signature")
 
+                    # Extract _part_proto_bytes (original Part proto serialized)
+                    # This is CRITICAL for Gemini 3+ - preserves thought_signature
+                    # even when SDK doesn't expose the field
+                    part_proto_bytes = call.get("_part_proto_bytes")
+
                     if name:
                         tool_calls.append(ToolCall(
                             id=call_id,
                             name=name,
                             arguments=arguments,
                             thought_signature=thought_signature,
+                            _part_proto_bytes=part_proto_bytes,
                         ))
 
             except (json.JSONDecodeError, KeyError) as e:
@@ -1836,8 +1845,8 @@ IMPORTANT:
         """
         Build OpenAI-compatible tool_call dict from ToolCall object.
 
-        For Gemini 3+ models, includes thought_signature if present.
-        This signature MUST be preserved for function calling to work correctly.
+        For Gemini 3+ models, includes thought_signature and _part_proto_bytes if present.
+        These MUST be preserved for function calling to work correctly.
         See: https://ai.google.dev/gemini-api/docs/thought-signatures
         """
         tool_call_dict = {
@@ -1853,6 +1862,11 @@ IMPORTANT:
         # This is CRITICAL - missing signature causes 400 error
         if tc.thought_signature:
             tool_call_dict["thought_signature"] = tc.thought_signature
+
+        # Include _part_proto_bytes - preserves thought_signature even when SDK
+        # doesn't expose the field (critical for Gemini 3+ function calling)
+        if tc._part_proto_bytes:
+            tool_call_dict["_part_proto_bytes"] = tc._part_proto_bytes
 
         return tool_call_dict
 

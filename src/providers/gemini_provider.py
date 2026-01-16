@@ -114,8 +114,24 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             )
 
             async for chunk in stream:
-                if chunk.text:
-                    yield chunk.text
+                # Handle chunks that may contain FunctionCall instead of text
+                # chunk.text raises ValueError if no valid text Part exists
+                try:
+                    if hasattr(chunk, 'text') and chunk.text:
+                        yield chunk.text
+                except ValueError:
+                    # This happens when response contains FunctionCall instead of text
+                    # For Gemini 2.5+, finish_reason=10 means invalid FunctionCall
+                    # Log and continue - the caller should handle function calls separately
+                    if hasattr(chunk, 'candidates') and chunk.candidates:
+                        candidate = chunk.candidates[0]
+                        finish_reason = getattr(candidate, 'finish_reason', None)
+                        if finish_reason:
+                            self.logger.warning(
+                                f"[GEMINI] Stream chunk has no text (finish_reason={finish_reason}). "
+                                f"Response may contain FunctionCall instead of text."
+                            )
+                    continue
 
         except Exception as e:
             self.logger.error(f"Error streaming Gemini completion: {str(e)}")
