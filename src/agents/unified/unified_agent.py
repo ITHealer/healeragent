@@ -133,6 +133,9 @@ class ToolCall:
     id: str
     name: str
     arguments: Dict[str, Any]
+    # Gemini 3+ requires thought_signature to be preserved and sent back
+    # See: https://ai.google.dev/gemini-api/docs/thought-signatures
+    thought_signature: Optional[str] = None
 
 
 @dataclass
@@ -821,21 +824,11 @@ class UnifiedAgent(LoggerMixin):
             turns.append(turn)
             total_tool_calls += len(tool_calls)
 
-            # Update messages
+            # Update messages (preserves thought_signature for Gemini 3+)
             messages.append({
                 "role": "assistant",
                 "content": assistant_content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
-                        },
-                    }
-                    for tc in tool_calls
-                ],
+                "tool_calls": [self._build_tool_call_dict(tc) for tc in tool_calls],
             })
 
             for tc, result in zip(tool_calls, tool_results):
@@ -1023,21 +1016,11 @@ IMPORTANT:
                 ],
             }
 
-            # Update messages
+            # Update messages (preserves thought_signature for Gemini 3+)
             messages.append({
                 "role": "assistant",
                 "content": assistant_content,
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments),
-                        },
-                    }
-                    for tc in tool_calls
-                ],
+                "tool_calls": [self._build_tool_call_dict(tc) for tc in tool_calls],
             })
 
             for tc, result in zip(tool_calls, tool_results):
@@ -1808,7 +1791,13 @@ IMPORTANT:
             raise
 
     def _parse_tool_calls(self, response: Dict[str, Any]) -> List[ToolCall]:
-        """Parse tool calls from LLM response."""
+        """
+        Parse tool calls from LLM response.
+
+        For Gemini 3+ models, also extracts thought_signature which must be
+        preserved and sent back in subsequent turns.
+        See: https://ai.google.dev/gemini-api/docs/thought-signatures
+        """
         tool_calls = []
         raw_calls = response.get("tool_calls", [])
 
@@ -1825,11 +1814,16 @@ IMPORTANT:
                     else:
                         arguments = arguments_str
 
+                    # Extract thought_signature for Gemini 3+ models
+                    # This MUST be preserved and sent back for function calling to work
+                    thought_signature = call.get("thought_signature")
+
                     if name:
                         tool_calls.append(ToolCall(
                             id=call_id,
                             name=name,
                             arguments=arguments,
+                            thought_signature=thought_signature,
                         ))
 
             except (json.JSONDecodeError, KeyError) as e:
@@ -1837,6 +1831,30 @@ IMPORTANT:
                 continue
 
         return tool_calls
+
+    def _build_tool_call_dict(self, tc: ToolCall) -> Dict[str, Any]:
+        """
+        Build OpenAI-compatible tool_call dict from ToolCall object.
+
+        For Gemini 3+ models, includes thought_signature if present.
+        This signature MUST be preserved for function calling to work correctly.
+        See: https://ai.google.dev/gemini-api/docs/thought-signatures
+        """
+        tool_call_dict = {
+            "id": tc.id,
+            "type": "function",
+            "function": {
+                "name": tc.name,
+                "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else tc.arguments,
+            },
+        }
+
+        # Include thought_signature for Gemini 3+ models
+        # This is CRITICAL - missing signature causes 400 error
+        if tc.thought_signature:
+            tool_call_dict["thought_signature"] = tc.thought_signature
+
+        return tool_call_dict
 
     def _build_agent_messages(
         self,
@@ -2377,6 +2395,17 @@ Respond naturally and helpfully while staying in character."""
                     f"content_len={len(assistant_content)}"
                 )
 
+                # Emit thinking content if present (Gemini 3+ chain-of-thought)
+                # This shows the model's reasoning process (like "Hiện tiến trình tư duy")
+                thinking_content = response.get("thinking_content", "")
+                if thinking_content and enable_reasoning:
+                    yield {
+                        "type": "thinking",
+                        "phase": f"turn_{turn_num}",
+                        "content": thinking_content,
+                    }
+                    self.logger.info(f"[{flow_id}] 💭 Thinking: {thinking_content[:100]}...")
+
                 # No tool calls - stream final response
                 if not tool_calls:
                     if enable_reasoning:
@@ -2626,21 +2655,11 @@ Respond naturally and helpfully while staying in character."""
                     ],
                 }
 
-                # Update messages
+                # Update messages (preserves thought_signature for Gemini 3+)
                 messages.append({
                     "role": "assistant",
                     "content": assistant_content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {
-                                "name": tc.name,
-                                "arguments": json.dumps(tc.arguments),
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
+                    "tool_calls": [self._build_tool_call_dict(tc) for tc in tool_calls],
                 })
 
                 for tc, result in zip(tool_calls, tool_results):

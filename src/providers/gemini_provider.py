@@ -103,8 +103,14 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
 
     def supports_feature(self, feature_name: str) -> bool:
         """Check if provider supports a specific feature"""
+        # Gemini 3+ models (preview) support thinking mode with thought_signatures
+        is_thinking_model = any(x in self.model_name.lower() for x in [
+            "gemini-3", "gemini-2.5", "preview", "flash-preview", "pro-preview"
+        ])
+
         feature_support = {
-            "thinking_mode": False,
+            "thinking_mode": is_thinking_model,
+            "thought_signatures": is_thinking_model,  # Requires special handling
             "vision": "vision" in self.model_name or self.model_name == "gemini-pro-vision",
             "function_calling": True,
             "json_mode": True,
@@ -251,6 +257,8 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                     parts.append(content)
 
                 # Handle tool_calls from assistant
+                # For Gemini 3+, thought_signature MUST be preserved
+                # See: https://ai.google.dev/gemini-api/docs/thought-signatures
                 tool_calls = msg.get("tool_calls", [])
                 for tc in tool_calls:
                     if tc.get("type") == "function":
@@ -259,13 +267,22 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                             args = json.loads(func.get("arguments", "{}"))
                         except json.JSONDecodeError:
                             args = {}
-                        # Add function call as a part
-                        parts.append({
+
+                        # Build function call part
+                        function_call_part = {
                             "function_call": {
                                 "name": func.get("name", ""),
                                 "args": args,
                             }
-                        })
+                        }
+
+                        # Include thought_signature if present (CRITICAL for Gemini 3+)
+                        # Missing signature causes 400 error on subsequent turns
+                        thought_sig = tc.get("thought_signature")
+                        if thought_sig:
+                            function_call_part["thought_signature"] = thought_sig
+
+                        parts.append(function_call_part)
 
                 if parts:
                     gemini_messages.append({"role": "model", "parts": parts})
@@ -323,11 +340,17 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         """
         Format Gemini response to OpenAI-compatible structure.
 
-        Handles both text responses and function calls.
+        Handles text responses, function calls, and thought_signatures.
+
+        For Gemini 3+ models with thinking enabled:
+        - thought_signature MUST be preserved and sent back for function calling to work
+        - thinking_content contains the model's reasoning (for streaming/display)
+        See: https://ai.google.dev/gemini-api/docs/thought-signatures
         """
         finish_reason = "stop"
         content = ""
         tool_calls = []
+        thinking_content = ""  # Model's reasoning/thinking process
 
         try:
             if hasattr(response, 'candidates') and response.candidates:
@@ -347,14 +370,20 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                     else:
                         finish_reason = gemini_reason.lower()
 
-                # Extract content and function calls from parts
+                # Extract content, thinking, and function calls from parts
                 if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                    for part in candidate.content.parts:
+                    for idx, part in enumerate(candidate.content.parts):
                         # Text content
                         if hasattr(part, 'text') and part.text:
                             content += part.text
 
-                        # Function call
+                        # Thinking content (Gemini's chain-of-thought)
+                        # This is the model's internal reasoning process
+                        if hasattr(part, 'thought') and part.thought:
+                            thinking_content += part.thought
+                            self.logger.debug(f"[GEMINI] Thinking: {part.thought[:100]}...")
+
+                        # Function call with thought_signature
                         if hasattr(part, 'function_call') and part.function_call:
                             fc = part.function_call
                             tool_call = {
@@ -365,6 +394,19 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                                     "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
                                 }
                             }
+
+                            # Extract thought_signature (CRITICAL for Gemini 3+)
+                            # This MUST be preserved and sent back in subsequent turns
+                            thought_sig = None
+                            if hasattr(part, 'thought_signature'):
+                                thought_sig = part.thought_signature
+                            elif hasattr(fc, 'thought_signature'):
+                                thought_sig = fc.thought_signature
+
+                            if thought_sig:
+                                tool_call["thought_signature"] = thought_sig
+                                self.logger.debug(f"[GEMINI] Function call {fc.name} has thought_signature")
+
                             tool_calls.append(tool_call)
                             finish_reason = "tool_calls"
                             self.logger.info(f"[GEMINI] Function call: {fc.name}")
@@ -385,7 +427,11 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             "raw_response": response,
         }
 
-        # Add tool_calls if present (OpenAI-compatible format)
+        # Add thinking content if present (for UI display)
+        if thinking_content:
+            result["thinking_content"] = thinking_content
+
+        # Add tool_calls if present (OpenAI-compatible format with thought_signature)
         if tool_calls:
             result["tool_calls"] = tool_calls
             self.logger.info(f"[GEMINI] Response contains {len(tool_calls)} tool calls")
