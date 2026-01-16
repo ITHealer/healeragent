@@ -1,5 +1,7 @@
 import json
 import google.generativeai as genai
+from google.generativeai import protos
+from google.protobuf import struct_pb2
 from typing import Dict, Any, List, Optional, AsyncGenerator
 
 from src.providers.base_provider import ModelProvider
@@ -232,6 +234,11 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         - system → prepend to first user message (Gemini doesn't have system role)
         - assistant → model
         - tool messages → function_response
+
+        For Gemini 3+ function calling, uses proper protobuf types (protos.Part)
+        to correctly include thought_signature. Raw dicts don't work because
+        the SDK's to_part() doesn't recognize 'function_call' as a dict key.
+        See: https://ai.google.dev/gemini-api/docs/thought-signatures
         """
         gemini_messages = []
         system_content = None
@@ -268,27 +275,21 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         except json.JSONDecodeError:
                             args = {}
 
-                        # Build function call part
-                        function_call_part = {
-                            "function_call": {
-                                "name": func.get("name", ""),
-                                "args": args,
-                            }
-                        }
-
-                        # Include thought_signature if present (CRITICAL for Gemini 3+)
-                        # Missing signature causes 400 error on subsequent turns
-                        thought_sig = tc.get("thought_signature")
-                        if thought_sig:
-                            function_call_part["thought_signature"] = thought_sig
-
-                        parts.append(function_call_part)
+                        # Build function call part using protobuf types
+                        # This is required because the SDK's to_part() doesn't
+                        # recognize raw dicts with 'function_call' key
+                        fc_part = self._build_function_call_part(
+                            name=func.get("name", ""),
+                            args=args,
+                            thought_signature=tc.get("thought_signature")
+                        )
+                        parts.append(fc_part)
 
                 if parts:
                     gemini_messages.append({"role": "model", "parts": parts})
 
             elif role == "tool":
-                # Tool response - add as function_response
+                # Tool response - add as function_response using protobuf types
                 tool_call_id = msg.get("tool_call_id", "")
                 func_name = self._find_function_name(tool_call_id, openai_messages)
 
@@ -298,14 +299,14 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                 except json.JSONDecodeError:
                     result = {"result": content}
 
+                # Build function response part using protobuf types
+                fr_part = self._build_function_response_part(
+                    name=func_name,
+                    response=result
+                )
                 gemini_messages.append({
                     "role": "user",
-                    "parts": [{
-                        "function_response": {
-                            "name": func_name,
-                            "response": result,
-                        }
-                    }]
+                    "parts": [fr_part]
                 })
 
         # If only system message was provided, add it as user
@@ -313,6 +314,115 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             gemini_messages.append({"role": "user", "parts": [system_content]})
 
         return gemini_messages
+
+    def _build_function_call_part(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        thought_signature: Optional[str] = None
+    ) -> protos.Part:
+        """
+        Build a Gemini Part with FunctionCall using protobuf types.
+
+        For Gemini 3+ models, thought_signature MUST be included on the first
+        function call part in each step, otherwise the API returns 400 error.
+
+        Args:
+            name: Function name
+            args: Function arguments as dict
+            thought_signature: Encrypted thought signature from previous response
+
+        Returns:
+            protos.Part with function_call set
+        """
+        # Convert args dict to Struct protobuf
+        args_struct = struct_pb2.Struct()
+        args_struct.update(args)
+
+        # Create FunctionCall protobuf
+        fc = protos.FunctionCall(
+            name=name,
+            args=args_struct
+        )
+
+        # Create Part with function_call
+        part = protos.Part(function_call=fc)
+
+        # Add thought_signature if present (CRITICAL for Gemini 3+)
+        # The SDK >= 0.8.6 should have this field, older versions may not
+        if thought_signature:
+            sig_set = False
+            # Method 1: Direct attribute (preferred)
+            try:
+                part.thought_signature = thought_signature
+                sig_set = True
+                self.logger.debug(f"[GEMINI] Set thought_signature on Part for {name}")
+            except AttributeError:
+                pass
+
+            # Method 2: Try setting via protobuf _pb if available
+            if not sig_set:
+                try:
+                    if hasattr(part, '_pb'):
+                        part._pb.thought_signature = thought_signature
+                        sig_set = True
+                        self.logger.debug(f"[GEMINI] Set thought_signature via _pb for {name}")
+                except Exception:
+                    pass
+
+            # Method 3: Check if Part has DESCRIPTOR for field info
+            if not sig_set:
+                try:
+                    # Get the protobuf descriptor to check available fields
+                    descriptor = part.DESCRIPTOR if hasattr(part, 'DESCRIPTOR') else None
+                    if descriptor:
+                        field_names = [f.name for f in descriptor.fields]
+                        self.logger.debug(f"[GEMINI] Part fields: {field_names}")
+                        if 'thought_signature' not in field_names:
+                            self.logger.warning(
+                                f"[GEMINI] SDK version does not support thought_signature field. "
+                                f"Upgrade to google-generativeai>=0.8.6 or migrate to google-genai SDK. "
+                                f"Available fields: {field_names}"
+                            )
+                except Exception as e:
+                    self.logger.warning(f"[GEMINI] Could not check Part fields: {e}")
+
+            if not sig_set:
+                self.logger.warning(
+                    f"[GEMINI] Could not set thought_signature for {name}. "
+                    f"Gemini 3+ function calling may fail. "
+                    f"Please upgrade SDK: pip install -U google-generativeai>=0.8.6"
+                )
+
+        return part
+
+    def _build_function_response_part(
+        self,
+        name: str,
+        response: Dict[str, Any]
+    ) -> protos.Part:
+        """
+        Build a Gemini Part with FunctionResponse using protobuf types.
+
+        Args:
+            name: Function name
+            response: Function response as dict
+
+        Returns:
+            protos.Part with function_response set
+        """
+        # Convert response dict to Struct protobuf
+        response_struct = struct_pb2.Struct()
+        response_struct.update(response)
+
+        # Create FunctionResponse protobuf
+        fr = protos.FunctionResponse(
+            name=name,
+            response=response_struct
+        )
+
+        # Create Part with function_response
+        return protos.Part(function_response=fr)
 
     def _find_function_name(self, tool_call_id: str, openai_messages: List[Dict]) -> str:
         """Find function name from tool_call_id in original messages"""
