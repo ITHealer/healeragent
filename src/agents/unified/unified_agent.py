@@ -1540,12 +1540,50 @@ IMPORTANT:
     ) -> List[Dict[str, Any]]:
         """Execute tool calls from LLM."""
 
+        def normalize_tool_name(name: str) -> str:
+            """
+            Normalize tool name by removing hallucinated prefixes.
+
+            LLMs sometimes add prefixes like:
+            - tool_finance.getStockPrice -> getStockPrice
+            - functions.getStockPrice -> getStockPrice
+            - tools.getStockPrice -> getStockPrice
+            """
+            # Common hallucinated prefixes to strip
+            prefixes_to_strip = [
+                "tool_finance.",
+                "tool_stock.",
+                "tool_crypto.",
+                "tool_market.",
+                "tool_news.",
+                "tool_technical.",
+                "tool_fundamental.",
+                "tool_risk.",
+                "tools.",
+                "functions.",
+                "function.",
+            ]
+
+            original_name = name
+            for prefix in prefixes_to_strip:
+                if name.lower().startswith(prefix.lower()):
+                    name = name[len(prefix):]
+                    self.logger.warning(
+                        f"[TOOL_NORMALIZE] Stripped prefix: '{original_name}' -> '{name}'"
+                    )
+                    break
+
+            return name
+
         async def execute_single(tc: ToolCall) -> Dict[str, Any]:
             try:
+                # Normalize tool name (fix LLM hallucinations like "tool_finance.getStockPrice")
+                actual_tool_name = normalize_tool_name(tc.name)
+
                 # ============================================================
                 # SPECIAL HANDLING: tool_search meta-tool
                 # ============================================================
-                if tc.name == "tool_search":
+                if actual_tool_name == "tool_search":
                     return await self._execute_tool_search(tc, flow_id)
 
                 # ============================================================
@@ -1553,11 +1591,11 @@ IMPORTANT:
                 # ============================================================
                 # Use per-tool timeout for slow tools
                 tool_timeout = self.SLOW_TOOL_TIMEOUTS.get(
-                    tc.name, self.DEFAULT_TOOL_TIMEOUT
+                    actual_tool_name, self.DEFAULT_TOOL_TIMEOUT
                 )
 
                 result = await asyncio.wait_for(
-                    self.registry.execute_tool(tool_name=tc.name, params=tc.arguments),
+                    self.registry.execute_tool(tool_name=actual_tool_name, params=tc.arguments),
                     timeout=tool_timeout,
                 )
 
@@ -1574,13 +1612,13 @@ IMPORTANT:
 
             except asyncio.TimeoutError:
                 return {
-                    "tool_name": tc.name,
+                    "tool_name": actual_tool_name,
                     "status": "timeout",
                     "error": f"Timeout after {tool_timeout}s",
                 }
             except Exception as e:
                 return {
-                    "tool_name": tc.name,
+                    "tool_name": actual_tool_name,
                     "status": "error",
                     "error": str(e),
                 }
@@ -1593,8 +1631,10 @@ IMPORTANT:
         processed = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
+                # Normalize tool name for consistency
+                normalized_name = normalize_tool_name(tool_calls[i].name)
                 processed.append({
-                    "tool_name": tool_calls[i].name,
+                    "tool_name": normalized_name,
                     "status": "error",
                     "error": str(result),
                 })
