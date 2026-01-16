@@ -333,7 +333,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # =====================================================================
         rsi_value = indicator_values.get('rsi_14')
         rsi_analysis = analyze_rsi(rsi_value or 0)
-        rsi_trend = self._calculate_indicator_trend(df, 'rsi_14', lookback=5)
+        # NOTE: Column name in DataFrame is 'rsi', not 'rsi_14'
+        rsi_trend = self._calculate_indicator_trend(df, 'rsi', lookback=5)
         result['indicators']['rsi'] = {
             "value": rsi_value,
             "period_days": self.cfg.RSI_PERIOD,
@@ -1130,22 +1131,40 @@ class GetTechnicalIndicatorsTool(BaseTool):
             bearish_count += obv_weight
         total_weighted += obv_weight
 
-        # MA Crossover signal (Golden/Death Cross = stronger signal)
+        # MA Crossover signal
+        # IMPORTANT: Distinguish between Golden/Death Cross (50/200) and SMA20/50 crossover
+        # - Golden/Death Cross (SMA50 vs SMA200) = 1.5 weight (major signal)
+        # - SMA20/50 crossover = 1.0 weight (minor signal)
         ma_signal = ma_crossovers.get('signal', 'NEUTRAL')
         sma_20_50 = ma_crossovers.get('sma_20_50_cross', {})
+        golden_cross = ma_crossovers.get('golden_cross', {})
+        death_cross = ma_crossovers.get('death_cross', {})
 
-        # Determine MA crossover weight
-        if ma_signal in ['BULLISH', 'BEARISH']:  # Golden or Death Cross
-            ma_cross_weight = 1.5  # Strong signal
+        # Check if we have a TRUE Golden/Death Cross (SMA50/200)
+        has_golden_cross = isinstance(golden_cross, dict) and golden_cross.get('detected')
+        has_death_cross = isinstance(death_cross, dict) and death_cross.get('detected')
+
+        # Determine MA crossover weight and type based on what's actually detected
+        if has_golden_cross or has_death_cross:
+            # TRUE Golden/Death Cross (50/200) - strong signal, deserves 1.5x weight
+            ma_cross_weight = 1.5
+            ma_cross_type = "GOLDEN_CROSS" if has_golden_cross else "DEATH_CROSS"
         elif isinstance(sma_20_50, dict) and sma_20_50.get('type') in ['bullish', 'bearish']:
-            ma_cross_weight = 1.0  # Normal crossover
+            # SMA20/50 crossover only - weaker signal, standard 1.0 weight
+            ma_cross_weight = 1.0
+            ma_cross_type = "SMA20_50"
         else:
+            # No crossover detected
             ma_cross_weight = indicator_weights["MA_CROSSOVER"]
-        weights_used["MA_CROSSOVER"] = ma_cross_weight
+            ma_cross_type = "NONE"
 
-        if ma_signal == 'BULLISH':  # Golden Cross detected
+        weights_used["MA_CROSSOVER"] = ma_cross_weight
+        weights_used["MA_CROSSOVER_TYPE"] = ma_cross_type  # For transparency
+
+        # Apply bullish/bearish count based on actual signals
+        if has_golden_cross:
             bullish_count += ma_cross_weight
-        elif ma_signal == 'BEARISH':  # Death Cross detected
+        elif has_death_cross:
             bearish_count += ma_cross_weight
         elif isinstance(sma_20_50, dict):
             if sma_20_50.get('type') == 'bullish':
@@ -1153,6 +1172,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
             elif sma_20_50.get('type') == 'bearish':
                 bearish_count += ma_cross_weight
         total_weighted += ma_cross_weight
+
+        # Calculate neutral weighted score for audit completeness
+        neutral_weighted = total_weighted - bullish_count - bearish_count
 
         # Calculate bias using weighted totals
         bullish_pct = bullish_count / total_weighted if total_weighted > 0 else 0
@@ -1301,10 +1323,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             signal_breakdown["neutral_indicators"].append("OBV")
 
-        if ma_signal == 'BULLISH':
-            signal_breakdown["bullish_indicators"].append("MA Crossover")
-        elif ma_signal == 'BEARISH':
-            signal_breakdown["bearish_indicators"].append("MA Crossover")
+        # Use specific crossover type for transparency
+        if has_golden_cross:
+            signal_breakdown["bullish_indicators"].append("MA Crossover (Golden Cross)")
+        elif has_death_cross:
+            signal_breakdown["bearish_indicators"].append("MA Crossover (Death Cross)")
+        elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bullish':
+            signal_breakdown["bullish_indicators"].append("MA Crossover (SMA20/50)")
+        elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bearish':
+            signal_breakdown["bearish_indicators"].append("MA Crossover (SMA20/50)")
         else:
             signal_breakdown["neutral_indicators"].append("MA Crossover")
 
@@ -1325,9 +1352,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "total_signals": total_indicator_count,
             # Explicit weights mapping for full transparency
             "indicator_weights": weights_used,
-            # Weighted score used for action decision
+            # Weighted scores for complete audit trail
+            # weighted_bullish + weighted_bearish + weighted_neutral = weighted_total
             "weighted_bullish_score": round(bullish_count, 2),
             "weighted_bearish_score": round(bearish_count, 2),
+            "weighted_neutral_score": round(neutral_weighted, 2),
             "weighted_total": round(total_weighted, 2),
             # Signal agreement % based on weighted scores (used for BUY/SELL threshold)
             "signal_agreement_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
@@ -1336,7 +1365,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
-            "note": "Signal counts = indicator count. weighted_total = sum(indicator_weights). Action threshold: 60% of weighted_total."
+            "note": "weighted_bullish + weighted_bearish + weighted_neutral = weighted_total. Action threshold: 60% weighted score."
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
