@@ -333,9 +333,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         # =====================================================================
         # RSI Analysis (14-day period)
+        # P0 FIX: Don't convert None to 0 - let analyze_rsi handle None properly
         # =====================================================================
         rsi_value = indicator_values.get('rsi_14')
-        rsi_analysis = analyze_rsi(rsi_value or 0)
+        rsi_analysis = analyze_rsi(rsi_value)  # Pass raw value, analyze_rsi handles None via pd.isna()
         # NOTE: Column name in DataFrame is 'rsi', not 'rsi_14'
         rsi_trend = self._calculate_indicator_trend(df, 'rsi', lookback=5)
         result['indicators']['rsi'] = {
@@ -358,7 +359,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         macd_line = indicator_values.get('macd_line')
         macd_signal = indicator_values.get('macd_signal')
         macd_histogram = indicator_values.get('macd_histogram')
-        macd_analysis = analyze_macd(macd_line or 0, macd_signal or 0, macd_histogram or 0)
+        # P0 FIX: Don't convert None to 0 - analyze_macd handles None via pd.isna()
+        macd_analysis = analyze_macd(macd_line, macd_signal, macd_histogram)
         histogram_trend = self._calculate_indicator_trend(df, 'macd_histogram', lookback=5)
         result['indicators']['macd'] = {
             "macd_line": macd_line,
@@ -383,7 +385,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         sma_200 = indicator_values.get('sma_200')
         ema_12 = indicator_values.get('ema_12')
         ema_26 = indicator_values.get('ema_26')
-        trend_analysis = analyze_trend(current_price, sma_20 or 0, sma_50 or 0, sma_200 or 0)
+        # P0 FIX: analyze_trend should handle None values properly
+        trend_analysis = analyze_trend(current_price, sma_20, sma_50, sma_200)
 
         result['indicators']['moving_averages'] = {
             "sma": {
@@ -411,7 +414,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         bb_upper = indicator_values.get('bb_upper')
         bb_middle = indicator_values.get('bb_middle')
         bb_lower = indicator_values.get('bb_lower')
-        bb_analysis = analyze_bollinger_bands(current_price, bb_upper or 0, bb_middle or 0, bb_lower or 0)
+        # P0 FIX: analyze_bollinger_bands handles None via pd.isna()
+        bb_analysis = analyze_bollinger_bands(current_price, bb_upper, bb_middle, bb_lower)
         result['indicators']['bollinger_bands'] = {
             "upper": bb_upper,
             "middle": bb_middle,
@@ -429,7 +433,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # =====================================================================
         stoch_k = indicator_values.get('stoch_k')
         stoch_d = indicator_values.get('stoch_d')
-        stoch_analysis = analyze_stochastic(stoch_k or 0, stoch_d or 0)
+        # P0 FIX: analyze_stochastic handles None via pd.isna()
+        stoch_analysis = analyze_stochastic(stoch_k, stoch_d)
         result['indicators']['stochastic'] = {
             "k": stoch_k,
             "d": stoch_d,
@@ -453,7 +458,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         adx = indicator_values.get('adx')
         di_plus = indicator_values.get('di_plus')
         di_minus = indicator_values.get('di_minus')
-        adx_analysis = analyze_adx(adx or 0, di_plus or 0, di_minus or 0)
+        # P0 FIX: analyze_adx handles None via pd.isna()
+        adx_analysis = analyze_adx(adx, di_plus, di_minus)
         result['indicators']['adx'] = {
             "adx": adx,
             "di_plus": di_plus,
@@ -483,16 +489,25 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         # =====================================================================
         # VWAP Analysis (cumulative from period start)
+        # P1 FIX: IMPORTANT CLARIFICATION on VWAP variant:
+        # - This is CUMULATIVE VWAP from daily data (NOT intraday session VWAP)
+        # - Also known as "Anchored VWAP" with anchor at period start
+        # - Interpretation: Avg price paid by market over entire period
+        # - Use with caution: large deviation (>10%) is common with long periods
         # =====================================================================
         vwap = indicator_values.get('vwap')
-        vwap_analysis = analyze_vwap(current_price, vwap or 0)
+        # P0 FIX: analyze_vwap handles None via pd.isna()
+        vwap_analysis = analyze_vwap(current_price, vwap)
         result['indicators']['vwap'] = {
             "value": vwap,
-            "calculation": f"Cumulative VWAP from {first_date.strftime('%Y-%m-%d')}",
+            "variant": "CUMULATIVE_DAILY",  # P1 FIX: Clarify variant
+            "anchor_date": first_date.strftime('%Y-%m-%d'),
+            "calculation": f"Cumulative VWAP from {first_date.strftime('%Y-%m-%d')} (daily data)",
             "price_vs_vwap_pct": vwap_analysis.get('diff_pct'),
             "signal": vwap_analysis.get('signal'),
             "position": vwap_analysis.get('position'),
-            "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis)
+            "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis),
+            "warning": "This is cumulative VWAP from daily data, NOT intraday session VWAP. Large deviations (>10%) are normal for long periods."
         }
 
         # =====================================================================
@@ -501,7 +516,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         volume = indicator_values.get('volume')
         volume_avg = indicator_values.get('volume_sma_20')
         volume_ratio = indicator_values.get('volume_ratio')
-        volume_analysis = analyze_volume(volume or 0, volume_avg or 1)
+        # P0 FIX: analyze_volume handles None - pass raw values
+        volume_analysis = analyze_volume(volume, volume_avg)
         result['indicators']['volume'] = {
             "current": volume,
             "average_20d": volume_avg,
@@ -1042,18 +1058,49 @@ class GetTechnicalIndicatorsTool(BaseTool):
         """Generate actionable trading recommendations."""
 
         # =======================================================================
+        # P1 FIX: REGIME FILTER
+        # Adjust indicator weights based on market regime (ADX-based)
+        # - Strong trend (ADX >= 25): Weight trend-following indicators higher
+        # - Ranging (ADX < 20): Weight mean-reversion indicators higher
+        # =======================================================================
+        adx_value = adx_analysis.get('adx') if isinstance(adx_analysis.get('adx'), (int, float)) else None
+        trend_strength = adx_analysis.get('trend_strength', 'unknown')
+
+        # Determine regime multipliers
+        if adx_value is not None and adx_value >= 25:
+            # Strong trend: prefer trend-following, reduce mean-reversion
+            regime = "TRENDING"
+            trend_following_mult = 1.2  # Boost trend-following
+            mean_reversion_mult = 0.7   # Reduce mean-reversion (oversold can stay oversold)
+        elif adx_value is not None and adx_value < 20:
+            # Ranging/sideways: prefer mean-reversion, reduce trend-following
+            regime = "RANGING"
+            trend_following_mult = 0.7  # Reduce trend-following
+            mean_reversion_mult = 1.2   # Boost mean-reversion (extremes more likely to revert)
+        else:
+            # Moderate/unknown: balanced weights
+            regime = "MODERATE"
+            trend_following_mult = 1.0
+            mean_reversion_mult = 1.0
+
+        # =======================================================================
         # EXPLICIT WEIGHTS MAPPING for transparency
-        # Each indicator has a base weight, modified by signal strength
+        # Each indicator has a base weight, modified by regime and signal strength
+        # Trend-following: MACD, MA_TREND, OBV, MA_CROSSOVER, ADX direction
+        # Mean-reversion: RSI (oversold/overbought), STOCH
         # =======================================================================
         indicator_weights = {
-            "RSI": 1.0,           # Standard weight
-            "MACD": 1.0,          # Standard weight
-            "MA_TREND": 1.0,      # Standard weight
-            "STOCH": 1.0,         # Standard weight
-            "ADX": 1.0,           # Standard weight
-            "VWAP": 0.5,          # Half weight (less reliable without intraday data)
-            "OBV": 1.0,           # Base weight (1.5x if divergence)
-            "MA_CROSSOVER": 1.0,  # Base weight (1.5x if Golden/Death cross)
+            # Mean-reversion indicators (affected by ranging regime)
+            "RSI": round(1.0 * mean_reversion_mult, 2),
+            "STOCH": round(1.0 * mean_reversion_mult, 2),
+            # Trend-following indicators (affected by trending regime)
+            "MACD": round(1.0 * trend_following_mult, 2),
+            "MA_TREND": round(1.0 * trend_following_mult, 2),
+            "ADX": round(1.0 * trend_following_mult, 2),
+            "OBV": round(1.0 * trend_following_mult, 2),
+            "MA_CROSSOVER": round(1.0 * trend_following_mult, 2),
+            # Neutral indicator (less reliable with daily data)
+            "VWAP": 0.5,
         }
 
         # Track weighted scores
@@ -1062,7 +1109,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
         total_weighted = 0.0
 
         # Track actual weights used (for transparency)
-        weights_used = {}
+        weights_used = {
+            "_REGIME": regime,  # P1 FIX: Show market regime used for weighting
+            "_ADX_VALUE": adx_value,
+        }
 
         # RSI signal
         rsi_weight = indicator_weights["RSI"]
@@ -1510,6 +1560,31 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             long_term_trend = "NEUTRAL"
 
+        # =======================================================================
+        # P1 FIX: Separate MA20/50 crossover from MA50/200 alignment clearly
+        # This avoids confusion like "MA Crossover: BEARISH | Alignment: BULLISH"
+        # =======================================================================
+        ma_crossovers = indicators.get('ma_crossovers', {})
+        sma_20_50_cross = ma_crossovers.get('sma_20_50_cross', {})
+        golden_cross = ma_crossovers.get('golden_cross')
+        death_cross = ma_crossovers.get('death_cross')
+
+        # MA20/50 Crossover (short-term momentum)
+        if isinstance(sma_20_50_cross, dict) and sma_20_50_cross.get('type'):
+            ma20_50_status = f"{sma_20_50_cross['type'].upper()} ({sma_20_50_cross.get('days_ago', '?')}d ago)"
+        else:
+            ma20_50_status = "NONE"
+
+        # MA50/200 Status: Check for recent crossover OR current alignment
+        if isinstance(golden_cross, dict) and golden_cross.get('detected'):
+            ma50_200_status = f"GOLDEN CROSS ({golden_cross.get('days_ago', '?')}d ago) - BULLISH"
+        elif isinstance(death_cross, dict) and death_cross.get('detected'):
+            ma50_200_status = f"DEATH CROSS ({death_cross.get('days_ago', '?')}d ago) - BEARISH"
+        elif ma_alignment and ma_alignment != 'N/A':
+            ma50_200_status = f"Aligned {ma_alignment} (no recent cross)"
+        else:
+            ma50_200_status = "N/A (need 200+ days data)"
+
         lines.extend([
             "",
             f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Agreement: {signal_agree:.0f}%, Trend Strength: {adx_strength})",
@@ -1526,9 +1601,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Trend: {ma_data.get('trend', 'N/A')}",
             f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
             f"- Stochastic: {stoch_cond}",
-            f"- VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%)",
+            f"- VWAP (Cumulative Daily): {vwap_signal} (Price vs VWAP: {vwap_pct}%) ⚠️ NOT intraday",
             f"- OBV: {obv_sig} - {obv_div}",
-            f"- MA Crossover: {ma_cross_sig} | Alignment: {ma_alignment}",
+            "",
+            "MOVING AVERAGE CROSSOVERS (P1 FIX - separated for clarity):",
+            f"- MA20/50 Crossover (short-term): {ma20_50_status}",
+            f"- MA50/200 Status (long-term): {ma50_200_status}",
         ])
 
         # Signal confluence section - use signal_breakdown for consistency
@@ -1544,18 +1622,33 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         # =========================================================================
         # INDICATOR WEIGHTS (for transparency in weighted scoring)
-        # Always show weights to explain how final score is calculated
+        # P1 FIX: Show regime-based weight adjustments
         # =========================================================================
         indicator_weights = rec.get('indicator_weights', {})
+        regime = indicator_weights.get('_REGIME', 'MODERATE')
+        regime_adx = indicator_weights.get('_ADX_VALUE')
         if indicator_weights:
             # Format weights as compact JSON for transparency
             import json
-            weights_json = json.dumps(indicator_weights, separators=(',', ':'))
+            # Remove internal fields from display
+            display_weights = {k: v for k, v in indicator_weights.items() if not k.startswith('_')}
+            weights_json = json.dumps(display_weights, separators=(',', ':'))
+
+            # Regime explanation
+            regime_adx_str = f"ADX={regime_adx:.1f}" if regime_adx else "ADX=N/A"
+            if regime == "TRENDING":
+                regime_note = f"TRENDING ({regime_adx_str}): Trend-following ×1.2, Mean-reversion ×0.7"
+            elif regime == "RANGING":
+                regime_note = f"RANGING ({regime_adx_str}): Trend-following ×0.7, Mean-reversion ×1.2"
+            else:
+                regime_note = f"MODERATE ({regime_adx_str}): Balanced weights"
+
             lines.extend([
                 f"",
-                f"INDICATOR WEIGHTS (used in scoring):",
-                f"  {weights_json}",
-                f"  Note: Higher weight = more influence. OBV 1.5 = divergence, MA_CROSSOVER 1.5 = Golden/Death cross.",
+                f"INDICATOR WEIGHTS (regime-adjusted):",
+                f"  Market Regime: {regime_note}",
+                f"  Weights: {weights_json}",
+                f"  Note: OBV 1.5 = divergence, MA_CROSSOVER 1.5 = Golden/Death cross.",
             ])
 
         # Support/Resistance
