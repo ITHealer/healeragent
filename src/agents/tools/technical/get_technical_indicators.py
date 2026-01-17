@@ -766,7 +766,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
             'overbought': f"RSI={rsi_value:.1f} (>70): OVERBOUGHT - Price may be stretched. Watch for pullback or take partial profits. NOT a signal to short immediately - wait for confirmation.{trend_info}",
             'oversold': f"RSI={rsi_value:.1f} (<30): OVERSOLD - Selling pressure extreme. Potential bounce setup, but confirm with volume/price action. NOT a blind buy - could stay oversold.{trend_info}",
             'strong': f"RSI={rsi_value:.1f} (60-70): STRONG MOMENTUM - Bullish but approaching overbought. Existing longs can hold with trailing stop. New longs risky without pullback.{trend_info}",
-            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK/NEAR-OVERSOLD - Bearish momentum, approaching oversold zone. Could continue down OR setup for reversal. Wait for RSI divergence or price support confirmation before buying.{trend_info}",
+            # weak_bearish: RSI 30-40 is BEARISH (light) - not neutral. Distinct from 40-60 neutral zone.
+            'weak_bearish': f"RSI={rsi_value:.1f} (30-40): WEAK BEARISH - Bearish momentum zone (not neutral). Price showing weakness but not yet oversold. Could continue down or setup for reversal. Wait for RSI divergence or support confirmation.{trend_info}",
+            'weak': f"RSI={rsi_value:.1f} (30-40): WEAK BEARISH - Bearish momentum zone (not neutral). Price showing weakness but not yet oversold. Could continue down or setup for reversal.{trend_info}",  # Legacy fallback
             'neutral': f"RSI={rsi_value:.1f} (40-60): NEUTRAL ZONE - No extreme momentum. Use other indicators (MACD, trend) for direction.{trend_info}"
         }
         return explanations.get(condition, f"RSI={rsi_value:.1f}: Momentum indicator based on 14-day price changes.{trend_info}")
@@ -877,7 +879,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         strengths = {
             'very_strong': f"ADX={adx:.1f} (>50): VERY STRONG TREND. High conviction in current direction.",
             'strong': f"ADX={adx:.1f} (25-50): STRONG TREND. Clear directional movement.",
-            'moderate': f"ADX={adx:.1f} (20-25): MODERATE TREND. Developing trend, not fully established.",
+            # ADX 20-25: WEAK/MODERATE - trend is developing but not established. More cautious than "moderate" alone.
+            'moderate': f"ADX={adx:.1f} (20-25): WEAK/MODERATE TREND. Trend developing but not fully established. Use caution with trend-following strategies.",
             'weak': f"ADX={adx:.1f} (<20): WEAK/NO TREND. Market is ranging, avoid trend-following strategies."
         }
 
@@ -1470,15 +1473,57 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             score_str = f"Mixed {max(weighted_bull, weighted_bear):.1f}/{weighted_total:.1f}"
 
+        # =======================================================================
+        # SHORT-TERM vs LONG-TERM TREND analysis
+        # This helps distinguish momentum vs underlying trend
+        # =======================================================================
+        ma_data = indicators.get('moving_averages', {})
+        price_pos = ma_data.get('price_position', {})
+        sma_values = ma_data.get('sma', {})
+
+        # Short-term trend (5-20 days): Price vs SMA20 + RSI trend
+        above_sma20 = price_pos.get('above_sma_20')
+        above_sma50 = price_pos.get('above_sma_50')
+        if above_sma20 is True and rsi_trend.lower() in ['rising', 'stable']:
+            short_term_trend = "BULLISH"
+        elif above_sma20 is False and rsi_trend.lower() in ['falling', 'stable']:
+            short_term_trend = "BEARISH"
+        else:
+            short_term_trend = "MIXED/TRANSITIONING"
+
+        # Long-term trend (50-200 days): Price vs SMA200 + SMA50 vs SMA200
+        above_sma200 = price_pos.get('above_sma_200')
+        sma50_val = sma_values.get('sma_50', {}).get('value')
+        sma200_val = sma_values.get('sma_200', {}).get('value')
+        if above_sma200 is True:
+            if sma50_val and sma200_val and sma50_val > sma200_val:
+                long_term_trend = "BULLISH (SMA50 > SMA200)"
+            else:
+                long_term_trend = "BULLISH (price > SMA200)"
+        elif above_sma200 is False:
+            if sma50_val and sma200_val and sma50_val < sma200_val:
+                long_term_trend = "BEARISH (SMA50 < SMA200)"
+            else:
+                long_term_trend = "BEARISH (price < SMA200)"
+        elif above_sma200 is None:
+            long_term_trend = "N/A (insufficient data for SMA200)"
+        else:
+            long_term_trend = "NEUTRAL"
+
         lines.extend([
             "",
             f"OVERALL OUTLOOK: {outlook.get('outlook', 'N/A')} (Agreement: {signal_agree:.0f}%, Trend Strength: {adx_strength})",
             f"ACTION: {rec.get('overall_action', 'HOLD')} ({rec.get('action_strength', 'NEUTRAL')}) | Weighted: {score_str}",
             "",
+            "TREND ANALYSIS:",
+            f"- Short-Term Trend (5-20d): {short_term_trend} (Price vs SMA20, RSI momentum)",
+            f"- Long-Term Trend (50-200d): {long_term_trend}",
+            f"- NOTE: If short-term ≠ long-term, market may be in transition or counter-trend move",
+            "",
             "KEY INDICATORS (with trends):",
             f"- RSI (14d): {rsi_val_str} - {rsi_cond} | Trend: {rsi_trend.upper()}",
             f"- MACD: {macd_data.get('signal', 'N/A')} | Histogram: {macd_hist_str} ({macd_hist_trend.upper()})",
-            f"- Trend: {indicators.get('moving_averages', {}).get('trend', 'N/A')}",
+            f"- Trend: {ma_data.get('trend', 'N/A')}",
             f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
             f"- Stochastic: {stoch_cond}",
             f"- VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%)",
@@ -1496,6 +1541,22 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Neutral ({len(neutral_indicators)}): {', '.join(neutral_indicators) if neutral_indicators else 'None'}",
             f"- Net bias: {'BULLISH' if len(bullish_indicators) > len(bearish_indicators) else 'BEARISH' if len(bearish_indicators) > len(bullish_indicators) else 'MIXED'}",
         ])
+
+        # =========================================================================
+        # INDICATOR WEIGHTS (for transparency in weighted scoring)
+        # Always show weights to explain how final score is calculated
+        # =========================================================================
+        indicator_weights = rec.get('indicator_weights', {})
+        if indicator_weights:
+            # Format weights as compact JSON for transparency
+            import json
+            weights_json = json.dumps(indicator_weights, separators=(',', ':'))
+            lines.extend([
+                f"",
+                f"INDICATOR WEIGHTS (used in scoring):",
+                f"  {weights_json}",
+                f"  Note: Higher weight = more influence. OBV 1.5 = divergence, MA_CROSSOVER 1.5 = Golden/Death cross.",
+            ])
 
         # Support/Resistance
         sr = result.get('support_resistance', {})
@@ -1692,12 +1753,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         inflation_data = response.json()
                         if inflation_data and isinstance(inflation_data, list) and len(inflation_data) > 0:
                             latest = inflation_data[0]
+                            current_val = latest.get("value", 0)
+                            # Get previous month's inflation for comparison
+                            previous_val = inflation_data[1].get("value", 0) if len(inflation_data) > 1 else None
                             result["inflation"] = {
-                                "value": latest.get("value"),  # Should be inflation rate %
+                                "value": current_val,  # Current inflation rate %
+                                "previous_value": previous_val,  # Previous month's rate for comparison
                                 "as_of_date": latest.get("date"),  # Release date of the data
                                 "date": latest.get("date"),        # Kept for backwards compat
                                 "type": "inflation_rate",
-                                "trend": "increasing" if len(inflation_data) > 1 and inflation_data[0].get("value", 0) > inflation_data[1].get("value", 0) else "decreasing",
+                                "trend": "increasing" if previous_val is not None and current_val > previous_val else "decreasing",
                                 "note": "Inflation rate (CPI YoY %). Released monthly, typically mid-month for prior month."
                             }
                         else:
@@ -1709,16 +1774,23 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                     # Calculate YoY inflation (compare to 12 months ago)
                                     current_cpi = cpi_raw[0].get("value", 0)
                                     previous_cpi = cpi_raw[12].get("value", 0) if len(cpi_raw) > 12 else cpi_raw[-1].get("value", 0)
+                                    # Also calculate previous month's YoY for comparison
+                                    prev_month_cpi = cpi_raw[1].get("value", 0) if len(cpi_raw) > 13 else None
+                                    prev_month_yoy_cpi = cpi_raw[13].get("value", 0) if len(cpi_raw) > 13 else None
+                                    previous_yoy = None
+                                    if prev_month_cpi and prev_month_yoy_cpi and prev_month_yoy_cpi > 0:
+                                        previous_yoy = round(((prev_month_cpi - prev_month_yoy_cpi) / prev_month_yoy_cpi) * 100, 2)
                                     if previous_cpi > 0:
                                         yoy_inflation = ((current_cpi - previous_cpi) / previous_cpi) * 100
                                         result["inflation"] = {
                                             "value": round(yoy_inflation, 2),
+                                            "previous_value": previous_yoy,  # Previous month's YoY inflation for comparison
                                             "as_of_date": cpi_raw[0].get("date"),  # Date of latest CPI reading
                                             "date": cpi_raw[0].get("date"),        # Kept for backwards compat
                                             "type": "calculated_yoy",
                                             "cpi_current": current_cpi,
                                             "cpi_previous": previous_cpi,
-                                            "trend": "increasing" if yoy_inflation > 2.5 else "decreasing",
+                                            "trend": "increasing" if previous_yoy and yoy_inflation > previous_yoy else "decreasing",
                                             "note": "YoY inflation (%) calculated from CPI index. Released monthly."
                                         }
                     else:
@@ -1825,10 +1897,20 @@ class GetTechnicalIndicatorsTool(BaseTool):
             lines.append(f"- GDP Growth: {gdp['value']:.1f}% ({gdp.get('date', 'N/A')}) [{gdp_type}] - {gdp.get('trend', 'N/A')}")
 
         # Inflation Rate (use 'inflation' or fallback to 'cpi')
+        # IMPORTANT: Show "vs previous X%" to justify increasing/decreasing trend
         inflation = econ_data.get("inflation", {}) or econ_data.get("cpi", {})
         if inflation.get("value") is not None:
             inflation_type = inflation.get('type', 'unknown')
-            lines.append(f"- Inflation: {inflation['value']:.1f}% ({inflation.get('date', 'N/A')}) [{inflation_type}] - {inflation.get('trend', 'N/A')}")
+            current_val = inflation['value']
+            prev_val = inflation.get('previous_value')
+            trend = inflation.get('trend', 'N/A')
+            # Build comparison string to justify the trend
+            if prev_val is not None:
+                change = current_val - prev_val
+                change_str = f" (vs prev {prev_val:.1f}%, {'↑' if change > 0 else '↓'}{abs(change):.2f}pp)"
+            else:
+                change_str = ""
+            lines.append(f"- Inflation: {current_val:.1f}%{change_str} ({inflation.get('date', 'N/A')}) [{inflation_type}] - {trend.upper()}")
 
         # Unemployment Rate
         unemp = econ_data.get("unemployment", {})

@@ -302,7 +302,9 @@ def analyze_rsi(rsi_value: float) -> Dict[str, Any]:
     elif rsi <= cfg.RSI_OVERSOLD:
         return {'value': rsi, 'signal': 'BUY', 'condition': 'oversold'}
     elif rsi <= cfg.RSI_WEAK_THRESHOLD:
-        return {'value': rsi, 'signal': 'NEUTRAL', 'condition': 'weak'}
+        # RSI 30-40: Weak bearish signal (not neutral - per financial analysis best practices)
+        # This zone indicates bearish momentum approaching oversold, distinct from neutral 40-60
+        return {'value': rsi, 'signal': 'SELL', 'condition': 'weak_bearish'}
     else:
         return {'value': rsi, 'signal': 'NEUTRAL', 'condition': 'neutral'}
 
