@@ -1511,6 +1511,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # Build recommendation section based on action type
         short_term = rec.get('short_term_trade', {})
         swing = rec.get('swing_trade', {})
+        key_levels = rec.get('key_levels', {})
         action = rec.get('overall_action', 'HOLD')
 
         if action == "HOLD":
@@ -1523,11 +1524,34 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 f"- Swing outlook: {swing.get('condition', 'Wait for clearer signal')}",
             ])
         else:
+            # BUY or SELL - show entry, targets, stop loss
             lines.extend([
                 f"",
                 f"RECOMMENDATION: {action} ({rec.get('action_strength', 'NEUTRAL')})",
-                f"Short-term (1-5d): Entry: {short_term.get('entry_zone', 'N/A')} | Target: {short_term.get('target_1', 'N/A')} | Stop: {short_term.get('stop_loss', 'N/A')}",
-                f"Swing (1-4w): {swing.get('action', 'N/A')} - {swing.get('condition', 'N/A')}",
+                f"",
+                f"SHORT-TERM TRADE (1-5 days):",
+                f"- Entry Zone: {short_term.get('entry_zone', 'N/A')}",
+                f"- Target 1: {short_term.get('target_1', 'N/A')}",
+                f"- Target 2: {short_term.get('target_2', 'N/A')}",
+                f"- Stop Loss: {short_term.get('stop_loss', 'N/A')}",
+                f"- Risk/Reward: {short_term.get('risk_reward', 'N/A')}",
+                f"",
+                f"SWING TRADE (1-4 weeks):",
+                f"- Action: {swing.get('action', 'N/A')}",
+                f"- Condition: {swing.get('condition', 'N/A')}",
+                f"- Key Support: {swing.get('key_support', 'N/A')}",
+                f"- Key Resistance: {swing.get('key_resistance', 'N/A')}",
+            ])
+
+        # Always show key levels for breakout/breakdown
+        if key_levels:
+            lines.extend([
+                f"",
+                f"KEY BREAKOUT/BREAKDOWN LEVELS:",
+                f"- Immediate Support: {key_levels.get('immediate_support', 'N/A')}",
+                f"- Immediate Resistance: {key_levels.get('immediate_resistance', 'N/A')}",
+                f"- Breakout Level: {key_levels.get('breakout_level', 'N/A')}",
+                f"- Breakdown Level: {key_levels.get('breakdown_level', 'N/A')}",
             ])
 
         lines.extend([
