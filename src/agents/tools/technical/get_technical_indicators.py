@@ -1561,8 +1561,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
         adx_strength = (adx_data.get('trend_strength') or 'N/A').upper()
 
         stoch_cond = (indicators.get('stochastic', {}).get('condition') or 'N/A').upper()
-        vwap_signal = indicators.get('vwap', {}).get('signal', 'N/A')
-        vwap_pct = indicators.get('vwap', {}).get('price_vs_vwap_pct', 'N/A')
+        vwap_data = indicators.get('vwap', {})
+        vwap_signal = vwap_data.get('signal', 'N/A')
+        vwap_pct = vwap_data.get('price_vs_vwap_pct', 'N/A')
+        vwap_anchor_date = vwap_data.get('anchor_date', 'N/A')
 
         obv_sig = indicators.get('obv', {}).get('signal', 'N/A')
         obv_div = indicators.get('obv', {}).get('divergence') or 'No divergence'
@@ -1674,7 +1676,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Trend: {ma_data.get('trend', 'N/A')}",
             f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
             f"- Stochastic: {stoch_cond}",
-            f"- Period VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%) [from {first_date.strftime('%Y-%m-%d')}]",
+            f"- Period VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%) [from {vwap_anchor_date}]",
             f"- OBV: {obv_sig} - {obv_div}",
             "",
             "MOVING AVERAGE CROSSOVERS (P1 FIX - separated for clarity):",
