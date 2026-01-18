@@ -552,12 +552,28 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         # Function call with thought_signature
                         if hasattr(part, 'function_call') and part.function_call:
                             fc = part.function_call
+
+                            # Convert protobuf Struct to dict properly
+                            # fc.args is a MapComposite (protobuf Struct), not a regular dict
+                            try:
+                                if fc.args:
+                                    # Use json_format.MessageToDict for proper conversion
+                                    args_dict = json_format.MessageToDict(fc.args)
+                                else:
+                                    args_dict = {}
+                            except Exception as e:
+                                self.logger.debug(f"[GEMINI] MessageToDict failed, trying dict(): {e}")
+                                try:
+                                    args_dict = dict(fc.args) if fc.args else {}
+                                except Exception:
+                                    args_dict = {}
+
                             tool_call = {
                                 "id": f"call_{fc.name}_{len(tool_calls)}",
                                 "type": "function",
                                 "function": {
                                     "name": fc.name,
-                                    "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
+                                    "arguments": json.dumps(args_dict),
                                 }
                             }
 
