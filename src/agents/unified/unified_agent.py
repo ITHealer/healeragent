@@ -2035,15 +2035,25 @@ IMPORTANT:
 
         # Get domain-specific skill based on classification
         market_type = "stock"  # Default
+        analysis_type = "general"  # Default
         if classification:
             market_type = getattr(classification, "market_type", "stock") or "stock"
+            # Phase 6: Extract analysis_type for specialized prompts
+            analysis_type_attr = getattr(classification, "analysis_type", "general")
+            if hasattr(analysis_type_attr, "value"):
+                analysis_type = analysis_type_attr.value
+            else:
+                analysis_type = str(analysis_type_attr or "general")
 
-        # Select skill and get domain prompt
+        # Select skill and get domain prompt with analysis-specific hints
         skill = self.skill_registry.select_skill(market_type)
-        skill_prompt = skill.get_full_prompt()
+        skill_prompt = self.skill_registry.get_skill_prompt_with_analysis(
+            market_type, analysis_type
+        )
 
         self.logger.debug(
-            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}"
+            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}, "
+            f"analysis_type={analysis_type}"
         )
 
         # Build context hints
@@ -2168,11 +2178,22 @@ Tools to use: [{tool_list_str}]
 
         # Get domain-specific skill based on classification
         market_type = "stock"
+        analysis_type = "general"
         if classification:
             market_type = getattr(classification, "market_type", "stock") or "stock"
+            # Phase 6: Extract analysis_type
+            analysis_type_attr = getattr(classification, "analysis_type", "general")
+            if hasattr(analysis_type_attr, "value"):
+                analysis_type = analysis_type_attr.value
+            else:
+                analysis_type = str(analysis_type_attr or "general")
 
         skill = self.skill_registry.select_skill(market_type)
         analysis_framework = skill.get_analysis_framework()
+
+        # Phase 6: Get analysis-type-specific hint
+        from src.agents.skills.skill_registry import get_analysis_type_hint
+        analysis_hint = get_analysis_type_hint(analysis_type)
 
         # Check if web search results are present
         has_web_search = any(
@@ -2192,9 +2213,12 @@ Tools to use: [{tool_list_str}]
 
 {analysis_framework}
 
+{analysis_hint}
+
 ---
 ## Current Context
 - Date: {current_date}
+- Analysis Type: {analysis_type}
 
 ## Tool Results Data (CRITICAL - USE ALL DATA)
 

@@ -131,7 +131,7 @@ TOOL_DEFINITIONS = {
     # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.) ✅ IMPLEMENTED
     # Phase 3: Enhanced Risk (VaR, Sharpe, Sortino, etc.) ✅ IMPLEMENTED
     # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) ✅ IMPLEMENTED
-    # Phase 5: Backtest (runBacktest, compareStrategies) [Coming]
+    # Phase 5: Backtest (runBacktest, compareStrategies) ✅ IMPLEMENTED
     # ========================================================================
     "finance_guru": [
         # Phase 1: Valuation Tools
@@ -158,6 +158,9 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.finance_guru.tools.portfolio", "GetEfficientFrontierTool", None),
         ("src.agents.tools.finance_guru.tools.portfolio", "AnalyzePortfolioDiversificationTool", None),
         ("src.agents.tools.finance_guru.tools.portfolio", "SuggestRebalancingTool", None),
+        # Phase 5: Backtest Engine
+        ("src.agents.tools.finance_guru.tools.backtest", "RunBacktestTool", None),
+        ("src.agents.tools.finance_guru.tools.backtest", "CompareStrategiesTool", None),
     ],
 
 }

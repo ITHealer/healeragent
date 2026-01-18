@@ -59,6 +59,11 @@ from src.agents.tools.finance_guru.tools.valuation import (
     GetValuationSummaryTool,
 )
 
+from src.agents.tools.finance_guru.tools.backtest import (
+    RunBacktestTool,
+    CompareStrategiesTool,
+)
+
 __all__ = [
     # Enhanced Technical Tools (Phase 2)
     "GetIchimokuCloudTool",
@@ -84,4 +89,7 @@ __all__ = [
     "CalculateGrahamTool",
     "CalculateDDMTool",
     "GetValuationSummaryTool",
+    # Backtest Tools (Phase 5)
+    "RunBacktestTool",
+    "CompareStrategiesTool",
 ]

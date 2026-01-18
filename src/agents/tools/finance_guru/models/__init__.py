@@ -145,6 +145,29 @@ from src.agents.tools.finance_guru.models.valuation import (
     ValuationSummary,
 )
 
+from src.agents.tools.finance_guru.models.backtest import (
+    # Enums
+    StrategyType,
+    TradeAction,
+    BacktestRecommendation,
+    # Config
+    BacktestConfig,
+    StrategyConfig,
+    SMAStrategyParams,
+    RSIStrategyParams,
+    MACDStrategyParams,
+    BollingerStrategyParams,
+    # Signals/Trades
+    TradeSignal,
+    TradeExecution,
+    # Output
+    BacktestPerformanceMetrics,
+    BenchmarkComparison,
+    EquityCurvePoint,
+    BacktestResult,
+    StrategyComparisonResult,
+)
+
 __all__ = [
     # Base
     "BaseFinanceModel",
@@ -237,4 +260,21 @@ __all__ = [
     "MultipleValuation",
     "ComparableOutput",
     "ValuationSummary",
+    # Backtest Models (Phase 5)
+    "StrategyType",
+    "TradeAction",
+    "BacktestRecommendation",
+    "BacktestConfig",
+    "StrategyConfig",
+    "SMAStrategyParams",
+    "RSIStrategyParams",
+    "MACDStrategyParams",
+    "BollingerStrategyParams",
+    "TradeSignal",
+    "TradeExecution",
+    "BacktestPerformanceMetrics",
+    "BenchmarkComparison",
+    "EquityCurvePoint",
+    "BacktestResult",
+    "StrategyComparisonResult",
 ]

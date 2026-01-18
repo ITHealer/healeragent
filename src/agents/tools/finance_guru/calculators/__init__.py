@@ -76,6 +76,12 @@ from src.agents.tools.finance_guru.calculators.valuation import (
     calculate_ddm,
 )
 
+from src.agents.tools.finance_guru.calculators.backtest import (
+    BacktestEngine,
+    run_backtest,
+    compare_strategies,
+)
+
 __all__ = [
     # Base
     "BaseCalculator",
@@ -117,4 +123,8 @@ __all__ = [
     "calculate_dcf",
     "calculate_graham",
     "calculate_ddm",
+    # Backtest (Phase 5)
+    "BacktestEngine",
+    "run_backtest",
+    "compare_strategies",
 ]
