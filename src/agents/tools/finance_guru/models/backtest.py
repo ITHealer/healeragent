@@ -414,11 +414,11 @@ class EquityCurvePoint(BaseFinanceModel):
     """Single point on equity curve.
 
     Attributes:
-        date: Date
+        point_date: Date of this equity point
         equity: Portfolio value
         drawdown_pct: Current drawdown from peak
     """
-    date: date = Field(..., description="Date")
+    point_date: date = Field(..., description="Date", alias="date")
     equity: float = Field(..., description="Portfolio value")
     drawdown_pct: float = Field(0.0, description="Drawdown from peak")
 

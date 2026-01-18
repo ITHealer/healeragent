@@ -242,9 +242,7 @@ class OptimizePortfolioTool(BaseTool):
         super().__init__()
         self.optimizer = PortfolioOptimizer()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="optimizePortfolio",
             category="portfolio",
             description=(
@@ -377,9 +375,7 @@ class GetCorrelationMatrixTool(BaseTool):
         super().__init__()
         self.engine = CorrelationEngine()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="getCorrelationMatrix",
             category="portfolio",
             description=(
@@ -479,9 +475,7 @@ class GetEfficientFrontierTool(BaseTool):
         super().__init__()
         self.optimizer = PortfolioOptimizer()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="getEfficientFrontier",
             category="portfolio",
             description=(
@@ -592,9 +586,7 @@ class AnalyzePortfolioDiversificationTool(BaseTool):
         super().__init__()
         self.engine = CorrelationEngine()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="analyzePortfolioDiversification",
             category="portfolio",
             description=(
@@ -702,9 +694,7 @@ class SuggestRebalancingTool(BaseTool):
         super().__init__()
         self.calculator = RebalancingCalculator()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="suggestRebalancing",
             category="portfolio",
             description=(

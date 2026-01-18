@@ -203,9 +203,7 @@ class CalculateDCFTool(BaseTool):
         super().__init__()
         self.calculator = DCFCalculator()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="calculateDCF",
             category="valuation",
             description=(
@@ -351,9 +349,7 @@ class CalculateGrahamTool(BaseTool):
         super().__init__()
         self.calculator = GrahamCalculator()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="calculateGraham",
             category="valuation",
             description=(
@@ -482,9 +478,7 @@ class CalculateDDMTool(BaseTool):
         super().__init__()
         self.calculator = DDMCalculator()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="calculateDDM",
             category="valuation",
             description=(
@@ -643,9 +637,7 @@ class GetValuationSummaryTool(BaseTool):
         self.ddm_calc = DDMCalculator()
         self.summary_calc = ValuationCalculator()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="getValuationSummary",
             category="valuation",
             description=(

@@ -222,7 +222,7 @@ class PricePoint(BaseFinanceModel):
     Used for time series data where each point has a date and price.
     """
 
-    date: date = Field(..., description="Date of the price point")
+    point_date: date = Field(..., description="Date of the price point", alias="date")
     price: float = Field(..., gt=0, description="Price value (must be positive)")
     volume: Optional[float] = Field(
         default=None,
