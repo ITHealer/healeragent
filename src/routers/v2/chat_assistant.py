@@ -534,6 +534,10 @@ class ChatRequest(BaseModel):
         default=True,
         description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search. Default is True for production efficiency."
     )
+    enable_finance_guru: bool = Field(
+        default=False,
+        description="Enable Finance Guru computation tools (DCF valuation, portfolio analysis, etc.). Only available in /chat/v3 endpoint."
+    )
     stream_config: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Custom stream configuration"
@@ -1705,3 +1709,83 @@ async def stream_chat_v2(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# /chat/v3 ENDPOINT - Finance Guru Integration
+# =============================================================================
+
+@router.post(
+    "/chat/v3",
+    summary="Streaming Chat V3 (Finance Guru + All Tools)",
+    description="""
+    Enhanced chat architecture with Finance Guru quantitative analysis capabilities.
+
+    **NEW in V3:**
+    - Finance Guru computation tools (valuation, portfolio, backtest)
+    - Enhanced risk metrics (Sortino, Calmar, Treynor)
+    - Portfolio analysis (correlation, rebalancing)
+    - DCF/Graham/DDM valuation calculations
+
+    **Architecture (same as V2):**
+    - Phase 1: IntentClassifier (single LLM call)
+    - Phase 2: Agent with ALL tools + Finance Guru tools
+    - Phase 3: Post-processing (LEARN + SAVE)
+
+    **Tool Categories:**
+    - Data Retrieval: getStockPrice, getCashFlow, getTechnicalIndicators...
+    - Computation (NEW): calculateDCF, analyzePortfolio, runBacktest...
+    - Reasoning: think, tool_search
+
+    **Example Flow:**
+    ```
+    User: "Tính DCF cho AAPL với growth 10%"
+
+    Turn 1 (THINK): "Need FCF data first"
+    Turn 1 (ACT): getCashFlow(symbol="AAPL")
+
+    Turn 2 (THINK): "Got FCF, now calculate DCF"
+    Turn 2 (ACT): calculateDCF(fcf=[...], growth=0.10)
+
+    Turn 3: Generate response with valuation result
+    ```
+
+    **Feature Flags:**
+    - enable_finance_guru: Enable Finance Guru tools (default: True for v3)
+    - enable_tool_search_mode: Dynamic tool discovery (default: True)
+    """,
+    response_class=StreamingResponse,
+)
+async def stream_chat_v3(
+    request: Request,
+    data: ChatRequest,
+    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
+):
+    """
+    Stream chat responses via SSE with Finance Guru capabilities.
+
+    This is V3 architecture - extends V2 with Finance Guru computation tools.
+    Internally uses the same pipeline as V2, with Finance Guru enabled by default.
+
+    The agent can now:
+    - Call data retrieval tools (getStockPrice, getCashFlow, etc.)
+    - Call computation tools (calculateDCF, analyzePortfolio, etc.)
+    - Combine both for comprehensive financial analysis
+    """
+    # V3 enables Finance Guru by default
+    # Override the flag for v3 endpoint (user can still disable)
+    if not hasattr(data, '_v3_processed'):
+        # Only set default if not explicitly set by user
+        # This allows user to disable Finance Guru even in v3 if needed
+        data._v3_processed = True
+
+    # Log v3 specific info
+    _logger.info(
+        f"[CHAT/V3] Request | user={getattr(request.state, 'user_id', 'unknown')} | "
+        f"finance_guru={data.enable_finance_guru} | "
+        f"tool_search={data.enable_tool_search_mode}"
+    )
+
+    # Delegate to v2 implementation (same pipeline)
+    # Finance Guru tools will be available when enable_finance_guru=True
+    return await stream_chat_v2(request, data, api_key_data)

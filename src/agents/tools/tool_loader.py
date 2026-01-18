@@ -122,6 +122,22 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.web", "SerpSearchTool", "serpapi_api_key"),
     ],
 
+    # ========================================================================
+    # FINANCE GURU TOOLS - Quantitative Analysis (Coming in Phase 1-5)
+    # These are COMPUTATION tools that work with data from existing tools.
+    # See: docs/ARCHITECTURE_CHAT_V2.md for integration details.
+    #
+    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM)
+    # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.)
+    # Phase 3: Enhanced Risk (Sortino, Calmar, Treynor)
+    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation)
+    # Phase 5: Backtest (runBacktest, compareStrategies)
+    # ========================================================================
+    "finance_guru": [
+        # Tools will be added here as they are implemented
+        # Example: ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
+    ],
+
 }
 
 
