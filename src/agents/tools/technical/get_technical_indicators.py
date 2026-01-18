@@ -1402,12 +1402,17 @@ class GetTechnicalIndicatorsTool(BaseTool):
             short_term = {
                 "action": "BUY",
                 "timeframe": "1-5 days",
-                "entry_zone": f"${entry_low:.2f} - ${entry_high:.2f}",
-                "stop_loss": f"${stop_loss:.2f}",
-                "target_1": f"${target_1:.2f}",
-                "target_2": f"${target_2:.2f}",
+                # S2.3: Numeric values for LLM calculations (no $ signs)
+                "entry_zone_low": round(entry_low, 2),
+                "entry_zone_high": round(entry_high, 2),
+                "entry_zone_display": f"{entry_low:.2f} - {entry_high:.2f}",
+                "stop_loss": round(stop_loss, 2),
+                "target_1": round(target_1, 2),
+                "target_2": round(target_2, 2),
                 "risk_reward": "1:2 minimum recommended",
-                "atr_based": f"SL={ATR_SL_MULT}×ATR, TP1={ATR_TP1_MULT}×ATR, TP2={ATR_TP2_MULT}×ATR"
+                "atr_based": f"SL={ATR_SL_MULT}×ATR, TP1={ATR_TP1_MULT}×ATR, TP2={ATR_TP2_MULT}×ATR",
+                # S1.4: Invalidation condition
+                "invalidation": f"Close below {stop_loss:.2f} invalidates this setup"
             }
         else:  # SELL
             # ATR-based targets for SELL
@@ -1425,13 +1430,18 @@ class GetTechnicalIndicatorsTool(BaseTool):
             short_term = {
                 "action": "SELL/SHORT",
                 "timeframe": "1-5 days",
-                "entry_zone": f"${entry_low:.2f} - ${entry_high:.2f}",
-                "stop_loss": f"${stop_loss:.2f}",
-                "target_1": f"${target_1:.2f}",
-                "target_2": f"${target_2:.2f}",
+                # S2.3: Numeric values for LLM calculations (no $ signs)
+                "entry_zone_low": round(entry_low, 2),
+                "entry_zone_high": round(entry_high, 2),
+                "entry_zone_display": f"{entry_low:.2f} - {entry_high:.2f}",
+                "stop_loss": round(stop_loss, 2),
+                "target_1": round(target_1, 2),
+                "target_2": round(target_2, 2),
                 "risk_reward": "1:2 minimum recommended",
                 "atr_based": f"SL={ATR_SL_MULT}×ATR, TP1={ATR_TP1_MULT}×ATR, TP2={ATR_TP2_MULT}×ATR",
-                "trigger_note": trigger_note if trigger_note else None
+                "trigger_note": trigger_note if trigger_note else None,
+                # S1.4: Invalidation condition
+                "invalidation": f"Close above {stop_loss:.2f} invalidates this setup"
             }
 
         # Swing trade recommendation (1-4 weeks)
@@ -1441,18 +1451,23 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "action": "WAIT",
                 "timeframe": "1-4 weeks",
                 "condition": "Wait for clearer trend signal (RSI extreme, MA crossover, or breakout)",
-                "key_support": f"${nearest_support:.2f}",
-                "key_resistance": f"${nearest_resistance:.2f}"
+                # S2.3: Numeric values for LLM calculations
+                "key_support": round(nearest_support, 2),
+                "key_resistance": round(nearest_resistance, 2)
             }
         elif action == "BUY":
+            swing_stop = round(nearest_support - atr_value, 2)
             swing_trade = {
                 "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
                 "timeframe": "1-4 weeks",
                 "condition": "Enter on pullback to moving average support",
-                "stop_loss": f"Below SMA-50 or ${nearest_support - atr_value:.2f}",
-                "target": f"${nearest_resistance:.2f}",
-                "key_support": f"${nearest_support:.2f}",
-                "key_resistance": f"${nearest_resistance:.2f}"
+                "stop_loss": swing_stop,
+                "stop_loss_note": f"Below SMA-50 or {swing_stop}",
+                "target": round(nearest_resistance, 2),
+                "key_support": round(nearest_support, 2),
+                "key_resistance": round(nearest_resistance, 2),
+                # S1.4: Invalidation condition
+                "invalidation": f"Close below {swing_stop} invalidates bullish swing thesis"
             }
         else:  # SELL
             # P1 FIX: Add trigger for oversold condition in swing too
@@ -1460,22 +1475,40 @@ class GetTechnicalIndicatorsTool(BaseTool):
             if is_oversold:
                 swing_condition = "⚠️ OVERSOLD: Wait for rally fail at resistance/MA before shorting"
 
+            swing_stop = round(nearest_resistance + atr_value, 2)
             swing_trade = {
                 "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
                 "timeframe": "1-4 weeks",
                 "condition": swing_condition,
-                "stop_loss": f"Above SMA-50 or ${nearest_resistance + atr_value:.2f}",
-                "target": f"${nearest_support:.2f}",
-                "key_support": f"${nearest_support:.2f}",
-                "key_resistance": f"${nearest_resistance:.2f}"
+                "stop_loss": swing_stop,
+                "stop_loss_note": f"Above SMA-50 or {swing_stop}",
+                "target": round(nearest_support, 2),
+                "key_support": round(nearest_support, 2),
+                "key_resistance": round(nearest_resistance, 2),
+                # S1.4: Invalidation condition
+                "invalidation": f"Close above {swing_stop} invalidates bearish swing thesis"
             }
 
-        # Key levels to watch
+        # Key levels to watch (S2.3: numeric values for LLM calculations)
         key_levels = {
-            "immediate_support": f"${nearest_support:.2f}",
-            "immediate_resistance": f"${nearest_resistance:.2f}",
-            "breakout_level": f"Above ${nearest_resistance:.2f} with volume confirms bullish breakout",
-            "breakdown_level": f"Below ${nearest_support:.2f} with volume confirms bearish breakdown"
+            # S2.3: Numeric values for LLM calculations (no $ signs)
+            "immediate_support": round(nearest_support, 2),
+            "immediate_resistance": round(nearest_resistance, 2),
+            "support_distance_pct": round((current_price - nearest_support) / current_price * 100, 2),
+            "resistance_distance_pct": round((nearest_resistance - current_price) / current_price * 100, 2),
+            # Breakout/Breakdown conditions with RVOL threshold
+            "breakout_trigger": {
+                "level": round(nearest_resistance, 2),
+                "condition": f"Close above {nearest_resistance:.2f}",
+                "volume_required": "RVOL >= 1.2 (20% above average)",
+                "invalidation": f"Close back below {nearest_resistance:.2f} invalidates breakout"
+            },
+            "breakdown_trigger": {
+                "level": round(nearest_support, 2),
+                "condition": f"Close below {nearest_support:.2f}",
+                "volume_required": "RVOL >= 1.2 (20% above average)",
+                "invalidation": f"Close back above {nearest_support:.2f} invalidates breakdown"
+            }
         }
 
         # Risk assessment
@@ -1626,6 +1659,20 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
+            # S2.3: Confidence + Assumptions for LLM
+            "confidence": {
+                "level": "HIGH" if max(bullish_pct, bearish_pct) >= 0.70 else "MEDIUM" if max(bullish_pct, bearish_pct) >= 0.55 else "LOW",
+                "score": round(max(bullish_pct, bearish_pct) * 100, 1),
+                "note": "HIGH=70%+, MEDIUM=55-70%, LOW=<55% dominant signal"
+            },
+            "assumptions": [
+                "Technical analysis only - does not include fundamental data",
+                "Based on daily timeframe data",
+                "Levels may need adjustment for intraday trading",
+                "Volume confirmation required for breakout/breakdown signals",
+                "AVWAP anchor=start_of_period has LOW timing relevance"
+            ],
+            "data_freshness": "Analysis based on most recent daily close data",
             "note": "dominant_signal_pct_weighted = max(weighted_bullish, weighted_bearish) / weighted_total. Action threshold: dominant >= 60%."
         }
 
