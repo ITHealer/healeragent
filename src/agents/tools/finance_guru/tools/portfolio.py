@@ -246,6 +246,7 @@ class OptimizePortfolioTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="optimizePortfolio",
+            category="portfolio",
             description=(
                 "Optimize portfolio allocation to find the best asset weights. "
                 "Methods: max_sharpe (maximize Sharpe ratio), min_variance (minimize risk), "
@@ -380,6 +381,7 @@ class GetCorrelationMatrixTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="getCorrelationMatrix",
+            category="portfolio",
             description=(
                 "Calculate correlation matrix between assets. "
                 "Correlation ranges from -1 (move opposite) to +1 (move together). "
@@ -481,6 +483,7 @@ class GetEfficientFrontierTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="getEfficientFrontier",
+            category="portfolio",
             description=(
                 "Generate efficient frontier showing optimal portfolios at each risk level. "
                 "Returns Max Sharpe and Min Variance portfolios with their allocations."
@@ -593,6 +596,7 @@ class AnalyzePortfolioDiversificationTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="analyzePortfolioDiversification",
+            category="portfolio",
             description=(
                 "Comprehensive portfolio diversification analysis including correlation matrix, "
                 "diversification ratio, effective number of assets, and recommendations."
@@ -702,6 +706,7 @@ class SuggestRebalancingTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="suggestRebalancing",
+            category="portfolio",
             description=(
                 "Analyze current portfolio and suggest rebalancing to optimal allocation. "
                 "Provides buy/sell recommendations with urgency levels."

@@ -191,6 +191,7 @@ class RunBacktestTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="runBacktest",
+            category="backtest",
             description=(
                 "Run a backtest to test a trading strategy on historical data. "
                 "Strategies: sma_crossover (moving average), rsi_mean_reversion (RSI oversold/overbought), "
@@ -392,6 +393,7 @@ class CompareStrategiesTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="compareStrategies",
+            category="backtest",
             description=(
                 "Compare multiple trading strategies on the same stock. "
                 "Runs backtests on each strategy and ranks them by performance. "

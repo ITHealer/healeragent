@@ -207,6 +207,7 @@ class CalculateDCFTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="calculateDCF",
+            category="valuation",
             description=(
                 "Calculate intrinsic value using Discounted Cash Flow analysis. "
                 "Projects future free cash flows and discounts them to present value. "
@@ -354,6 +355,7 @@ class CalculateGrahamTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="calculateGraham",
+            category="valuation",
             description=(
                 "Calculate intrinsic value using Benjamin Graham's formula: "
                 "V = EPS × (8.5 + 2g) × (4.4/Y). Simple but effective for "
@@ -484,6 +486,7 @@ class CalculateDDMTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="calculateDDM",
+            category="valuation",
             description=(
                 "Calculate intrinsic value using Dividend Discount Model. "
                 "Values stock as present value of all future dividends. "
@@ -644,6 +647,7 @@ class GetValuationSummaryTool(BaseTool):
     def schema(self) -> ToolSchema:
         return ToolSchema(
             name="getValuationSummary",
+            category="valuation",
             description=(
                 "Comprehensive valuation using multiple methods (DCF, Graham, DDM). "
                 "Provides average value, confidence level, and overall recommendation."
