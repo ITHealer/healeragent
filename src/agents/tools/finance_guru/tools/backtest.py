@@ -88,7 +88,7 @@ async def fetch_historical_prices(
         Dict with dates, opens, highs, lows, closes, volumes
     """
     try:
-        from src.services.fmp_service import FMPService
+        from src.agents.tools.finance_guru.services.fmp_service import FMPService
 
         fmp = FMPService(api_key=fmp_api_key)
         historical = await fmp.get_historical_price(symbol, days=days)

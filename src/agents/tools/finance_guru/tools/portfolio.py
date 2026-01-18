@@ -101,7 +101,7 @@ async def fetch_portfolio_prices(
         PortfolioPriceData with price matrix
     """
     try:
-        from src.services.fmp_service import FMPService
+        from src.agents.tools.finance_guru.services.fmp_service import FMPService
 
         fmp = FMPService(api_key=fmp_api_key)
         price_matrix = []

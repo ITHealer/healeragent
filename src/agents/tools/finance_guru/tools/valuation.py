@@ -104,7 +104,7 @@ async def fetch_fundamental_data(
         Dict with fundamental metrics
     """
     try:
-        from src.services.fmp_service import FMPService
+        from src.agents.tools.finance_guru.services.fmp_service import FMPService
 
         fmp = FMPService(api_key=fmp_api_key)
 
