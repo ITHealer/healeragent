@@ -133,10 +133,14 @@ class GetStockPriceTool(BaseTool):
             
             # Extract and format data
             formatted_data = self._format_price_data(price_data, symbol_upper)
-            
+
+            # Generate LLM-friendly summary
+            llm_summary = self._generate_llm_summary(formatted_data)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=llm_summary,
                 metadata={
                     "source": "FMP",
                     "endpoint": "quote",
@@ -213,6 +217,57 @@ class GetStockPriceTool(BaseTool):
             "market_cap": fmp_data.get("marketCap", 0),
             "timestamp": fmp_data.get("timestamp", datetime.now().timestamp())
         }
+
+    def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
+        """Generate LLM-friendly summary for price data."""
+        symbol = data.get("symbol", "N/A")
+        name = data.get("name", "")
+        price = data.get("price", 0)
+        change = data.get("change", 0)
+        change_pct = data.get("change_percent", 0)
+        volume = data.get("volume", 0)
+        day_high = data.get("day_high", 0)
+        day_low = data.get("day_low", 0)
+        prev_close = data.get("previous_close", 0)
+        market_cap = data.get("market_cap", 0)
+
+        # Format change direction
+        change_sign = "+" if change >= 0 else ""
+        change_pct_sign = "+" if change_pct >= 0 else ""
+
+        # Format market cap
+        if market_cap >= 1e12:
+            market_cap_str = f"${market_cap/1e12:.2f}T"
+        elif market_cap >= 1e9:
+            market_cap_str = f"${market_cap/1e9:.2f}B"
+        elif market_cap >= 1e6:
+            market_cap_str = f"${market_cap/1e6:.2f}M"
+        else:
+            market_cap_str = f"${market_cap:,.0f}"
+
+        # Format volume
+        if volume >= 1e6:
+            volume_str = f"{volume/1e6:.2f}M"
+        elif volume >= 1e3:
+            volume_str = f"{volume/1e3:.1f}K"
+        else:
+            volume_str = f"{volume:,}"
+
+        lines = [
+            f"=== STOCK PRICE: {symbol} ===",
+            f"Company: {name}" if name else "",
+            f"",
+            f"CURRENT PRICE: ${price:.2f}",
+            f"Change: {change_sign}${abs(change):.2f} ({change_pct_sign}{change_pct:.2f}%)",
+            f"",
+            f"DAY RANGE: ${day_low:.2f} - ${day_high:.2f}",
+            f"Previous Close: ${prev_close:.2f}",
+            f"",
+            f"Volume: {volume_str}",
+            f"Market Cap: {market_cap_str}",
+        ]
+
+        return "\n".join([l for l in lines if l])
 
 
 # ============================================================================

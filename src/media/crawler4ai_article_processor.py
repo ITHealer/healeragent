@@ -957,6 +957,11 @@ class URLProcessor:
 
 class WebCrawler:
     """Web crawler with anti-detection and fallback"""
+
+    # Connection pool settings for better performance
+    POOL_CONNECTIONS = 10
+    POOL_MAXSIZE = 10
+
     def __init__(self, timeout: int = 30, user_agent: Optional[str] = None, proxy_list: Optional[list] = None):
         self.timeout = timeout
         self.proxy_list = proxy_list or []
@@ -968,6 +973,37 @@ class WebCrawler:
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
         ]
         self.user_agent = user_agent or random.choice(self.user_agents)
+
+        # Initialize shared session for connection pooling
+        self._session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        """
+        Create a requests session with connection pooling.
+
+        Returns:
+            Configured requests.Session with retry strategy and connection pool
+        """
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=self.POOL_CONNECTIONS,
+            pool_maxsize=self.POOL_MAXSIZE
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        return session
+
+    def close(self):
+        """Close the session and release resources."""
+        if self._session:
+            self._session.close()
+            self._session = None
 
     async def crawl_url(self, url: str, extract_main_content: bool = True) -> CrawlResult:
         try:
@@ -1084,11 +1120,7 @@ class WebCrawler:
             logger.warning(f"Cloudscraper failed: {str(e)}, trying requests...")
 
         try:
-            session = requests.Session()
-            retry_strategy = Retry(total=3, backoff_factor=1, status_forcelist=[429,500,502,503,504])
-            adapter = HTTPAdapter(max_retries=retry_strategy)
-            session.mount("http://", adapter)
-            session.mount("https://", adapter)
+            # Use shared session with connection pooling
             headers = {
                 'User-Agent': self.user_agent,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -1102,7 +1134,7 @@ class WebCrawler:
                 'Cache-Control': 'max-age=0',
             }
             time.sleep(random.uniform(0.5, 2.0))
-            response = session.get(url, headers=headers, timeout=self.timeout)
+            response = self._session.get(url, headers=headers, timeout=self.timeout)
             response.raise_for_status()
             html_content = response.text
             title = self._extract_title(html_content)

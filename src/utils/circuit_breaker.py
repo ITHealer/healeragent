@@ -308,3 +308,68 @@ def reset_circuit_breaker() -> None:
     global _global_circuit_breaker
     if _global_circuit_breaker:
         _global_circuit_breaker.reset()
+
+
+# ============================================================================
+# ASYNC DECORATOR
+# ============================================================================
+
+def with_circuit_breaker(
+    service_name: str,
+    fallback_result: any = None,
+    raise_on_open: bool = False,
+):
+    """
+    Decorator to wrap async functions with circuit breaker.
+
+    Usage:
+        @with_circuit_breaker("openai_api")
+        async def call_openai(prompt: str) -> str:
+            ...
+
+    Args:
+        service_name: Name for the circuit
+        fallback_result: Return value when circuit is open (if raise_on_open=False)
+        raise_on_open: If True, raises CircuitBreakerOpenError when open
+    """
+    import functools
+    import asyncio
+
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(*args, **kwargs):
+            circuit = get_circuit_breaker()
+
+            if not circuit.allow_request(service_name):
+                retry_after = circuit.get_retry_after(service_name)
+                if raise_on_open:
+                    raise CircuitBreakerOpenError(service_name, retry_after)
+                return fallback_result
+
+            try:
+                result = await func(*args, **kwargs)
+                circuit.record_success(service_name)
+                return result
+            except Exception as e:
+                circuit.record_failure(service_name, e)
+                raise
+
+        return wrapper
+    return decorator
+
+
+# Alias for consistency with architecture document
+CircuitOpenError = CircuitBreakerOpenError
+
+
+# ============================================================================
+# PREDEFINED CIRCUIT NAMES
+# ============================================================================
+
+CIRCUIT_LLM_OPENAI = "llm_openai"
+CIRCUIT_LLM_ANTHROPIC = "llm_anthropic"
+CIRCUIT_LLM_GOOGLE = "llm_google"
+CIRCUIT_FMP_API = "fmp_api"
+CIRCUIT_BINANCE_API = "binance_api"
+CIRCUIT_NEWS_API = "news_api"
+CIRCUIT_TAVILY_API = "tavily_api"

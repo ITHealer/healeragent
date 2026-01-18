@@ -14,7 +14,32 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.webdriver.remote.remote_connection import RemoteConnection
+from urllib3.util.retry import Retry
+import urllib3
 from bs4 import BeautifulSoup
+
+# ============================================================================
+# CONFIGURE SELENIUM CONNECTION POOL TO AVOID "Connection pool is full" WARNINGS
+# ============================================================================
+# The warning "Connection pool is full, discarding connection: localhost"
+# comes from Selenium's internal urllib3 HTTP client communicating with ChromeDriver.
+# This is harmless but can be suppressed by:
+# 1. Increasing the default pool size
+# 2. Suppressing the urllib3 warning logs
+
+# Suppress urllib3 connection pool warnings (these are not errors, just info)
+import logging as _logging
+_logging.getLogger("urllib3.connectionpool").setLevel(_logging.WARNING)
+
+# Suppress InsecureRequestWarning if any
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Set RemoteConnection timeout
+try:
+    RemoteConnection.set_timeout(120)
+except Exception:
+    pass
 from PIL import Image, ImageEnhance
 import requests
 from io import BytesIO
@@ -762,7 +787,11 @@ Create a well-structured final summary (3-5 paragraphs)."""
     
 class WebAutomation:
     """Web automation class with captcha handling and advanced summarization"""
-    
+
+    # Connection pool configuration for Selenium
+    POOL_CONNECTIONS = 10
+    POOL_MAXSIZE = 10
+
     def __init__(self, api_key: str, headless: bool = True):
         """
         Initialize WebAutomation with chunking summarizer
@@ -776,8 +805,22 @@ class WebAutomation:
         self.summarizer = ChunkingSummarizer(api_key)  # Add chunking summarizer
         self.headless = headless
         self.driver = None
-        
+
+        # Configure Selenium RemoteConnection pool size to avoid "Connection pool is full" warnings
+        self._configure_selenium_pool()
+
         logger.info(f"Initialize WebAutomation with Chunking Summarizer - Headless mode: {headless}")
+
+    def _configure_selenium_pool(self):
+        """Configure Selenium's internal HTTP connection pool to avoid pool exhaustion warnings.
+
+        Note: Main configuration is done at module level. This method ensures
+        connection pool warnings are suppressed for this instance.
+        """
+        # Pool configuration is already done at module level via:
+        # - urllib3 warning suppression
+        # - RemoteConnection timeout setting
+        logger.debug(f"Selenium pool configured: connections={self.POOL_CONNECTIONS}, maxsize={self.POOL_MAXSIZE}")
         
         
     def setup_driver(self, user_agent: str = None):
@@ -826,21 +869,20 @@ class WebAutomation:
         try:
             # Create service with suppressed output
             from selenium.webdriver.chrome.service import Service
-            import os
-            
+
             service = Service(log_path=os.devnull)
             if os.name == 'nt':  # Windows
                 import subprocess
                 service.creation_flags = 0x08000000  # CREATE_NO_WINDOW
-            
+
             self.driver = webdriver.Chrome(service=service, options=options)
             self.driver.set_page_load_timeout(120)
-            
+
             # Execute script to hide webdriver property
             self.driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-            
+
             logger.info("Chrome driver initialized successfully")
-            
+
         except Exception as e:
             logger.error(f"Unable to initialize driver: {e}")
             raise

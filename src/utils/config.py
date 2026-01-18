@@ -108,8 +108,9 @@ class Settings(BaseSettings):
     MODEL_DEFAULT: str = Field("", env='MODEL_DEFAULT')
     PROVIDER_DEFAULT: str = Field("", env='PROVIDER_DEFAULT')
 
-    # Classification Model (fast, cheap - called first for every request)
-    CLASSIFIER_MODEL: str = Field("gpt-4.1-nano", env='CLASSIFIER_MODEL')
+    # Classification Model (needs reasoning capability for context understanding)
+    # Note: nano is too weak for complex context reasoning with history/memory
+    CLASSIFIER_MODEL: str = Field("gpt-4.1-mini", env='CLASSIFIER_MODEL')
     CLASSIFIER_PROVIDER: str = Field("openai", env='CLASSIFIER_PROVIDER')
 
     # Agent Loop Model (main reasoning - needs higher quality)
@@ -123,6 +124,16 @@ class Settings(BaseSettings):
     # Memory Update Model (cheap, periodic background task)
     MEMORY_MODEL: str = Field("gpt-4.1-nano", env='MEMORY_MODEL')
     MEMORY_PROVIDER: str = Field("openai", env='MEMORY_PROVIDER')
+
+    # URL Reader Model (background job for URL content processing)
+    URL_READER_MODEL: str = Field("gpt-4.1-nano", env='URL_READER_MODEL')
+    URL_READER_PROVIDER: str = Field("openai", env='URL_READER_PROVIDER')
+    URL_READER_CONCURRENT_URLS: int = Field(3, env='URL_READER_CONCURRENT_URLS')
+    URL_READER_TIMEOUT_PER_URL: int = Field(120, env='URL_READER_TIMEOUT_PER_URL')
+
+    # Task Worker Model (news analysis background job)
+    TASK_WORKER_MODEL: str = Field("gpt-4.1-nano", env='TASK_WORKER_MODEL')
+    TASK_WORKER_PROVIDER: str = Field("openai", env='TASK_WORKER_PROVIDER')
 
 # Avoid having to re-read the .env file and create the Settings object every time you access it
 @lru_cache()

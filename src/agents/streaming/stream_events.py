@@ -21,33 +21,37 @@ class StreamEventType(str, Enum):
     """
     # Session events
     START = "start"
-    
+
     # Thinking events (like Claude Extended Thinking)
     THINKING_START = "thinking_start"
     THINKING_DELTA = "thinking_delta"
     THINKING_END = "thinking_end"
-    
+
+    # Thinking Timeline Events (ChatGPT-style "Thought for Xs" display)
+    THINKING_TIMELINE = "thinking_timeline"  # Individual timeline step
+    THINKING_SUMMARY = "thinking_summary"    # Final "Thought for Xs" summary
+
     # Tool execution events
     TOOL_START = "tool_start"
     TOOL_PROGRESS = "tool_progress"
     TOOL_COMPLETE = "tool_complete"
-    
+
     # Planning events
     PLANNING_START = "planning_start"
     PLANNING_PROGRESS = "planning_progress"
     PLANNING_COMPLETE = "planning_complete"
-    
+
     # Context events
     CONTEXT_LOADING = "context_loading"
     CONTEXT_LOADED = "context_loaded"
-    
+
     # Response events
     TEXT_DELTA = "text_delta"
     TEXT_COMPLETE = "text_complete"
-    
+
     # Memory events
     MEMORY_UPDATE = "memory_update"
-    
+
     # LLM Decision Events (for agent reasoning)
     LLM_THOUGHT = "llm_thought"
     LLM_DECISION = "llm_decision"
@@ -59,9 +63,38 @@ class StreamEventType(str, Enum):
     # Completion events
     DONE = "done"
     ERROR = "error"
-    
+
     # Heartbeat for long connections
     HEARTBEAT = "heartbeat"
+
+
+class ThinkingPhase(str, Enum):
+    """
+    Phases in the thinking timeline
+
+    Used to track and display the agent's thought process
+    in a ChatGPT-style "Thought for Xs" UI component
+    """
+    # Classification phase
+    CLASSIFICATION = "classification"        # Analyzing query
+    SYMBOL_DETECTION = "symbol_detection"    # Detecting stock symbols
+    INTENT_ANALYSIS = "intent_analysis"      # Understanding intent
+
+    # Tool selection phase
+    TOOL_SELECTION = "tool_selection"        # Selecting tools
+    TOOL_ROUTING = "tool_routing"            # Routing to tools
+
+    # Execution phase
+    TOOL_EXECUTION = "tool_execution"        # Executing tools
+    DATA_GATHERING = "data_gathering"        # Gathering data
+
+    # Synthesis phase
+    SYNTHESIS = "synthesis"                  # Synthesizing response
+    RESPONSE_GENERATION = "response_generation"  # Generating final response
+
+    # Memory phase
+    MEMORY_UPDATE = "memory_update"          # Updating memory
+    LEARNING = "learning"                    # Learning from interaction
 
 
 def generate_call_id(tool_name: str) -> str:
@@ -842,7 +875,7 @@ class ErrorEvent(StreamEvent):
 @dataclass
 class HeartbeatEvent(StreamEvent):
     """Keep-alive heartbeat"""
-    
+
     def __init__(self, elapsed_seconds: int = None):
         super().__init__(
             event_type=StreamEventType.HEARTBEAT,
@@ -851,6 +884,336 @@ class HeartbeatEvent(StreamEvent):
                 "status": "alive"
             }
         )
+
+
+# ============================================================================
+# THINKING TIMELINE EVENTS (ChatGPT-style "Thought for Xs" Display)
+# ============================================================================
+
+@dataclass
+class ThinkingTimelineStep:
+    """
+    Individual step in the thinking timeline
+
+    Represents one line in the ChatGPT-style thinking display:
+    ├── [0.3s] 🔍 LLM Call: Intent Classification
+
+    Attributes:
+        elapsed_ms: Time since thinking started (in milliseconds)
+        phase: Phase of thinking (classification, tool_selection, etc.)
+        action: Description of the action
+        is_llm_call: Whether this step involves an LLM call (shows 🔍 indicator)
+        is_tool_call: Whether this step involves a tool call (shows 🔧 indicator)
+        details: Optional additional details (symbol, result preview, etc.)
+        success: Whether the step completed successfully
+    """
+    elapsed_ms: int
+    phase: str  # ThinkingPhase value
+    action: str
+    is_llm_call: bool = False
+    is_tool_call: bool = False
+    details: Optional[str] = None
+    success: Optional[bool] = None
+    step_index: int = 0
+
+    def format_for_display(self) -> str:
+        """
+        Format step for display in UI
+
+        Returns:
+            Formatted string like "[0.3s] 🔍 LLM Call: Intent Classification"
+        """
+        elapsed_s = self.elapsed_ms / 1000
+        indicator = ""
+        if self.is_llm_call:
+            indicator = "🔍 "
+        elif self.is_tool_call:
+            indicator = "🔧 "
+
+        result = f"[{elapsed_s:.1f}s] {indicator}{self.action}"
+        if self.details:
+            result += f" → {self.details}"
+        return result
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "elapsed_ms": self.elapsed_ms,
+            "elapsed_s": round(self.elapsed_ms / 1000, 1),
+            "phase": self.phase,
+            "action": self.action,
+            "is_llm_call": self.is_llm_call,
+            "is_tool_call": self.is_tool_call,
+            "details": self.details,
+            "success": self.success,
+            "step_index": self.step_index,
+            "display": self.format_for_display()
+        }
+
+
+@dataclass
+class ThinkingTimelineEvent(StreamEvent):
+    """
+    SSE Event for thinking timeline step
+
+    Emitted for each step in the thinking process.
+    Frontend can accumulate these to build the timeline display.
+
+    Example SSE:
+        event: thinking_timeline
+        data: {
+            "type": "thinking_timeline",
+            "elapsed_ms": 300,
+            "elapsed_s": 0.3,
+            "phase": "classification",
+            "action": "Intent Classification",
+            "is_llm_call": true,
+            "details": "Detected symbols: NVDA",
+            "step_index": 2
+        }
+    """
+
+    def __init__(
+        self,
+        elapsed_ms: int,
+        phase: str,
+        action: str,
+        is_llm_call: bool = False,
+        is_tool_call: bool = False,
+        details: Optional[str] = None,
+        success: Optional[bool] = None,
+        step_index: int = 0,
+        node_id: str = None,
+        parent_id: str = None
+    ):
+        super().__init__(
+            event_type=StreamEventType.THINKING_TIMELINE,
+            data={
+                "elapsed_ms": elapsed_ms,
+                "elapsed_s": round(elapsed_ms / 1000, 1),
+                "phase": phase,
+                "action": action,
+                "is_llm_call": is_llm_call,
+                "is_tool_call": is_tool_call,
+                "details": details,
+                "success": success,
+                "step_index": step_index,
+                "display": self._format_display(elapsed_ms, action, is_llm_call, is_tool_call, details)
+            },
+            node_id=node_id,
+            parent_id=parent_id
+        )
+
+    @staticmethod
+    def _format_display(elapsed_ms: int, action: str, is_llm_call: bool, is_tool_call: bool, details: str) -> str:
+        """Format for display"""
+        elapsed_s = elapsed_ms / 1000
+        indicator = ""
+        if is_llm_call:
+            indicator = "🔍 "
+        elif is_tool_call:
+            indicator = "🔧 "
+
+        result = f"[{elapsed_s:.1f}s] {indicator}{action}"
+        if details:
+            result += f" → {details}"
+        return result
+
+
+@dataclass
+class ThinkingSummaryEvent(StreamEvent):
+    """
+    Final thinking summary event - "Thought for Xs"
+
+    Emitted when thinking phase completes.
+    Provides the ChatGPT-style "Thought for X seconds" summary.
+
+    Example SSE:
+        event: thinking_summary
+        data: {
+            "type": "thinking_summary",
+            "total_duration_ms": 2500,
+            "total_duration_s": 2.5,
+            "display": "Thought for 2.5s",
+            "steps_count": 8,
+            "llm_calls_count": 3,
+            "tool_calls_count": 4,
+            "timeline": [
+                {"elapsed_s": 0.0, "action": "Analyzing query...", ...},
+                {"elapsed_s": 0.3, "action": "Intent Classification", "is_llm_call": true, ...},
+                ...
+            ]
+        }
+    """
+
+    def __init__(
+        self,
+        total_duration_ms: int,
+        timeline_steps: List[ThinkingTimelineStep],
+        node_id: str = None,
+        parent_id: str = None
+    ):
+        # Calculate statistics
+        llm_calls_count = sum(1 for s in timeline_steps if s.is_llm_call)
+        tool_calls_count = sum(1 for s in timeline_steps if s.is_tool_call)
+
+        super().__init__(
+            event_type=StreamEventType.THINKING_SUMMARY,
+            data={
+                "total_duration_ms": total_duration_ms,
+                "total_duration_s": round(total_duration_ms / 1000, 1),
+                "display": f"Thought for {total_duration_ms / 1000:.1f}s",
+                "steps_count": len(timeline_steps),
+                "llm_calls_count": llm_calls_count,
+                "tool_calls_count": tool_calls_count,
+                "timeline": [step.to_dict() for step in timeline_steps]
+            },
+            node_id=node_id,
+            parent_id=parent_id
+        )
+
+
+# ============================================================================
+# THINKING TIMELINE TRACKER
+# ============================================================================
+
+class ThinkingTimeline:
+    """
+    Tracks thinking timeline for a request
+
+    Usage:
+        timeline = ThinkingTimeline()
+        timeline.add_step("classification", "Analyzing query...", is_llm_call=True)
+        timeline.add_step("symbol_detection", "Detected symbols", details="NVDA, AAPL")
+        timeline.add_tool_step("getStockPrice", symbol="NVDA", success=True)
+
+        # Get events for SSE streaming
+        for event in timeline.get_pending_events():
+            yield event.to_sse()
+
+        # Get final summary
+        summary_event = timeline.get_summary_event()
+    """
+
+    def __init__(self):
+        self.start_time = datetime.utcnow()
+        self.steps: List[ThinkingTimelineStep] = []
+        self._pending_events: List[ThinkingTimelineEvent] = []
+        self._step_index = 0
+        self._parent_node_id: Optional[str] = None
+
+    def set_parent_node(self, node_id: str):
+        """Set parent node for tree tracking"""
+        self._parent_node_id = node_id
+
+    def _get_elapsed_ms(self) -> int:
+        """Get elapsed time since start"""
+        return int((datetime.utcnow() - self.start_time).total_seconds() * 1000)
+
+    def add_step(
+        self,
+        phase: str,
+        action: str,
+        is_llm_call: bool = False,
+        is_tool_call: bool = False,
+        details: Optional[str] = None,
+        success: Optional[bool] = None
+    ) -> ThinkingTimelineStep:
+        """
+        Add a step to the timeline
+
+        Args:
+            phase: ThinkingPhase value
+            action: Description of the action
+            is_llm_call: Whether this is an LLM call
+            is_tool_call: Whether this is a tool call
+            details: Optional details
+            success: Whether step succeeded
+
+        Returns:
+            Created ThinkingTimelineStep
+        """
+        elapsed_ms = self._get_elapsed_ms()
+        step = ThinkingTimelineStep(
+            elapsed_ms=elapsed_ms,
+            phase=phase,
+            action=action,
+            is_llm_call=is_llm_call,
+            is_tool_call=is_tool_call,
+            details=details,
+            success=success,
+            step_index=self._step_index
+        )
+        self.steps.append(step)
+
+        # Create SSE event
+        event = ThinkingTimelineEvent(
+            elapsed_ms=elapsed_ms,
+            phase=phase,
+            action=action,
+            is_llm_call=is_llm_call,
+            is_tool_call=is_tool_call,
+            details=details,
+            success=success,
+            step_index=self._step_index,
+            parent_id=self._parent_node_id
+        )
+        self._pending_events.append(event)
+        self._step_index += 1
+
+        return step
+
+    def add_llm_step(self, action: str, details: Optional[str] = None) -> ThinkingTimelineStep:
+        """Add an LLM call step"""
+        phase = ThinkingPhase.CLASSIFICATION.value  # Default phase for LLM calls
+        return self.add_step(
+            phase=phase,
+            action=f"LLM Call: {action}",
+            is_llm_call=True,
+            details=details
+        )
+
+    def add_tool_step(
+        self,
+        tool_name: str,
+        symbol: Optional[str] = None,
+        result_preview: Optional[str] = None,
+        success: bool = True
+    ) -> ThinkingTimelineStep:
+        """Add a tool execution step"""
+        action = f"Tool: {tool_name}"
+        if symbol:
+            action += f"({symbol})"
+
+        return self.add_step(
+            phase=ThinkingPhase.TOOL_EXECUTION.value,
+            action=action,
+            is_tool_call=True,
+            details=result_preview,
+            success=success
+        )
+
+    def get_pending_events(self) -> List[ThinkingTimelineEvent]:
+        """Get and clear pending events"""
+        events = self._pending_events
+        self._pending_events = []
+        return events
+
+    def get_summary_event(self) -> ThinkingSummaryEvent:
+        """Get final summary event"""
+        return ThinkingSummaryEvent(
+            total_duration_ms=self._get_elapsed_ms(),
+            timeline_steps=self.steps,
+            parent_id=self._parent_node_id
+        )
+
+    def get_elapsed_seconds(self) -> float:
+        """Get elapsed time in seconds"""
+        return self._get_elapsed_ms() / 1000
+
+    def get_steps_count(self) -> int:
+        """Get total steps count"""
+        return len(self.steps)
 
 
 # ============================================================================

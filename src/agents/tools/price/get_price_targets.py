@@ -132,6 +132,9 @@ class GetPriceTargetsTool(BaseTool):
                         
                         execution_time = (datetime.now() - start_time).total_seconds() * 1000
                         
+                        # Generate formatted context for LLM
+                        formatted_context = self._generate_formatted_context(cached_data)
+
                         return create_success_output(
                             tool_name=self.schema.name,
                             data=cached_data,
@@ -141,7 +144,8 @@ class GetPriceTargetsTool(BaseTool):
                                 "execution_time_ms": int(execution_time),
                                 "from_cache": True,
                                 "timestamp": datetime.now().isoformat()
-                            }
+                            },
+                            formatted_context=formatted_context
                         )
                 except Exception as e:
                     self.logger.warning(f"[CACHE] Error reading: {e}")
@@ -208,7 +212,10 @@ class GetPriceTargetsTool(BaseTool):
                 f"Analysts: {formatted_data['analyst_count']}, "
                 f"Rating: {formatted_data['average_rating']}"
             )
-            
+
+            # Generate formatted context for LLM
+            formatted_context = self._generate_formatted_context(formatted_data)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
@@ -219,7 +226,8 @@ class GetPriceTargetsTool(BaseTool):
                     "from_cache": False,
                     "cache_ttl": f"{self.CACHE_TTL}s",
                     "timestamp": datetime.now().isoformat()
-                }
+                },
+                formatted_context=formatted_context
             )
             
         except Exception as e:
@@ -425,6 +433,65 @@ class GetPriceTargetsTool(BaseTool):
             return float(value)
         except (ValueError, TypeError):
             return 0.0
+
+    def _generate_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Generate human-readable formatted context for LLM consumption.
+
+        Args:
+            data: Formatted price targets data
+
+        Returns:
+            Human-readable string summary of analyst price targets
+        """
+        symbol = data.get("symbol", "Unknown")
+        consensus = data.get("consensus_target", 0)
+        high = data.get("high_target", 0)
+        low = data.get("low_target", 0)
+        analyst_count = data.get("analyst_count", 0)
+        rating = data.get("average_rating", "No Rating")
+        current_price = data.get("current_price")
+        upside = data.get("upside_potential_pct", 0)
+        breakdown = data.get("rating_breakdown", {})
+
+        lines = [
+            f"=== {symbol} ANALYST PRICE TARGETS ===",
+            f"Consensus Target: ${consensus:,.2f}",
+            f"Target Range: ${low:,.2f} - ${high:,.2f}",
+            f"Analysts Covering: {analyst_count}",
+            f"Average Rating: {rating}",
+            ""
+        ]
+
+        # Current price comparison
+        if current_price and current_price > 0:
+            lines.append(f"Current Price: ${current_price:,.2f}")
+            if upside >= 0:
+                lines.append(f"Upside Potential: +{upside:.1f}%")
+            else:
+                lines.append(f"Downside Risk: {upside:.1f}%")
+            lines.append("")
+
+        # Rating breakdown
+        if breakdown:
+            lines.append("Rating Breakdown:")
+            lines.append(f"  Strong Buy: {breakdown.get('strong_buy', 0)}")
+            lines.append(f"  Buy: {breakdown.get('buy', 0)}")
+            lines.append(f"  Hold: {breakdown.get('hold', 0)}")
+            lines.append(f"  Sell: {breakdown.get('sell', 0)}")
+            lines.append(f"  Strong Sell: {breakdown.get('strong_sell', 0)}")
+            lines.append("")
+
+        # Interpretation
+        lines.append("Interpretation:")
+        if rating in ["Strong Buy", "Buy"]:
+            lines.append(f"  Analysts are BULLISH on {symbol}")
+        elif rating in ["Strong Sell", "Sell"]:
+            lines.append(f"  Analysts are BEARISH on {symbol}")
+        else:
+            lines.append(f"  Analysts have MIXED views on {symbol}")
+
+        return "\n".join(lines)
 
 
 # ============================================================================

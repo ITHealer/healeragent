@@ -68,7 +68,17 @@ class GetBalanceSheetTool(BaseTool):
             description=(
                 "Fetch balance sheet with assets, liabilities, equity, and financial health metrics. "
                 "Returns current/quick ratios, debt levels, and book value. "
-                "Use when user asks about assets, debt, equity, or balance sheet."
+                "Use when user asks about assets, debt, equity, or balance sheet. "
+                "\n\nPERIOD SELECTION GUIDE (IMPORTANT):\n"
+                "- Use period='quarter' for LATEST/RECENT data (quarterly reports are more current)\n"
+                "- Use period='annual' for HISTORICAL TRENDS or YEARLY COMPARISONS\n"
+                "- Annual reports have 60-90 day delay after fiscal year end\n"
+                "- Example: In Jan 2026, latest quarterly=Q3 2025, latest annual=FY2024\n"
+                "\n\nFISCAL YEAR vs CALENDAR YEAR:\n"
+                "- NVDA fiscal year ends in JANUARY (Q4 FY2025 = Oct 2024 - Jan 2025)\n"
+                "- AAPL fiscal year ends in SEPTEMBER (Q1 FY2025 = Oct-Dec 2024)\n"
+                "- Most US companies: fiscal year = calendar year\n"
+                "- Use limit=8+ when user asks for a specific quarter."
             ),
             capabilities=[
                 "✅ Total assets and asset breakdown",
@@ -123,9 +133,13 @@ class GetBalanceSheetTool(BaseTool):
                 ToolParameter(
                     name="limit",
                     type="integer",
-                    description="Number of periods",
+                    description=(
+                        "Number of periods to return. IMPORTANT: When user asks for a SPECIFIC "
+                        "quarter (e.g., Q4 2025), use limit=8 or higher to ensure you get enough "
+                        "historical data. The API returns the MOST RECENT periods first."
+                    ),
                     required=False,
-                    default=4
+                    default=8
                 )
             ],
             returns={
@@ -164,8 +178,14 @@ class GetBalanceSheetTool(BaseTool):
         """
         symbol_upper = symbol.upper()
         period = period.lower()
-        limit = max(1, min(10, limit))
-        
+
+        # Enforce minimum limit for quarterly data to ensure enough history
+        # Ensure int for slicing (LLM may pass float)
+        if period in ["quarter", "quarterly"]:
+            limit = int(max(8, min(20, limit)))  # At least 8 quarters (2 years)
+        else:
+            limit = int(max(4, min(10, limit)))  # At least 4 years for annual
+
         self.logger.info(
             f"[getBalanceSheet] Executing: symbol={symbol_upper}, "
             f"period={period}, limit={limit}"

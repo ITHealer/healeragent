@@ -292,15 +292,17 @@ class FMPNewsProvider(BaseNewsProvider):
         category: NewsCategory,
         page: int = 0,
         limit: int = 20,
+        tickers: Optional[List[str]] = None,
     ) -> List[UnifiedNewsItem]:
         """
         Fetch news for a specific category.
-        
+
         Args:
             category: News category
             page: Page number
             limit: Items per page
-            
+            tickers: Optional list of stock symbols to filter (for STOCK category)
+
         Returns:
             List of UnifiedNewsItem
         """
@@ -308,12 +310,19 @@ class FMPNewsProvider(BaseNewsProvider):
         if not endpoint:
             self.logger.warning(f"Unknown category: {category}")
             return []
-        
-        self._log_fetch_start(category.value, page, limit)
+
+        # Log with tickers info if provided
+        tickers_info = f" | tickers={tickers}" if tickers else ""
+        self.logger.info(f"[fmp] Fetching {category.value} news - page={page}, limit={limit}{tickers_info}")
         start_time = time.time()
-        
-        raw_items = await self._fetch_endpoint(endpoint, page, limit)
-        
+
+        # Add tickers filter for stock news
+        extra_params = None
+        if tickers and category == NewsCategory.STOCK:
+            extra_params = {"tickers": ",".join(tickers)}
+
+        raw_items = await self._fetch_endpoint(endpoint, page, limit, extra_params)
+
         # Convert based on category
         converter_map = {
             NewsCategory.STOCK: self._convert_stock_news,
@@ -323,20 +332,20 @@ class FMPNewsProvider(BaseNewsProvider):
             NewsCategory.PRESS_RELEASE: self._convert_press_release,
             NewsCategory.FMP_ARTICLE: self._convert_fmp_article,
         }
-        
+
         converter = converter_map.get(category)
         if not converter:
             return []
-        
+
         results = []
         for item in raw_items:
             unified = converter(item)
             if unified:
                 results.append(unified)
-        
+
         elapsed_ms = int((time.time() - start_time) * 1000)
         self._log_fetch_complete(category.value, len(results), elapsed_ms)
-        
+
         return results
     
     async def fetch_news(
@@ -344,30 +353,33 @@ class FMPNewsProvider(BaseNewsProvider):
         categories: List[NewsCategory],
         page: int = 0,
         limit: int = 20,
+        tickers: Optional[List[str]] = None,
         **kwargs
     ) -> List[UnifiedNewsItem]:
         """
         Fetch news from all specified categories.
-        
+
         Args:
             categories: List of categories to fetch
             page: Page number for each category
             limit: Items per page per category
-            
+            tickers: Optional stock symbols to filter (applied to STOCK category)
+
         Returns:
             Combined list of UnifiedNewsItem from all categories
         """
-        self.logger.info(f"[FMP] Fetching news for categories: {[c.value for c in categories]}")
+        tickers_str = f" | tickers={tickers}" if tickers else ""
+        self.logger.info(f"[FMP] Fetching news for categories: {[c.value for c in categories]}{tickers_str}")
         start_time = time.time()
-        
+
         # Fetch all categories concurrently
         tasks = [
-            self.fetch_category(category, page, limit)
+            self.fetch_category(category, page, limit, tickers=tickers)
             for category in categories
         ]
-        
+
         results_lists = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Combine results
         all_results = []
         for i, result in enumerate(results_lists):
@@ -375,8 +387,8 @@ class FMPNewsProvider(BaseNewsProvider):
                 self.logger.error(f"Error fetching {categories[i].value}: {result}")
             elif isinstance(result, list):
                 all_results.extend(result)
-        
+
         total_time_ms = int((time.time() - start_time) * 1000)
         self.logger.info(f"[FMP] Total: {len(all_results)} articles in {total_time_ms}ms")
-        
+
         return all_results

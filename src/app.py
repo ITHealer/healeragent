@@ -45,6 +45,7 @@ class IncludeAPIRouter(object):
         # Trading service routers
         from src.routers.trading_agents import router as router_trading_agents
         from src.routers.hedge_fund_multi_agent import router as router_multi_agent
+        from src.routers.character_agent_chat import router as router_character_agent_chat
         from src.routers.content_processor import router as router_content_processor
         from src.routers.news_agent import router as router_news_agent
         from src.routers.news_aggregator import router as router_news_aggregator
@@ -61,14 +62,21 @@ class IncludeAPIRouter(object):
         from src.routers.v2.tool_call import router as router_tool_call
         from src.routers.v2.cookies_router import router as router_cookies
         from src.routers.v2.text_translator import router as router_text_translator
+        from src.routers.v2.deep_research import router as router_deep_research
 
         # Live Analysis
         from src.routers.v2.equity_forecast import router as router_equity_forecast
         from src.routers.smc_analysis import router as router_smc_analysis
         
-        # Data provider routers 
+        # Data provider routers
         from src.routers.v2.data_providers.fmp.company_search import router as router_company_search
         from src.routers.v2.data_providers.fmp.symbol_directory import router as router_symbol_directory
+
+        # Task system routers (API v1)
+        from src.routers.tasks import router as router_tasks
+
+        # URL Reader Jobs router
+        from src.routers.url_reader_jobs import router as router_url_reader_jobs
 
         # =============================================================================
         # CONFIGURE MAIN ROUTER AND INCLUDE ALL SUB-ROUTERS  
@@ -111,6 +119,7 @@ class IncludeAPIRouter(object):
         # Trading service routers
         router.include_router(router_trading_agents, tags=['Tool - Trading Agent'])
         router.include_router(router_multi_agent, tags=['Chat - AI Character Multi-Agent'])
+        router.include_router(router_character_agent_chat, tags=['Chat - Character Agent'])
         
         # Data provider routers
         router.include_router(get_data_provider_fmp, tags=["Data Provider - FMP"])
@@ -125,17 +134,30 @@ class IncludeAPIRouter(object):
         router.include_router(router_chat_assistant, tags=["TOL Chat - Assistant - V2"])
         router.include_router(router_cookies, tags=["TOL Cookies - Cookie Management"])
         router.include_router(router_content_processor, tags=['TOL - Content Summarizer'])
+        router.include_router(router_url_reader_jobs, tags=['TOL URL Reader - Background Jobs'])
         router.include_router(router_news_agent, tags=['TOL News Aggregator - Tavily News Agent'])
         router.include_router(router_news_aggregator, tags=['TOL News Aggregator - News Aggregator'])
         router.include_router(router_text_translator, tags=['TOL Translator - Text Translation'])
         router.include_router(router_equity_forecast, tags=['TOL Tool - Equity Forecast'])
         router.include_router(router_smc_analysis, tags=['TOL Tool - Crypto Live Analysis'])
+        router.include_router(router_deep_research, tags=['Deep Research - Multi-Agent Research'])
 
         # Data provider routers
         router.include_router(router_company_search, tags=["TOL Data Provider - FMP"])
         router.include_router(router_symbol_directory, tags=["TOL Data Provider - FMP"])
 
-        return router
+        # =============================================================================
+        # API V1 - TASK SYSTEM
+        # =============================================================================
+        router_v1 = APIRouter(prefix='/api/v1')
+        router_v1.include_router(router_tasks, tags=["Task System - News Analysis"])
+
+        # Return combined routers
+        main_router = APIRouter()
+        main_router.include_router(router)  # v2 endpoints
+        main_router.include_router(router_v1)  # v1 endpoints
+
+        return main_router
         
 
 # Instance creation

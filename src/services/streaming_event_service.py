@@ -89,6 +89,7 @@ class StreamEventType(str, Enum):
 
     # Thinking/Reasoning Events (AI Agent)
     THINKING_START = "thinking_start"
+    THINKING_STEP = "thinking_step"  # For UI: { type: "thinking_step", step: { title, content } }
     THINKING_DELTA = "thinking_delta"
     THINKING_END = "thinking_end"
 
@@ -322,6 +323,7 @@ class StreamEventEmitter(LoggerMixin):
         language: str,
         reasoning: Optional[str] = None,
         intent_summary: Optional[str] = None,
+        classification_method: Optional[str] = None,
     ) -> str:
         """Emit classification result event"""
         data = {
@@ -337,6 +339,8 @@ class StreamEventEmitter(LoggerMixin):
             data["reasoning"] = reasoning
         if intent_summary:
             data["intent_summary"] = intent_summary
+        if classification_method:
+            data["classification_method"] = classification_method
 
         return self._emit(
             StreamEventType.CLASSIFIED, data,
@@ -539,6 +543,63 @@ class StreamEventEmitter(LoggerMixin):
         }
         return self._emit(StreamEventType.THINKING_START, data, f"phase={phase}")
 
+    def emit_thinking_step(
+        self,
+        title: str,
+        content: str,
+        phase: str = "reasoning",
+    ) -> str:
+        """
+        Emit thinking step event for UI display.
+
+        Format: { type: "thinking_step", step: { title, content } }
+        """
+        data = {
+            "step": {
+                "title": title,
+                "content": content,
+            },
+            "phase": phase,
+        }
+        preview = content[:50] if len(content) > 50 else content
+        return self._emit(
+            StreamEventType.THINKING_STEP, data,
+            f"title=\"{title}\" content=\"{preview}...\""
+        )
+
+    def emit_reasoning(
+        self,
+        phase: str,
+        content: str,
+        action: str = "thought",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Emit reasoning event - maps to thinking_step for UI compatibility.
+
+        This method exists for backward compatibility.
+        Internally converts to thinking_step format.
+
+        Args:
+            phase: Current processing phase (classification, tool_selection, etc.)
+            content: The reasoning content
+            action: Action type (start, thought, complete)
+            metadata: Optional additional data
+
+        Returns:
+            SSE event string in thinking_step format
+        """
+        # Map to thinking_step format
+        title = f"{phase.replace('_', ' ').title()}"
+        if action and action != "thought":
+            title = f"{title}: {action}"
+
+        return self.emit_thinking_step(
+            title=title,
+            content=content,
+            phase=phase,
+        )
+
     def emit_thinking_delta(
         self,
         content: str,
@@ -667,26 +728,80 @@ async def with_heartbeat(
     """
     Wrap an event generator with heartbeat support.
 
-    Emits heartbeat if no event within interval.
-    """
-    last_event_time = datetime.now()
+    Emits heartbeat if no event within interval to keep SSE connection alive.
 
-    async def heartbeat_task():
-        nonlocal last_event_time
-        while True:
-            await asyncio.sleep(heartbeat_interval)
-            elapsed = (datetime.now() - last_event_time).total_seconds()
-            if elapsed >= heartbeat_interval:
-                yield emitter.emit_heartbeat()
-                last_event_time = datetime.now()
+    IMPORTANT: This implementation does NOT cancel the inner operation when
+    emitting heartbeats - it uses asyncio.wait() instead of wait_for() to
+    preserve long-running LLM calls.
 
-    # Use merge pattern with timeout
-    try:
-        async for event in event_generator:
-            last_event_time = datetime.now()
+    Usage:
+        async def my_generator():
+            yield "event1"
+            await asyncio.sleep(20)  # Long operation
+            yield "event2"
+
+        # Heartbeat will be emitted during the 20s wait
+        async for event in with_heartbeat(my_generator(), emitter):
             yield event
-    except asyncio.CancelledError:
-        pass
+    """
+    import time
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    last_event_time = time.time()
+    gen_exhausted = False
+    pending_task: Optional[asyncio.Task] = None
+
+    # Create async iterator from generator
+    gen_iter = event_generator.__aiter__()
+
+    while not gen_exhausted:
+        try:
+            # Create task for next event if not already pending
+            if pending_task is None:
+                pending_task = asyncio.create_task(gen_iter.__anext__())
+
+            # Wait for task with timeout, but DON'T cancel on timeout
+            done, pending = await asyncio.wait(
+                {pending_task},
+                timeout=heartbeat_interval,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            if done:
+                # Task completed - get the result
+                try:
+                    event = pending_task.result()
+                    last_event_time = time.time()
+                    pending_task = None  # Reset for next iteration
+                    yield event
+                except StopAsyncIteration:
+                    gen_exhausted = True
+                    pending_task = None
+            else:
+                # Timeout - emit heartbeat but keep task running
+                elapsed = time.time() - last_event_time
+                _logger.debug(f"[HEARTBEAT] Emitting heartbeat after {elapsed:.1f}s")
+                yield emitter.emit_heartbeat()
+                last_event_time = time.time()
+                # Don't reset pending_task - continue waiting for it
+
+        except asyncio.CancelledError:
+            # Stream cancelled - cancel pending task too
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+                try:
+                    await pending_task
+                except (asyncio.CancelledError, StopAsyncIteration):
+                    pass
+            break
+
+        except Exception as e:
+            # Log error but continue
+            _logger.warning(f"[HEARTBEAT] Error: {e}")
+            if pending_task and not pending_task.done():
+                pending_task.cancel()
+            break
 
 
 # ============================================================================

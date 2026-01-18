@@ -11,6 +11,7 @@ from src.models.equity_forecast import (
     ForecastAnalysisMetadata,
 )
 from src.providers.provider_factory import ProviderType, ModelProviderFactory
+from src.utils.config import settings
 from src.utils.logger.set_up_log_dataFMP import setup_logger
 
 logger = setup_logger(__name__, log_level=logging.INFO)
@@ -389,16 +390,26 @@ OUTPUT: Pure markdown, no code blocks, no JSON."""
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-            
+
             logger.info(f"[ForecastAI] Starting LLM streaming (max_tokens={max_tokens})...")
-            
+
+            # Get API key based on provider type
+            api_key = None
+            if provider_type == ProviderType.OPENAI or provider_type == "openai":
+                api_key = settings.OPENAI_API_KEY
+            elif provider_type == "anthropic":
+                api_key = getattr(settings, "ANTHROPIC_API_KEY", None)
+            elif provider_type == ProviderType.GEMINI or provider_type == "gemini":
+                api_key = getattr(settings, "GEMINI_API_KEY", None)
+
             full_markdown = ""
             chunk_count = 0
-            
+
             async for chunk in self.llm_provider.stream_response(
                 model_name=model_name,
                 messages=messages,
                 provider_type=provider_type,
+                api_key=api_key,
                 clean_thinking=True,
                 max_tokens=max_tokens,
             ):

@@ -160,6 +160,9 @@ class GetMarketNewsTool(BaseTool):
                     f"[getMarketNews] ✅ CACHED ({int(execution_time)}ms)"
                 )
 
+                # Generate formatted context for LLM
+                formatted_context = self._generate_formatted_context(cached_data)
+
                 return create_success_output(
                     tool_name="getMarketNews",
                     data=cached_data,
@@ -169,6 +172,7 @@ class GetMarketNewsTool(BaseTool):
                         "page": page,
                         "from_cache": True,
                     },
+                    formatted_context=formatted_context
                 )
 
             # Fetch from API
@@ -212,6 +216,9 @@ class GetMarketNewsTool(BaseTool):
                 f"{result_data['article_count']} articles"
             )
 
+            # Generate formatted context for LLM
+            formatted_context = self._generate_formatted_context(result_data)
+
             return create_success_output(
                 tool_name="getMarketNews",
                 data=result_data,
@@ -222,6 +229,7 @@ class GetMarketNewsTool(BaseTool):
                     "from_cache": False,
                     "article_count": result_data["article_count"],
                 },
+                formatted_context=formatted_context
             )
 
         except Exception as e:
@@ -320,6 +328,51 @@ class GetMarketNewsTool(BaseTool):
             "articles": articles,
             "timestamp": datetime.now().isoformat(),
         }
+
+    def _generate_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Generate human-readable formatted context for LLM consumption.
+
+        Args:
+            data: Formatted news data from _format_news_data()
+
+        Returns:
+            Human-readable string summary of market news
+        """
+        articles = data.get("articles", [])
+        article_count = data.get("article_count", 0)
+
+        lines = [
+            "=== GENERAL MARKET NEWS ===",
+            f"Total Articles: {article_count}",
+            ""
+        ]
+
+        if not articles:
+            lines.append("No recent market news available.")
+            return "\n".join(lines)
+
+        # List top articles
+        for i, article in enumerate(articles[:10], 1):  # Limit to top 10
+            title = article.get("title", "Untitled")
+            source = article.get("site", "Unknown")
+            pub_date = article.get("published_date", "")
+            symbols = article.get("symbols", [])
+            text_preview = article.get("text", "")[:150]
+
+            lines.append(f"[{i}] {title}")
+            lines.append(f"    Source: {source} | Date: {pub_date}")
+            if symbols:
+                symbols_str = ", ".join(symbols[:5]) if isinstance(symbols, list) else str(symbols)
+                lines.append(f"    Related: {symbols_str}")
+            if text_preview:
+                lines.append(f"    Preview: {text_preview}...")
+            lines.append("")
+
+        if article_count > 10:
+            lines.append(f"(Showing top 10 of {article_count} articles)")
+
+        return "\n".join(lines)
 
 
 # Standalone test

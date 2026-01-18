@@ -344,16 +344,24 @@ async def explain_forecast_stream(
         try:
             system = forecast_ai_service._build_system_prompt(language)
             user = forecast_ai_service._build_user_prompt(symbol, context, current_price)
-            
+
             messages = [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ]
-            
+
+            # Get API key based on provider type
+            api_key = None
+            if provider_type == "openai":
+                api_key = settings.OPENAI_API_KEY
+            elif provider_type == "anthropic":
+                api_key = getattr(settings, "ANTHROPIC_API_KEY", None)
+
             async for chunk in forecast_ai_service.llm_provider.stream_response(
                 model_name=model_name,
                 messages=messages,
                 provider_type=provider_type,
+                api_key=api_key,
                 clean_thinking=True,
             ):
                 yield chunk

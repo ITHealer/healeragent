@@ -114,7 +114,8 @@ class GetSentimentTool(BaseTool):
         """
         start_time = datetime.now()
         symbol_upper = symbol.upper()
-        
+        lookback_days = int(max(1, min(30, lookback_days)))  # Ensure int for slicing
+
         self.logger.info(
             f"[getSentiment] Executing: symbol={symbol_upper}, lookback={lookback_days}"
         )
@@ -158,6 +159,9 @@ class GetSentimentTool(BaseTool):
                 f"Label: {formatted['sentiment_label']}"
             )
             
+            # Generate formatted context for LLM
+            formatted_context = self._generate_formatted_context(formatted)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted,
@@ -168,7 +172,8 @@ class GetSentimentTool(BaseTool):
                     "data_points": processed.get("data_points", 0),
                     "execution_time_ms": int(execution_time),
                     "timestamp": datetime.now().isoformat()
-                }
+                },
+                formatted_context=formatted_context
             )
             
         except Exception as e:
@@ -381,6 +386,58 @@ class GetSentimentTool(BaseTool):
             "twitter_avg": processed.get("twitter_avg"),
             "timestamp": datetime.now().isoformat()
         }
+
+    def _generate_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Generate human-readable formatted context for LLM consumption.
+
+        Args:
+            data: Formatted sentiment data from _format_sentiment_data()
+
+        Returns:
+            Human-readable string summary of sentiment analysis
+        """
+        symbol = data.get("symbol", "Unknown")
+        score = data.get("sentiment_score", 0)
+        label = data.get("sentiment_label", "NEUTRAL")
+        trend = data.get("sentiment_trend", "Stable")
+        level = data.get("sentiment_level", "Neutral")
+        data_points = data.get("data_points", 0)
+        stocktwits_avg = data.get("stocktwits_avg")
+        twitter_avg = data.get("twitter_avg")
+
+        lines = [
+            f"=== {symbol} SENTIMENT ANALYSIS ===",
+            f"Overall: {label} ({level})",
+            f"Score: {score:.3f} (scale: -1 to +1)",
+            f"Trend: {trend}",
+            f"Data Points: {data_points}",
+            ""
+        ]
+
+        # Platform breakdown
+        if stocktwits_avg is not None or twitter_avg is not None:
+            lines.append("Platform Breakdown:")
+            if stocktwits_avg is not None:
+                lines.append(f"  StockTwits: {stocktwits_avg:.3f}")
+            if twitter_avg is not None:
+                lines.append(f"  Twitter: {twitter_avg:.3f}")
+            lines.append("")
+
+        # Interpretation
+        lines.append("Interpretation:")
+        if score > 0.3:
+            lines.append(f"  Strong bullish sentiment ({label})")
+        elif score > 0.1:
+            lines.append(f"  Moderately bullish sentiment ({label})")
+        elif score < -0.3:
+            lines.append(f"  Strong bearish sentiment ({label})")
+        elif score < -0.1:
+            lines.append(f"  Moderately bearish sentiment ({label})")
+        else:
+            lines.append(f"  Neutral sentiment ({label})")
+
+        return "\n".join(lines)
 
 
 # ============================================================================

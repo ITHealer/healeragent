@@ -73,7 +73,12 @@ class GetGrowthMetricsTool(BaseTool):
             description=(
                 "Calculate company growth metrics including revenue growth, earnings growth, "
                 "and historical growth rates. Returns growth trends and projections. "
-                "Use when user asks about company growth, growth rate, or growth potential."
+                "Use when user asks about company growth, growth rate, or growth potential. "
+                "\n\nIMPORTANT - FISCAL YEAR vs CALENDAR YEAR:\n"
+                "- NVDA fiscal year ends in JANUARY (FY2025 = Feb 2024 - Jan 2025)\n"
+                "- AAPL fiscal year ends in SEPTEMBER (FY2025 = Oct 2024 - Sep 2025)\n"
+                "- Most US companies: fiscal year = calendar year\n"
+                "- Use lookback_years=5+ for comprehensive growth analysis."
             ),
             capabilities=[
                 "✅ Revenue growth (YoY, QoQ)",
@@ -113,10 +118,11 @@ class GetGrowthMetricsTool(BaseTool):
             ],
             returns={
                 "symbol": "string",
-                "revenue_growth": "object - YoY and Average",
-                "earnings_growth": "object - YoY and Average",
-                "eps_growth": "object",
-                "growth_analysis": "object - Trends and Consistency",
+                "period_type": "string - annual or quarterly",
+                "period_count": "number - Number of periods analyzed",
+                "latest_period_date": "string - Date of most recent data",
+                "growth_summary": "object - Contains revenue_growth_latest, revenue_growth_avg, revenue_trend, net_income_growth_latest, eps_growth_latest, fcf_growth_latest",
+                "historical_periods": "array - Detailed growth metrics for each period",
                 "timestamp": "string"
             },
             typical_execution_time_ms=1600,
@@ -140,7 +146,8 @@ class GetGrowthMetricsTool(BaseTool):
         """
         symbol_upper = symbol.upper()
         # Clamp lookback_years between 1 and 10 to prevent API overload
-        lookback_years = max(1, min(10, lookback_years))
+        # Also ensure it's an integer (can be passed as float from LLM)
+        lookback_years = int(max(1, min(10, lookback_years)))
         
         self.logger.info(
             f"[getGrowthMetrics] Executing with params: "

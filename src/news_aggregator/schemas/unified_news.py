@@ -41,7 +41,7 @@ class UnifiedNewsItem(BaseModel):
     
     # Metadata
     source_site: Optional[str] = Field(None, description="Source website name (e.g., Reuters)")
-    published_at: datetime = Field(..., description="Publication datetime")
+    published_at: Optional[datetime] = Field(None, description="Publication datetime (None if unparseable)")
     fetched_at: datetime = Field(default_factory=datetime.utcnow, description="When we fetched this")
     
     # Matching fields (extracted for keyword matching)
@@ -123,7 +123,7 @@ class UnifiedNewsItem(BaseModel):
             "content": self.content[:300] if self.content else "",
             "url": self.url,
             "source": self.source_site,
-            "published_at": self.published_at.isoformat(),
+            "published_at": self.published_at.isoformat() if self.published_at else None,
             "symbols": self.symbols,
             "category": self.category.value,
             "importance_score": self.importance_score,

@@ -130,7 +130,7 @@ class GetEarningsCalendarTool(BaseTool):
         symbol = symbol.upper()
         
         # Validate limit
-        limit = min(max(1, limit), 20)
+        limit = int(min(max(1, limit), 20))  # Ensure int for slicing
         
         self.logger.info(
             f"[getEarningsCalendar] Executing: symbol={symbol}, limit={limit}"
@@ -165,7 +165,10 @@ class GetEarningsCalendarTool(BaseTool):
                 self.logger.info(
                     f"[getEarningsCalendar] ✅ CACHED ({int(execution_time)}ms)"
                 )
-                
+
+                # Generate formatted context for LLM
+                formatted_context = self._generate_formatted_context(cached_data)
+
                 return create_success_output(
                     tool_name="getEarningsCalendar",
                     data=cached_data,
@@ -174,7 +177,8 @@ class GetEarningsCalendarTool(BaseTool):
                         "execution_time_ms": int(execution_time),
                         "limit": limit,
                         "from_cache": True
-                    }
+                    },
+                    formatted_context=formatted_context
                 )
             
             # Fetch from API
@@ -210,12 +214,15 @@ class GetEarningsCalendarTool(BaseTool):
                     self.logger.debug(f"[CACHE] Error closing Redis: {e}")
             
             execution_time = (datetime.now() - start_time).total_seconds() * 1000
-            
+
             self.logger.info(
                 f"[getEarningsCalendar] ✅ SUCCESS ({int(execution_time)}ms) - "
                 f"{result_data['report_count']} reports"
             )
-            
+
+            # Generate formatted context for LLM
+            formatted_context = self._generate_formatted_context(result_data)
+
             return create_success_output(
                 tool_name="getEarningsCalendar",
                 data=result_data,
@@ -225,7 +232,8 @@ class GetEarningsCalendarTool(BaseTool):
                     "limit": limit,
                     "from_cache": False,
                     "report_count": result_data['report_count']
-                }
+                },
+                formatted_context=formatted_context
             )
             
         except Exception as e:
@@ -390,6 +398,68 @@ class GetEarningsCalendarTool(BaseTool):
                 sum(revenue_surprises) / len(revenue_surprises), 2
             ) if revenue_surprises else None
         }
+
+    def _generate_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Generate human-readable formatted context for LLM consumption.
+
+        Args:
+            data: Formatted earnings data
+
+        Returns:
+            Human-readable string summary of earnings history
+        """
+        symbol = data.get("symbol", "Unknown")
+        reports = data.get("reports", [])
+        summary = data.get("summary", {})
+        report_count = data.get("report_count", 0)
+
+        lines = [
+            f"=== {symbol} EARNINGS CALENDAR ===",
+            f"Reports Analyzed: {report_count}",
+            ""
+        ]
+
+        # Summary statistics
+        if summary:
+            beat_rate = summary.get("eps_beat_rate")
+            avg_surprise = summary.get("avg_eps_surprise_pct")
+            eps_beats = summary.get("eps_beats", 0)
+            eps_misses = summary.get("eps_misses", 0)
+
+            lines.append("Summary Statistics:")
+            if beat_rate is not None:
+                lines.append(f"  EPS Beat Rate: {beat_rate * 100:.0f}% ({eps_beats} beats, {eps_misses} misses)")
+            if avg_surprise is not None:
+                lines.append(f"  Avg EPS Surprise: {avg_surprise:+.1f}%")
+            lines.append("")
+
+        # Recent reports
+        if reports:
+            lines.append("Recent Earnings Reports:")
+            for i, report in enumerate(reports[:5], 1):
+                date = report.get("date", "N/A")
+                eps_actual = report.get("eps_actual")
+                eps_est = report.get("eps_estimated")
+                eps_surprise = report.get("eps_surprise_pct")
+
+                if eps_actual is not None and eps_est is not None:
+                    result = "BEAT" if eps_surprise and eps_surprise > 0 else "MISSED" if eps_surprise and eps_surprise < 0 else "MET"
+                    lines.append(f"  [{i}] {date}: EPS ${eps_actual:.2f} vs ${eps_est:.2f} ({result})")
+                else:
+                    lines.append(f"  [{i}] {date}: EPS data not available")
+            lines.append("")
+
+        # Interpretation
+        lines.append("Interpretation:")
+        if summary.get("eps_beat_rate", 0) >= 0.75:
+            lines.append(f"  {symbol} has a STRONG track record of beating earnings")
+        elif summary.get("eps_beat_rate", 0) >= 0.5:
+            lines.append(f"  {symbol} has a MIXED earnings track record")
+        else:
+            lines.append(f"  {symbol} tends to MISS earnings estimates")
+
+        return "\n".join(lines)
 
 
 # Standalone test

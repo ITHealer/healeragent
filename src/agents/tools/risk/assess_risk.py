@@ -178,7 +178,7 @@ class AssessRiskTool(BaseTool):
         symbol_upper = symbol.upper()
 
         original_lookback = lookback_days
-        lookback_days = max(30, min(252, lookback_days))
+        lookback_days = int(max(30, min(252, lookback_days)))  # Ensure int
         
         if original_lookback != lookback_days:
             self.logger.warning(
@@ -201,10 +201,14 @@ class AssessRiskTool(BaseTool):
             
             # Format results to match schema
             formatted_data = self._format_risk_data(risk_results)
-            
+
+            # Generate LLM-friendly summary
+            llm_summary = self._generate_llm_summary(formatted_data)
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=llm_summary,
                 metadata={
                     "source": "RiskAnalysisHandler",
                     "lookback_days": lookback_days,
@@ -294,6 +298,59 @@ class AssessRiskTool(BaseTool):
             "alternative_conservative": stop_levels.get('atr_1x', 0.0),
             "alternative_aggressive": stop_levels.get('atr_3x', 0.0)
         }
+
+    def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
+        """Generate LLM-friendly summary for risk assessment data."""
+        symbol = data.get("symbol", "N/A")
+        current_price = data.get("current_price", 0)
+        atr_value = data.get("atr_value", 0)
+        stop_levels = data.get("stop_levels", {})
+        recommendation = data.get("recommendation", {})
+        risk_reward = data.get("risk_reward_ratios", {})
+
+        atr_based = stop_levels.get("atr_based", {})
+        pct_based = stop_levels.get("percentage_based", {})
+        tech_support = stop_levels.get("technical_support", {})
+
+        lines = [
+            f"=== RISK ASSESSMENT: {symbol} ===",
+            f"",
+            f"CURRENT PRICE: ${current_price:.2f}",
+            f"ATR (14-day): ${atr_value:.2f} ({atr_value/current_price*100:.1f}% of price)" if current_price > 0 else f"ATR: ${atr_value:.2f}",
+            f"",
+            f"STOP LOSS LEVELS (ATR-based):",
+            f"- Conservative (1x ATR): ${atr_based.get('conservative_1x', 0):.2f}",
+            f"- Moderate (2x ATR): ${atr_based.get('moderate_2x', 0):.2f}",
+            f"- Aggressive (3x ATR): ${atr_based.get('aggressive_3x', 0):.2f}",
+            f"",
+            f"STOP LOSS LEVELS (Percentage-based):",
+            f"- Tight (2%): ${pct_based.get('tight_2pct', 0):.2f}",
+            f"- Medium (5%): ${pct_based.get('medium_5pct', 0):.2f}",
+            f"- Wide (8%): ${pct_based.get('wide_8pct', 0):.2f}",
+            f"",
+            f"TECHNICAL SUPPORT LEVELS:",
+            f"- SMA 20: ${tech_support.get('sma_20', 0):.2f}",
+            f"- SMA 50: ${tech_support.get('sma_50', 0):.2f}",
+            f"- Recent Swing Low: ${tech_support.get('recent_swing_low', 0):.2f}",
+            f"",
+            f"RECOMMENDATION:",
+            f"- Recommended Stop: ${recommendation.get('recommended_stop_loss', 0):.2f}",
+            f"- Risk Profile: {recommendation.get('risk_profile', 'N/A')}",
+            f"- Risk %: {recommendation.get('risk_percent', 0):.1f}%",
+            f"- Rationale: {recommendation.get('rationale', 'N/A')}",
+        ]
+
+        # Add risk/reward ratios if available
+        if risk_reward:
+            lines.extend([
+                f"",
+                f"RISK/REWARD RATIOS:",
+            ])
+            for target, ratio in risk_reward.items():
+                if isinstance(ratio, (int, float)):
+                    lines.append(f"- {target}: {ratio:.2f}")
+
+        return "\n".join(lines)
 
 
 # ============================================================================

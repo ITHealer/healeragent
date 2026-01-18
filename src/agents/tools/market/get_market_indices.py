@@ -106,13 +106,12 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
             cached_result = await self._get_cached_result(cache_key)
             if cached_result:
                 self.logger.info(f"[{self.schema.name}] Cache HIT")
-                # ═══════════════════════════════════════════════════════════
-                # FIX: status must be string "success", not int 200
-                # ═══════════════════════════════════════════════════════════
+                llm_summary = self._generate_llm_summary(cached_result)
                 return ToolOutput(
                     tool_name=self.schema.name,
-                    status="success",  # ✅ FIXED: was 200 (int)
-                    data=cached_result
+                    status="success",
+                    data=cached_result,
+                    formatted_context=llm_summary
                 )
             
             # Fetch from FMP API
@@ -168,20 +167,21 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
             
             # Cache result
             await self._cache_result(cache_key, result)
-            
+
             execution_time = (time.time() - start_time) * 1000
             self.logger.info(
                 f"[{self.schema.name}] SUCCESS: {len(indices_data)} indices "
                 f"({execution_time:.0f}ms)"
             )
-            
-            # ═══════════════════════════════════════════════════════════
-            # FIX: status must be string "success", not int 200
-            # ═══════════════════════════════════════════════════════════
+
+            # Generate LLM-friendly summary
+            llm_summary = self._generate_llm_summary(result)
+
             return ToolOutput(
                 tool_name=self.schema.name,
-                status="success",  # ✅ FIXED: was 200 (int)
-                data=result
+                status="success",
+                data=result,
+                formatted_context=llm_summary
             )
             
         except httpx.HTTPStatusError as e:
@@ -224,3 +224,96 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
             await redis_client.close()
         except Exception as e:
             self.logger.warning(f"Cache write error: {e}")
+
+    def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
+        """Generate LLM-friendly summary for market indices data."""
+        major_indices = data.get("major_indices", {})
+        indices = data.get("indices", [])
+        index_count = data.get("index_count", 0)
+        timestamp = data.get("timestamp", "")
+
+        lines = [
+            f"=== MARKET INDICES OVERVIEW ===",
+            f"Timestamp: {timestamp}",
+            f"Total Indices: {index_count}",
+            f"",
+            f"MAJOR US INDICES:",
+        ]
+
+        # Map symbols to readable names
+        index_names = {
+            "^GSPC": "S&P 500",
+            "^IXIC": "NASDAQ Composite",
+            "^DJI": "Dow Jones Industrial",
+        }
+
+        # Add major indices
+        for symbol, idx_data in major_indices.items():
+            name = index_names.get(symbol, idx_data.get("name", symbol))
+            price = idx_data.get("price", 0)
+            change = idx_data.get("change", 0)
+            change_pct = idx_data.get("changes_percentage", 0)
+
+            sign = "+" if change >= 0 else ""
+            emoji = "🟢" if change >= 0 else "🔴"
+
+            lines.append(
+                f"- {name}: {price:,.2f} ({sign}{change:.2f}, {sign}{change_pct:.2f}%) {emoji}"
+            )
+
+        # Find VIX if available
+        vix_data = None
+        for idx in indices:
+            if idx.get("symbol") == "^VIX":
+                vix_data = idx
+                break
+
+        if vix_data:
+            vix_price = vix_data.get("price", 0)
+            vix_change = vix_data.get("change", 0)
+            vix_pct = vix_data.get("changesPercentage", 0)
+            sign = "+" if vix_change >= 0 else ""
+
+            # VIX interpretation
+            if vix_price < 15:
+                sentiment = "LOW (Complacency)"
+            elif vix_price < 20:
+                sentiment = "NORMAL"
+            elif vix_price < 30:
+                sentiment = "ELEVATED (Caution)"
+            else:
+                sentiment = "HIGH (Fear)"
+
+            lines.extend([
+                f"",
+                f"VOLATILITY INDEX (VIX):",
+                f"- VIX: {vix_price:.2f} ({sign}{vix_change:.2f}, {sign}{vix_pct:.2f}%)",
+                f"- Market Sentiment: {sentiment}",
+            ])
+
+        # Calculate overall market direction
+        bullish_count = sum(
+            1 for idx in indices
+            if idx.get("changesPercentage", 0) > 0
+        )
+        bearish_count = sum(
+            1 for idx in indices
+            if idx.get("changesPercentage", 0) < 0
+        )
+
+        if bullish_count > bearish_count * 1.5:
+            market_sentiment = "BULLISH"
+        elif bearish_count > bullish_count * 1.5:
+            market_sentiment = "BEARISH"
+        else:
+            market_sentiment = "MIXED"
+
+        lines.extend([
+            f"",
+            f"MARKET BREADTH:",
+            f"- Indices Up: {bullish_count}",
+            f"- Indices Down: {bearish_count}",
+            f"- Overall Sentiment: {market_sentiment}",
+        ])
+
+        return "\n".join(lines)

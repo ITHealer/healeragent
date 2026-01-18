@@ -135,9 +135,9 @@ class GetVolumeProfileTool(BaseTool):
             self.logger.info(f"Mapped timeframe '{timeframe}' to {calculated_lookback} days")
             lookback_days = calculated_lookback
         
-        # Validate parameters
-        lookback_days = max(7, min(365, lookback_days))
-        num_bins = max(5, min(50, num_bins))
+        # Validate parameters - ensure int for slicing
+        lookback_days = int(max(7, min(365, lookback_days)))
+        num_bins = int(max(5, min(50, num_bins)))
         
         self.logger.info(
             f"[getVolumeProfile] Executing: symbol={symbol_upper}, "

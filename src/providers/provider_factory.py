@@ -94,11 +94,12 @@ class ModelProviderFactory(LoggerMixin):
         """Get API key from environment for the specified provider."""
         ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
 
+        # Use string keys to match with ptype (which is always a string)
         key_map = {
-            ProviderType.OPENAI: settings.OPENAI_API_KEY,
-            ProviderType.OPENROUTER: settings.OPENROUTER_API_KEY,
-            ProviderType.GEMINI: settings.GEMINI_API_KEY,
-            ProviderType.OLLAMA: settings.OLLAMA_ENDPOINT,  # Ollama uses endpoint, not key
+            "openai": settings.OPENAI_API_KEY,
+            "openrouter": settings.OPENROUTER_API_KEY,
+            "gemini": settings.GEMINI_API_KEY,
+            "ollama": settings.OLLAMA_ENDPOINT,  # Ollama uses endpoint, not key
         }
         return key_map.get(ptype)
 
