@@ -72,6 +72,14 @@ from src.utils.graceful_degradation import (
 # Web Search Tool (OpenAI primary, Tavily fallback)
 from src.agents.tools.web.web_search import WebSearchTool
 
+# Cross-model compatible prompts
+from src.agents.prompts.tool_calling_prompts import (
+    ProviderHint,
+    get_tool_calling_system_prompt,
+    get_analysis_prompt_with_tools,
+    DATA_INTEGRITY_RULES,
+)
+
 # News tools that should trigger auto web search
 NEWS_TOOL_NAMES = {
     "getStockNews",
@@ -2939,7 +2947,29 @@ IMPORTANT:
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
-        # Build system prompt - simplified and natural
+        # Detect provider for cross-model prompt optimization
+        provider_hint = ProviderHint.UNIVERSAL
+        if isinstance(self.provider_type, str):
+            provider_str = self.provider_type.lower()
+        else:
+            provider_str = str(self.provider_type).lower()
+
+        if "gemini" in provider_str or "google" in provider_str:
+            provider_hint = ProviderHint.GEMINI
+        elif "openai" in provider_str or "gpt" in provider_str:
+            provider_hint = ProviderHint.OPENAI
+        elif "anthropic" in provider_str or "claude" in provider_str:
+            provider_hint = ProviderHint.ANTHROPIC
+
+        # Get cross-model compatible tool calling prompt
+        tool_calling_prompt = get_tool_calling_system_prompt(
+            provider_hint=provider_hint,
+            enable_think_tool=enable_think_tool,
+            enable_web_search=enable_web_search,
+            include_data_integrity=True,
+        )
+
+        # Build system prompt with cross-model compatibility
         system_prompt = f"""{base_prompt}
 
 ---
@@ -2947,31 +2977,12 @@ IMPORTANT:
 {chr(10).join('- ' + p for p in context_parts)}
 {user_context}
 
-## Tool Usage
+{tool_calling_prompt}
 
-You have access to various data tools. Use them to gather real data before responding.
-
-**Key principles:**
-1. **Call tools first** - Get actual data before making claims
-2. **Use the `think` tool** - Plan your approach and analyze results
-3. **Cite data sources** - Reference where numbers come from
-4. **Be accurate** - Never fabricate numbers, only use tool results
-5. **Respond naturally** - Match the user's language, be conversational"""
-
-        # Add think tool instruction if enabled
-        if enable_think_tool:
-            system_prompt += """
-
-**Think Tool (RECOMMENDED):**
-Use the `think` tool to plan your approach and analyze data before responding.
-Pattern: think(plan) → call tools → think(analyze) → respond"""
-
-        # Add web search instruction if enabled
-        if enable_web_search:
-            system_prompt += """
-
-**Web Search (RECOMMENDED):**
-Use `webSearch` for latest news and market context. Include source citations."""
+## Response Guidelines
+- **Match user's language** - Respond in the same language as the query
+- **Be conversational** - Natural, friendly tone while being data-driven
+- **Stay focused** - Answer the specific question asked"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
