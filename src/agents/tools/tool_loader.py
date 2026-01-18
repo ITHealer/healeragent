@@ -243,9 +243,11 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                 logger.warning(f"Could not import {class_name}: {e}")
                 
             except Exception as e:
+                import traceback
                 error_msg = f"{class_name}: {e}"
                 failed_imports.append(error_msg)
                 logger.error(f"Error creating {class_name}: {e}")
+                logger.error(f"Full traceback:\n{traceback.format_exc()}")
         
         # if category_count > 0:
         #     logger.info(f"{category}: {category_count} tools registered")
