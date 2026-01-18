@@ -719,6 +719,33 @@ class GetTechnicalIndicatorsTool(BaseTool):
         )
 
         # =====================================================================
+        # ADD VOLATILITY & VOLUME METRICS TO RECOMMENDATION (Fix for 9.0+ score)
+        # These are critical for LLM to explain risk and confirm breakouts
+        # =====================================================================
+        vol_pack = result['indicators'].get('volatility_pack', {})
+        volume_ind = result['indicators'].get('volume', {})
+
+        result['trading_recommendation']['volatility_metrics'] = {
+            "atr_value": result['indicators']['atr'].get('value'),
+            "atr_pct": vol_pack.get('atr_pct'),
+            "bb_width_pct": vol_pack.get('bb_width_pct'),
+            "volatility_regime": vol_pack.get('volatility_regime', 'NORMAL'),
+            "risk_framing": vol_pack.get('risk_framing', 'N/A'),
+            "note": "ATR% defines position sizing. HIGH volatility = smaller position."
+        }
+
+        result['trading_recommendation']['volume_metrics'] = {
+            "volume_today": volume_ind.get('current'),
+            "volume_ma20": volume_ind.get('average_20d'),
+            "rvol": volume_ind.get('rvol'),  # Relative Volume
+            "volume_trend": volume_ind.get('volume_trend', 'N/A'),
+            "volume_trend_pct": volume_ind.get('volume_trend_pct'),
+            "volume_confirms_price": volume_ind.get('volume_confirms_price', False),
+            "volume_confirmation_note": volume_ind.get('volume_confirmation_note', 'N/A'),
+            "note": "RVOL >= 1.2 required for valid breakout/breakdown confirmation."
+        }
+
+        # =====================================================================
         # LLM Summary (Human-readable comprehensive summary)
         # =====================================================================
         result['llm_summary'] = self._generate_llm_summary(
@@ -1634,10 +1661,26 @@ class GetTechnicalIndicatorsTool(BaseTool):
         num_neutral = len(signal_breakdown["neutral_indicators"])
         total_indicator_count = num_bullish + num_bearish + num_neutral
 
+        # FIX: Separate trend vs rebound counts at top level (avoid confusion)
+        num_trend_bullish = len(signal_breakdown["trend_bullish"])
+        num_trend_bearish = len(signal_breakdown["trend_bearish"])
+        num_rebound_bullish = len(signal_breakdown["mean_reversion_bullish"])
+        num_rebound_bearish = len(signal_breakdown["mean_reversion_bearish"])
+
         return {
             "overall_action": action,
             "action_strength": action_strength,
-            # Use list lengths (not weighted counts) for consistency
+            # CLEAR SIGNAL SEPARATION: Trend vs Rebound (avoids "bullish" confusion)
+            # Trend signals = follow the direction (MACD, MA, OBV)
+            # Rebound signals = expect bounce from extreme (RSI/Stoch oversold)
+            "signal_summary": {
+                "trend_bullish_count": num_trend_bullish,
+                "trend_bearish_count": num_trend_bearish,
+                "rebound_bullish_count": num_rebound_bullish,  # Oversold → expect bounce
+                "rebound_bearish_count": num_rebound_bearish,  # Overbought → expect pullback
+                "note": "Trend signals follow direction. Rebound signals expect mean-reversion (NOT trend change)."
+            },
+            # Legacy counts for backward compatibility
             "bullish_signals": num_bullish,
             "bearish_signals": num_bearish,
             "neutral_signals": num_neutral,
@@ -1860,6 +1903,41 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Stochastic: {stoch_cond}",
             f"- AVWAP (anchor={avwap_anchor_reason}): {vwap_signal} (Price vs AVWAP: {avwap_pct}%) [from {avwap_anchor_date}]",
             f"- OBV: {obv_sig} - {obv_div}",
+        ])
+
+        # VOLATILITY PACK (critical for risk framing)
+        vol_metrics = rec.get('volatility_metrics', {})
+        atr_pct = vol_metrics.get('atr_pct', 'N/A')
+        bb_width_pct = vol_metrics.get('bb_width_pct', 'N/A')
+        vol_regime = vol_metrics.get('volatility_regime', 'N/A')
+        risk_framing = vol_metrics.get('risk_framing', 'N/A')
+        lines.extend([
+            "",
+            "VOLATILITY METRICS (for risk/position sizing):",
+            f"- ATR%: {atr_pct}% (daily range as % of price)",
+            f"- BB Width%: {bb_width_pct}% (Bollinger Band width)",
+            f"- Volatility Regime: {vol_regime}",
+            f"- Risk Framing: {risk_framing}",
+        ])
+
+        # VOLUME PACK (critical for breakout confirmation)
+        vol_data = rec.get('volume_metrics', {})
+        rvol = vol_data.get('rvol', 'N/A')
+        rvol_str = f"{rvol:.2f}x" if isinstance(rvol, (int, float)) else rvol
+        vol_trend = vol_data.get('volume_trend', 'N/A')
+        vol_confirms = vol_data.get('volume_confirms_price', False)
+        vol_note = vol_data.get('volume_confirmation_note', 'N/A')
+        lines.extend([
+            "",
+            "VOLUME METRICS (for breakout/breakdown confirmation):",
+            f"- RVOL (Relative Volume): {rvol_str} (today vs 20d avg)",
+            f"- Volume Trend: {vol_trend}",
+            f"- Volume Confirms Price: {'YES ✓' if vol_confirms else 'NO ✗'}",
+            f"- Note: {vol_note}",
+            f"- Breakout Rule: RVOL >= 1.2 required for valid breakout/breakdown",
+        ])
+
+        lines.extend([
             "",
             "MOVING AVERAGE CROSSOVERS (P1 FIX - separated for clarity):",
             f"- MA20/50 Crossover (short-term): {ma20_50_status}",
@@ -1956,13 +2034,18 @@ class GetTechnicalIndicatorsTool(BaseTool):
 
         # Always show key levels for breakout/breakdown
         if key_levels:
+            # Get breakout/breakdown triggers (new nested structure)
+            breakout = key_levels.get('breakout_trigger', {})
+            breakdown = key_levels.get('breakdown_trigger', {})
             lines.extend([
                 f"",
                 f"KEY BREAKOUT/BREAKDOWN LEVELS:",
-                f"- Immediate Support: {key_levels.get('immediate_support', 'N/A')}",
-                f"- Immediate Resistance: {key_levels.get('immediate_resistance', 'N/A')}",
-                f"- Breakout Level: {key_levels.get('breakout_level', 'N/A')}",
-                f"- Breakdown Level: {key_levels.get('breakdown_level', 'N/A')}",
+                f"- Immediate Support: {key_levels.get('immediate_support', 'N/A')} (distance: {key_levels.get('support_distance_pct', 'N/A')}%)",
+                f"- Immediate Resistance: {key_levels.get('immediate_resistance', 'N/A')} (distance: {key_levels.get('resistance_distance_pct', 'N/A')}%)",
+                f"- Breakout: {breakout.get('condition', 'N/A')} | Volume: {breakout.get('volume_required', 'RVOL >= 1.2')}",
+                f"- Breakdown: {breakdown.get('condition', 'N/A')} | Volume: {breakdown.get('volume_required', 'RVOL >= 1.2')}",
+                f"- Breakout Invalidation: {breakout.get('invalidation', 'N/A')}",
+                f"- Breakdown Invalidation: {breakdown.get('invalidation', 'N/A')}",
             ])
 
         lines.extend([
