@@ -531,8 +531,8 @@ class ChatRequest(BaseModel):
         description="Enable agent tree tracking for debugging"
     )
     enable_tool_search_mode: bool = Field(
-        default=False,
-        description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search."
+        default=True,
+        description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search. Default is True for production efficiency."
     )
     stream_config: Optional[Dict[str, Any]] = Field(
         default=None,
