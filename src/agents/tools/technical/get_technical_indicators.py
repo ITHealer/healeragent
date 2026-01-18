@@ -498,16 +498,19 @@ class GetTechnicalIndicatorsTool(BaseTool):
         vwap = indicator_values.get('vwap')
         # P0 FIX: analyze_vwap handles None via pd.isna()
         vwap_analysis = analyze_vwap(current_price, vwap)
+        # P1 FIX: Rename to ANCHORED_VWAP (more accurate terminology)
+        # This is NOT intraday session VWAP - it's VWAP anchored at period start
         result['indicators']['vwap'] = {
             "value": vwap,
-            "variant": "CUMULATIVE_DAILY",  # P1 FIX: Clarify variant
+            "variant": "ANCHORED_VWAP",  # Anchored at period start date
             "anchor_date": first_date.strftime('%Y-%m-%d'),
-            "calculation": f"Cumulative VWAP from {first_date.strftime('%Y-%m-%d')} (daily data)",
+            "calculation": f"Anchored VWAP from {first_date.strftime('%Y-%m-%d')} (daily bars)",
             "price_vs_vwap_pct": vwap_analysis.get('diff_pct'),
             "signal": vwap_analysis.get('signal'),
             "position": vwap_analysis.get('position'),
             "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis),
-            "warning": "This is cumulative VWAP from daily data, NOT intraday session VWAP. Large deviations (>10%) are normal for long periods."
+            "interpretation": "Price > AVWAP = buyers from anchor in profit; Price < AVWAP = buyers underwater",
+            "warning": "This is Anchored VWAP (AVWAP), NOT intraday session VWAP. Measures avg cost basis from anchor date."
         }
 
         # =====================================================================
@@ -1251,6 +1254,28 @@ class GetTechnicalIndicatorsTool(BaseTool):
         nearest_support = support_levels[0]['price'] if support_levels else current_price * 0.95
         nearest_resistance = resistance_levels[0]['price'] if resistance_levels else current_price * 1.05
 
+        # =======================================================================
+        # P1 FIX: ATR-based SL/TP instead of fixed percentages
+        # This makes targets robust across different symbols/volatility levels
+        # =======================================================================
+        atr_value = result.get('indicators', {}).get('atr', {}).get('value')
+        if not atr_value or atr_value <= 0:
+            # Fallback: estimate ATR as 2% of current price
+            atr_value = current_price * 0.02
+
+        # ATR multipliers for position sizing
+        ATR_SL_MULT = 1.5   # Stop Loss = 1.5 ATR
+        ATR_TP1_MULT = 2.0  # Target 1 = 2 ATR (1.33:1 RR)
+        ATR_TP2_MULT = 3.0  # Target 2 = 3 ATR (2:1 RR)
+
+        # =======================================================================
+        # P1 FIX: Trigger Rules for Oversold + SELL contradiction
+        # When RSI/Stoch are oversold but action is SELL, add trigger conditions
+        # =======================================================================
+        rsi_oversold = rsi_analysis.get('condition') == 'oversold'
+        stoch_oversold = stoch_analysis.get('condition') == 'oversold'
+        is_oversold = rsi_oversold or stoch_oversold
+
         # Short-term recommendation (1-5 days)
         # FIX: Different logic for HOLD vs BUY/SELL
         if action == "HOLD":
@@ -1264,27 +1289,50 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "risk_reward": "Wait for better setup"
             }
         elif action == "BUY":
+            # ATR-based targets for BUY
+            entry_low = current_price - (atr_value * 0.5)
+            entry_high = current_price + (atr_value * 0.5)
+            stop_loss = current_price - (atr_value * ATR_SL_MULT)
+            target_1 = current_price + (atr_value * ATR_TP1_MULT)
+            target_2 = min(nearest_resistance, current_price + (atr_value * ATR_TP2_MULT))
+
             short_term = {
                 "action": "BUY",
                 "timeframe": "1-5 days",
-                "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
-                "stop_loss": f"${nearest_support * 0.98:.2f}",
-                "target_1": f"${current_price * 1.03:.2f}",
-                "target_2": f"${nearest_resistance:.2f}",
-                "risk_reward": "1:2 minimum recommended"
+                "entry_zone": f"${entry_low:.2f} - ${entry_high:.2f}",
+                "stop_loss": f"${stop_loss:.2f}",
+                "target_1": f"${target_1:.2f}",
+                "target_2": f"${target_2:.2f}",
+                "risk_reward": "1:2 minimum recommended",
+                "atr_based": f"SL={ATR_SL_MULT}×ATR, TP1={ATR_TP1_MULT}×ATR, TP2={ATR_TP2_MULT}×ATR"
             }
         else:  # SELL
+            # ATR-based targets for SELL
+            entry_low = current_price - (atr_value * 0.5)
+            entry_high = current_price + (atr_value * 0.5)
+            stop_loss = current_price + (atr_value * ATR_SL_MULT)
+            target_1 = current_price - (atr_value * ATR_TP1_MULT)
+            target_2 = max(nearest_support, current_price - (atr_value * ATR_TP2_MULT))
+
+            # P1 FIX: Add trigger condition when oversold
+            trigger_note = ""
+            if is_oversold:
+                trigger_note = " ⚠️ OVERSOLD: Only short on (1) breakdown below support with volume, OR (2) rally fail at resistance/VWAP/MA"
+
             short_term = {
                 "action": "SELL/SHORT",
                 "timeframe": "1-5 days",
-                "entry_zone": f"${current_price * 0.99:.2f} - ${current_price * 1.01:.2f}",
-                "stop_loss": f"${nearest_resistance * 1.02:.2f}",
-                "target_1": f"${current_price * 0.97:.2f}",
-                "target_2": f"${nearest_support:.2f}",
-                "risk_reward": "1:2 minimum recommended"
+                "entry_zone": f"${entry_low:.2f} - ${entry_high:.2f}",
+                "stop_loss": f"${stop_loss:.2f}",
+                "target_1": f"${target_1:.2f}",
+                "target_2": f"${target_2:.2f}",
+                "risk_reward": "1:2 minimum recommended",
+                "atr_based": f"SL={ATR_SL_MULT}×ATR, TP1={ATR_TP1_MULT}×ATR, TP2={ATR_TP2_MULT}×ATR",
+                "trigger_note": trigger_note if trigger_note else None
             }
 
         # Swing trade recommendation (1-4 weeks)
+        # P1 FIX: Always include key_support and key_resistance
         if action == "HOLD":
             swing_trade = {
                 "action": "WAIT",
@@ -1298,16 +1346,25 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
                 "timeframe": "1-4 weeks",
                 "condition": "Enter on pullback to moving average support",
-                "stop_loss": f"Below SMA-50 or ${nearest_support * 0.97:.2f}",
-                "target": f"${nearest_resistance:.2f}"
+                "stop_loss": f"Below SMA-50 or ${nearest_support - atr_value:.2f}",
+                "target": f"${nearest_resistance:.2f}",
+                "key_support": f"${nearest_support:.2f}",
+                "key_resistance": f"${nearest_resistance:.2f}"
             }
         else:  # SELL
+            # P1 FIX: Add trigger for oversold condition in swing too
+            swing_condition = "Enter on rally to resistance"
+            if is_oversold:
+                swing_condition = "⚠️ OVERSOLD: Wait for rally fail at resistance/MA before shorting"
+
             swing_trade = {
                 "action": action if adx_analysis.get('trend_strength') in ['strong', 'very_strong'] else "WAIT",
                 "timeframe": "1-4 weeks",
-                "condition": "Enter on rally to resistance",
-                "stop_loss": f"Above SMA-50 or ${nearest_resistance * 1.03:.2f}",
-                "target": f"${nearest_support:.2f}"
+                "condition": swing_condition,
+                "stop_loss": f"Above SMA-50 or ${nearest_resistance + atr_value:.2f}",
+                "target": f"${nearest_support:.2f}",
+                "key_support": f"${nearest_support:.2f}",
+                "key_resistance": f"${nearest_resistance:.2f}"
             }
 
         # Key levels to watch
@@ -1534,9 +1591,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # Short-term trend (5-20 days): Price vs SMA20 + RSI trend
         above_sma20 = price_pos.get('above_sma_20')
         above_sma50 = price_pos.get('above_sma_50')
-        if above_sma20 is True and rsi_trend.lower() in ['rising', 'stable']:
+        # P0 FIX: Use 'flat' (not 'stable') - matches _calculate_indicator_trend output
+        if above_sma20 is True and rsi_trend.lower() in ['rising', 'flat']:
             short_term_trend = "BULLISH"
-        elif above_sma20 is False and rsi_trend.lower() in ['falling', 'stable']:
+        elif above_sma20 is False and rsi_trend.lower() in ['falling', 'flat']:
             short_term_trend = "BEARISH"
         else:
             short_term_trend = "MIXED/TRANSITIONING"
@@ -1601,7 +1659,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Trend: {ma_data.get('trend', 'N/A')}",
             f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
             f"- Stochastic: {stoch_cond}",
-            f"- VWAP (Cumulative Daily): {vwap_signal} (Price vs VWAP: {vwap_pct}%) ⚠️ NOT intraday",
+            f"- AVWAP (Anchored VWAP): {vwap_signal} (Price vs AVWAP: {vwap_pct}%) ⚠️ NOT session VWAP",
             f"- OBV: {obv_sig} - {obv_div}",
             "",
             "MOVING AVERAGE CROSSOVERS (P1 FIX - separated for clarity):",
@@ -1733,6 +1791,28 @@ class GetTechnicalIndicatorsTool(BaseTool):
     # Economic/Macro Data Methods (for market context)
     # =========================================================================
 
+    def _safe_float(self, value: Any, default: float = 0.0) -> float:
+        """
+        P0 FIX: Safely convert value to float.
+        Handles: None, NaN, strings like "4.24", empty strings, invalid values.
+        """
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            import math
+            if math.isnan(value) or math.isinf(value):
+                return default
+            return float(value)
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return default
+            try:
+                return float(value)
+            except ValueError:
+                return default
+        return default
+
     async def _fetch_economic_data(self) -> Dict[str, Any]:
         """
         Fetch economic/macro data for market context.
@@ -1770,18 +1850,21 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         treasury_data = response.json()
                         if treasury_data and isinstance(treasury_data, list):
                             latest = treasury_data[0]
+                            # P0 FIX: Safe float conversion for all numeric values
+                            y2 = self._safe_float(latest.get("year2"))
+                            y5 = self._safe_float(latest.get("year5"))
+                            y10 = self._safe_float(latest.get("year10"))
+                            y30 = self._safe_float(latest.get("year30"))
                             result["treasury"] = {
                                 "as_of_date": latest.get("date"),  # Date of observation (market close)
                                 "date": latest.get("date"),        # Kept for backwards compat
-                                "year_2": latest.get("year2"),
-                                "year_5": latest.get("year5"),
-                                "year_10": latest.get("year10"),
-                                "year_30": latest.get("year30"),
+                                "year_2": y2 if y2 else None,
+                                "year_5": y5 if y5 else None,
+                                "year_10": y10 if y10 else None,
+                                "year_30": y30 if y30 else None,
                                 "note": "Rates as of market close on as_of_date. May lag 1 business day."
                             }
                             # Yield curve analysis
-                            y2 = latest.get("year2")
-                            y10 = latest.get("year10")
                             if y2 and y10:
                                 spread = y10 - y2
                                 result["yield_curve"] = {
@@ -1804,12 +1887,15 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         gdp_data = response.json()
                         if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
                             latest = gdp_data[0]
+                            # P0 FIX: Safe float conversion
+                            gdp_val = self._safe_float(latest.get("value"))
+                            gdp_prev = self._safe_float(gdp_data[1].get("value")) if len(gdp_data) > 1 else 0
                             result["gdp"] = {
-                                "value": latest.get("value"),  # This should be growth rate %
+                                "value": gdp_val if gdp_val else None,  # This should be growth rate %
                                 "as_of_date": latest.get("date"),  # Release date of the data
                                 "date": latest.get("date"),        # Kept for backwards compat
                                 "type": "growth_rate",
-                                "trend": "increasing" if len(gdp_data) > 1 and gdp_data[0].get("value", 0) > gdp_data[1].get("value", 0) else "decreasing",
+                                "trend": "increasing" if gdp_val > gdp_prev else "decreasing",
                                 "note": "GDP growth rate (%). Released quarterly, may lag current quarter."
                             }
                         else:
@@ -1846,11 +1932,12 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         inflation_data = response.json()
                         if inflation_data and isinstance(inflation_data, list) and len(inflation_data) > 0:
                             latest = inflation_data[0]
-                            current_val = latest.get("value", 0)
+                            # P0 FIX: Safe float conversion
+                            current_val = self._safe_float(latest.get("value"))
                             # Get previous month's inflation for comparison
-                            previous_val = inflation_data[1].get("value", 0) if len(inflation_data) > 1 else None
+                            previous_val = self._safe_float(inflation_data[1].get("value")) if len(inflation_data) > 1 else None
                             result["inflation"] = {
-                                "value": current_val,  # Current inflation rate %
+                                "value": current_val if current_val else None,  # Current inflation rate %
                                 "previous_value": previous_val,  # Previous month's rate for comparison
                                 "as_of_date": latest.get("date"),  # Release date of the data
                                 "date": latest.get("date"),        # Kept for backwards compat
@@ -1864,12 +1951,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
                             if response2.status_code == 200 and response2.text.strip():
                                 cpi_raw = response2.json()
                                 if cpi_raw and isinstance(cpi_raw, list) and len(cpi_raw) >= 13:
+                                    # P0 FIX: Safe float conversion for CPI calculations
                                     # Calculate YoY inflation (compare to 12 months ago)
-                                    current_cpi = cpi_raw[0].get("value", 0)
-                                    previous_cpi = cpi_raw[12].get("value", 0) if len(cpi_raw) > 12 else cpi_raw[-1].get("value", 0)
+                                    current_cpi = self._safe_float(cpi_raw[0].get("value"))
+                                    previous_cpi = self._safe_float(cpi_raw[12].get("value")) if len(cpi_raw) > 12 else self._safe_float(cpi_raw[-1].get("value"))
                                     # Also calculate previous month's YoY for comparison
-                                    prev_month_cpi = cpi_raw[1].get("value", 0) if len(cpi_raw) > 13 else None
-                                    prev_month_yoy_cpi = cpi_raw[13].get("value", 0) if len(cpi_raw) > 13 else None
+                                    prev_month_cpi = self._safe_float(cpi_raw[1].get("value")) if len(cpi_raw) > 13 else None
+                                    prev_month_yoy_cpi = self._safe_float(cpi_raw[13].get("value")) if len(cpi_raw) > 13 else None
                                     previous_yoy = None
                                     if prev_month_cpi and prev_month_yoy_cpi and prev_month_yoy_cpi > 0:
                                         previous_yoy = round(((prev_month_cpi - prev_month_yoy_cpi) / prev_month_yoy_cpi) * 100, 2)
