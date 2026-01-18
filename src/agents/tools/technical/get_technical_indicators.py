@@ -2215,48 +2215,44 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     self.logger.warning(f"[Economic Data] Treasury fetch error: {e}")
 
                 # 2. GDP Growth Rate (FMP stable API)
-                # Try realGDPGrowth first, then calculate from GDP values
+                # FMP valid indicators: realGDP, GDP (not realGDPGrowth!)
+                # We fetch realGDP values and calculate YoY growth rate
                 try:
                     econ_url = f"{self.FMP_STABLE_URL}/economic-indicators"
-                    # First try realGDPGrowth which should return growth rate directly
-                    response = await client.get(econ_url, params={"name": "realGDPGrowth", "apikey": self.api_key})
+                    # Fetch realGDP (Real GDP values - quarterly data)
+                    response = await client.get(econ_url, params={"name": "realGDP", "apikey": self.api_key})
                     if response.status_code == 200:
                         # Use safe JSON parse to handle API errors gracefully
-                        gdp_data = self._safe_json_parse(response, context="realGDPGrowth")
-                        if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
+                        gdp_data = self._safe_json_parse(response, context="realGDP")
+                        if gdp_data and isinstance(gdp_data, list) and len(gdp_data) >= 5:
+                            # Calculate YoY growth (compare to ~4 quarters ago)
+                            current = self._safe_float(gdp_data[0].get("value"))
+                            # Use 4 quarters ago for YoY comparison
+                            previous = self._safe_float(gdp_data[4].get("value")) if len(gdp_data) > 4 else self._safe_float(gdp_data[-1].get("value"))
+                            if current > 0 and previous > 0:
+                                yoy_growth = ((current - previous) / previous) * 100
+                                # Also get QoQ for trend
+                                prev_quarter = self._safe_float(gdp_data[1].get("value")) if len(gdp_data) > 1 else 0
+                                result["gdp"] = {
+                                    "value": round(yoy_growth, 2),  # YoY growth rate %
+                                    "as_of_date": gdp_data[0].get("date"),
+                                    "date": gdp_data[0].get("date"),
+                                    "type": "calculated_yoy",
+                                    "raw_current": current,
+                                    "raw_previous": previous,
+                                    "trend": "increasing" if current > prev_quarter else "decreasing",
+                                    "note": "YoY Real GDP growth (%) calculated from realGDP. Released quarterly."
+                                }
+                        elif gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
+                            # Not enough data for YoY, just report latest value
                             latest = gdp_data[0]
-                            # P0 FIX: Safe float conversion
-                            gdp_val = self._safe_float(latest.get("value"))
-                            gdp_prev = self._safe_float(gdp_data[1].get("value")) if len(gdp_data) > 1 else 0
                             result["gdp"] = {
-                                "value": gdp_val if gdp_val else None,  # This should be growth rate %
-                                "as_of_date": latest.get("date"),  # Release date of the data
-                                "date": latest.get("date"),        # Kept for backwards compat
-                                "type": "growth_rate",
-                                "trend": "increasing" if gdp_val > gdp_prev else "decreasing",
-                                "note": "GDP growth rate (%). Released quarterly, may lag current quarter."
+                                "value": self._safe_float(latest.get("value")),
+                                "as_of_date": latest.get("date"),
+                                "date": latest.get("date"),
+                                "type": "absolute_value",
+                                "note": "Real GDP value (insufficient history for growth calculation)."
                             }
-                        else:
-                            # Fallback: fetch GDP and calculate YoY growth
-                            response2 = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
-                            if response2.status_code == 200:
-                                gdp_raw = self._safe_json_parse(response2, context="GDP fallback")
-                                if gdp_raw and isinstance(gdp_raw, list) and len(gdp_raw) >= 5:
-                                    # Calculate YoY growth (compare to ~4 quarters ago)
-                                    current = gdp_raw[0].get("value", 0)
-                                    previous = gdp_raw[4].get("value", 0) if len(gdp_raw) > 4 else gdp_raw[-1].get("value", 0)
-                                    if previous > 0:
-                                        yoy_growth = ((current - previous) / previous) * 100
-                                        result["gdp"] = {
-                                            "value": round(yoy_growth, 2),
-                                            "as_of_date": gdp_raw[0].get("date"),  # Date of latest GDP reading
-                                            "date": gdp_raw[0].get("date"),        # Kept for backwards compat
-                                            "type": "calculated_yoy",
-                                            "raw_current": current,
-                                            "raw_previous": previous,
-                                            "trend": "increasing" if yoy_growth > 0 else "decreasing",
-                                            "note": "YoY GDP growth (%) calculated from nominal GDP. Released quarterly."
-                                        }
                     else:
                         self.logger.warning(f"[Economic Data] GDP API failed: HTTP {response.status_code}")
                 except Exception as e:
