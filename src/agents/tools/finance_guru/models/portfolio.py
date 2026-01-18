@@ -21,7 +21,7 @@ Author: HealerAgent Development Team
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import Field, field_validator
 
@@ -91,13 +91,13 @@ class AssetData(BaseFinanceModel):
         weight: Current portfolio weight (0.0 to 1.0)
     """
     symbol: str = Field(..., min_length=1, max_length=20, description="Asset ticker symbol")
-    prices: list[float] = Field(..., min_length=2, description="Historical price series")
-    returns: Optional[list[float]] = Field(None, description="Pre-calculated returns")
+    prices: List[float] = Field(..., min_length=2, description="Historical price series")
+    returns: Optional[List[float]] = Field(None, description="Pre-calculated returns")
     weight: float = Field(0.0, ge=0.0, le=1.0, description="Current portfolio weight")
 
     @field_validator("prices")
     @classmethod
-    def validate_prices(cls, v: list[float]) -> list[float]:
+    def validate_prices(cls, v: List[float]) -> List[float]:
         """Ensure all prices are positive."""
         if any(p <= 0 for p in v):
             raise ValueError("All prices must be positive")
@@ -123,13 +123,13 @@ class PortfolioDataInput(BaseFinanceModel):
             risk_free_rate=0.02
         )
     """
-    assets: list[AssetData] = Field(..., min_length=2, description="List of assets in portfolio")
+    assets: List[AssetData] = Field(..., min_length=2, description="List of assets in portfolio")
     risk_free_rate: float = Field(0.02, ge=0.0, le=0.5, description="Annual risk-free rate")
     trading_days_per_year: int = Field(252, ge=200, le=365, description="Trading days per year")
 
     @field_validator("assets")
     @classmethod
-    def validate_assets_length(cls, v: list[AssetData]) -> list[AssetData]:
+    def validate_assets_length(cls, v: List[AssetData]) -> List[AssetData]:
         """Ensure all assets have the same number of data points."""
         if len(v) < 2:
             raise ValueError("Portfolio must contain at least 2 assets")
@@ -149,13 +149,13 @@ class PortfolioPriceData(BaseFinanceModel):
         price_matrix: 2D matrix where each row is an asset's prices
         dates: Optional date labels for the price series
     """
-    symbols: list[str] = Field(..., min_length=2, description="Asset symbols")
-    price_matrix: list[list[float]] = Field(..., description="Price matrix [assets x time]")
-    dates: Optional[list[str]] = Field(None, description="Date labels")
+    symbols: List[str] = Field(..., min_length=2, description="Asset symbols")
+    price_matrix: List[List[float]] = Field(..., description="Price matrix [assets x time]")
+    dates: Optional[List[str]] = Field(None, description="Date labels")
 
     @field_validator("price_matrix")
     @classmethod
-    def validate_matrix(cls, v: list[list[float]]) -> list[list[float]]:
+    def validate_matrix(cls, v: List[List[float]]) -> List[List[float]]:
         """Ensure matrix is rectangular and has valid values."""
         if not v:
             raise ValueError("Price matrix cannot be empty")
@@ -273,9 +273,9 @@ class BlackLittermanConfig(BaseFinanceModel):
     - Higher confidence = view has more weight in final estimates
     - tau typically small (0.01-0.05) to reflect uncertainty
     """
-    market_weights: dict[str, float] = Field(..., description="Market cap weights by symbol")
-    views: dict[str, float] = Field(default_factory=dict, description="Return views by symbol")
-    view_confidences: dict[str, float] = Field(
+    market_weights: Dict[str, float] = Field(..., description="Market cap weights by symbol")
+    views: Dict[str, float] = Field(default_factory=dict, description="Return views by symbol")
+    view_confidences: Dict[str, float] = Field(
         default_factory=dict,
         description="Confidence for each view (0-1)"
     )
@@ -291,7 +291,7 @@ class EfficientFrontierConfig(BaseFinanceModel):
         include_assets: Include individual asset points
     """
     num_portfolios: int = Field(50, ge=10, le=200, description="Number of frontier portfolios")
-    return_range: Optional[tuple[float, float]] = Field(
+    return_range: Optional[Tuple[float, float]] = Field(
         None,
         description="(min, max) return range for frontier"
     )
@@ -329,7 +329,7 @@ class OptimizationOutput(BaseCalculationResult):
         method_used: Optimization method that was used
         converged: Whether optimization converged successfully
     """
-    allocations: list[AssetAllocation] = Field(..., description="Optimal allocations")
+    allocations: List[AssetAllocation] = Field(..., description="Optimal allocations")
     expected_return: float = Field(..., description="Portfolio expected return")
     expected_volatility: float = Field(..., description="Portfolio expected volatility")
     sharpe_ratio: float = Field(..., description="Portfolio Sharpe ratio")
@@ -354,7 +354,7 @@ class FrontierPoint(BaseFinanceModel):
     expected_return: float = Field(..., description="Expected return")
     expected_volatility: float = Field(..., description="Expected volatility")
     sharpe_ratio: float = Field(..., description="Sharpe ratio")
-    weights: dict[str, float] = Field(..., description="Asset weights")
+    weights: Dict[str, float] = Field(..., description="Asset weights")
 
 
 class EfficientFrontierOutput(BaseCalculationResult):
@@ -369,14 +369,14 @@ class EfficientFrontierOutput(BaseCalculationResult):
         min_variance_portfolio: Minimum variance portfolio
         asset_points: Risk/return coordinates of individual assets
     """
-    frontier_points: list[FrontierPoint] = Field(..., description="Frontier portfolios")
+    frontier_points: List[FrontierPoint] = Field(..., description="Frontier portfolios")
     max_sharpe_portfolio: FrontierPoint = Field(..., description="Max Sharpe portfolio")
     min_variance_portfolio: FrontierPoint = Field(..., description="Min variance portfolio")
-    asset_points: Optional[dict[str, tuple[float, float]]] = Field(
+    asset_points: Optional[Dict[str, Tuple[float, float]]] = Field(
         None,
         description="Individual asset (volatility, return) points"
     )
-    symbols: list[str] = Field(..., description="Asset symbols in analysis")
+    symbols: List[str] = Field(..., description="Asset symbols in analysis")
 
 
 class CorrelationMatrixOutput(BaseCalculationResult):
@@ -398,15 +398,15 @@ class CorrelationMatrixOutput(BaseCalculationResult):
         min_correlation: Minimum correlation pair
         max_correlation: Maximum correlation pair (excluding diagonal)
     """
-    matrix: dict[str, dict[str, float]] = Field(..., description="Correlation matrix")
-    symbols: list[str] = Field(..., description="Asset symbols")
+    matrix: Dict[str, Dict[str, float]] = Field(..., description="Correlation matrix")
+    symbols: List[str] = Field(..., description="Asset symbols")
     method: CorrelationMethod = Field(..., description="Method used")
     average_correlation: float = Field(..., description="Average pairwise correlation")
-    min_correlation: tuple[str, str, float] = Field(
+    min_correlation: Tuple[str, str, float] = Field(
         ...,
         description="Min correlation (symbol1, symbol2, value)"
     )
-    max_correlation: tuple[str, str, float] = Field(
+    max_correlation: Tuple[str, str, float] = Field(
         ...,
         description="Max correlation (symbol1, symbol2, value)"
     )
@@ -427,8 +427,8 @@ class CovarianceMatrixOutput(BaseCalculationResult):
         is_annualized: Whether matrix is annualized
         determinant: Matrix determinant (measure of total variance)
     """
-    matrix: dict[str, dict[str, float]] = Field(..., description="Covariance matrix")
-    symbols: list[str] = Field(..., description="Asset symbols")
+    matrix: Dict[str, Dict[str, float]] = Field(..., description="Covariance matrix")
+    symbols: List[str] = Field(..., description="Asset symbols")
     risk_model: RiskModel = Field(..., description="Risk model used")
     is_annualized: bool = Field(..., description="Whether annualized")
     determinant: Optional[float] = Field(None, description="Matrix determinant")
@@ -450,9 +450,9 @@ class RollingCorrelationOutput(BaseCalculationResult):
         std: Standard deviation of rolling correlations
         trend: Whether correlation is trending up, down, or stable
     """
-    asset_pair: tuple[str, str] = Field(..., description="Asset pair (symbol1, symbol2)")
-    correlations: list[float] = Field(..., description="Rolling correlation values")
-    dates: Optional[list[str]] = Field(None, description="Date labels")
+    asset_pair: Tuple[str, str] = Field(..., description="Asset pair (symbol1, symbol2)")
+    correlations: List[float] = Field(..., description="Rolling correlation values")
+    dates: Optional[List[str]] = Field(None, description="Date labels")
     window_size: int = Field(..., description="Window size used")
     average: float = Field(..., description="Average correlation")
     std: float = Field(..., description="Correlation volatility")
@@ -483,15 +483,15 @@ class PortfolioCorrelationOutput(BaseCalculationResult):
         ...,
         description="Effective number of independent assets"
     )
-    highest_correlations: list[tuple[str, str, float]] = Field(
+    highest_correlations: List[Tuple[str, str, float]] = Field(
         ...,
         description="Most correlated pairs"
     )
-    lowest_correlations: list[tuple[str, str, float]] = Field(
+    lowest_correlations: List[Tuple[str, str, float]] = Field(
         ...,
         description="Least correlated pairs"
     )
-    recommendations: list[str] = Field(
+    recommendations: List[str] = Field(
         default_factory=list,
         description="Diversification recommendations"
     )
@@ -532,12 +532,12 @@ class RebalancingOutput(BaseCalculationResult):
         target_sharpe: Expected Sharpe ratio after rebalancing
         improvement: Expected improvement metrics
     """
-    suggestions: list[RebalancingSuggestion] = Field(..., description="Rebalancing suggestions")
+    suggestions: List[RebalancingSuggestion] = Field(..., description="Rebalancing suggestions")
     total_turnover: float = Field(..., description="Total turnover (0-2)")
     estimated_cost: Optional[float] = Field(None, description="Estimated cost ($)")
     current_sharpe: float = Field(..., description="Current Sharpe ratio")
     target_sharpe: float = Field(..., description="Target Sharpe ratio")
-    improvement: dict[str, float] = Field(
+    improvement: Dict[str, float] = Field(
         default_factory=dict,
         description="Expected improvements"
     )

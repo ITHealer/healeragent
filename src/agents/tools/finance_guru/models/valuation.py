@@ -20,7 +20,7 @@ Author: HealerAgent Development Team
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import Field, field_validator, model_validator
 
@@ -106,7 +106,7 @@ class DCFInputData(BaseFinanceModel):
     """
     symbol: str = Field(..., min_length=1, max_length=20, description="Stock symbol")
     current_fcf: float = Field(..., description="Current FCF (millions)")
-    growth_rates: list[float] = Field(
+    growth_rates: List[float] = Field(
         ..., min_length=1, max_length=10,
         description="Yearly growth rates (e.g., [0.15, 0.12, 0.10])"
     )
@@ -125,7 +125,7 @@ class DCFInputData(BaseFinanceModel):
 
     @field_validator("growth_rates")
     @classmethod
-    def validate_growth_rates(cls, v: list[float]) -> list[float]:
+    def validate_growth_rates(cls, v: List[float]) -> List[float]:
         """Ensure growth rates are reasonable."""
         for rate in v:
             if rate < -0.5 or rate > 1.0:
@@ -304,7 +304,7 @@ class ComparableInputData(BaseFinanceModel):
     revenue_per_share: float = Field(..., gt=0, description="Revenue per share")
     ebitda_per_share: Optional[float] = Field(None, gt=0, description="EBITDA per share")
     current_price: float = Field(..., gt=0, description="Current price")
-    peers: list[ComparableCompany] = Field(
+    peers: List[ComparableCompany] = Field(
         ..., min_length=2, max_length=20,
         description="Comparable companies"
     )
@@ -350,7 +350,7 @@ class DCFOutput(BaseCalculationResult):
         verdict: "undervalued", "overvalued", or "fairly_valued"
     """
     symbol: str = Field(..., description="Stock symbol")
-    projections: list[DCFProjection] = Field(..., description="Cash flow projections")
+    projections: List[DCFProjection] = Field(..., description="Cash flow projections")
     sum_of_pv_fcf: float = Field(..., description="Sum of PV of FCFs")
     terminal_value: float = Field(..., description="Terminal value")
     pv_terminal_value: float = Field(..., description="PV of terminal value")
@@ -363,7 +363,7 @@ class DCFOutput(BaseCalculationResult):
     verdict: str = Field(..., description="Valuation verdict")
 
     # Sensitivity analysis
-    sensitivity: Optional[dict[str, dict[str, float]]] = Field(
+    sensitivity: Optional[Dict[str, Dict[str, float]]] = Field(
         None,
         description="Sensitivity analysis results"
     )
@@ -429,7 +429,7 @@ class DDMOutput(BaseCalculationResult):
     verdict: str = Field(..., description="Valuation verdict")
 
     # For multi-stage models
-    stages: Optional[list[dict[str, Any]]] = Field(None, description="Stage breakdown")
+    stages: Optional[List[Dict[str, Any]]] = Field(None, description="Stage breakdown")
 
 
 class MultipleValuation(BaseFinanceModel):
@@ -463,8 +463,8 @@ class ComparableOutput(BaseCalculationResult):
         verdict: Valuation verdict
     """
     symbol: str = Field(..., description="Target symbol")
-    peers: list[str] = Field(..., description="Peer symbols")
-    valuations: list[MultipleValuation] = Field(..., description="Multiple valuations")
+    peers: List[str] = Field(..., description="Peer symbols")
+    valuations: List[MultipleValuation] = Field(..., description="Multiple valuations")
     average_intrinsic_value: float = Field(..., description="Average intrinsic value")
     median_intrinsic_value: float = Field(..., description="Median intrinsic value")
     current_price: float = Field(..., description="Current price")
@@ -472,7 +472,7 @@ class ComparableOutput(BaseCalculationResult):
     verdict: str = Field(..., description="Valuation verdict")
 
     # Peer statistics
-    peer_stats: dict[str, dict[str, float]] = Field(
+    peer_stats: Dict[str, Dict[str, float]] = Field(
         default_factory=dict,
         description="Statistics for each multiple"
     )
@@ -493,12 +493,12 @@ class ValuationSummary(BaseCalculationResult):
         confidence: Confidence level based on method agreement
     """
     symbol: str = Field(..., description="Stock symbol")
-    methods_used: list[ValuationMethod] = Field(..., description="Methods used")
-    valuations: dict[str, float] = Field(..., description="Value by method")
+    methods_used: List[ValuationMethod] = Field(..., description="Methods used")
+    valuations: Dict[str, float] = Field(..., description="Value by method")
     average_value: float = Field(..., description="Average intrinsic value")
     median_value: float = Field(..., description="Median intrinsic value")
-    range: tuple[float, float] = Field(..., description="(min, max) range")
+    range: Tuple[float, float] = Field(..., description="(min, max) range")
     current_price: float = Field(..., description="Current price")
     overall_verdict: str = Field(..., description="Overall verdict")
     confidence: str = Field(..., description="Confidence: high/medium/low")
-    recommendations: list[str] = Field(default_factory=list, description="Recommendations")
+    recommendations: List[str] = Field(default_factory=list, description="Recommendations")

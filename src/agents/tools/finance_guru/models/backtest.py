@@ -21,7 +21,7 @@ Author: HealerAgent Development Team
 
 from datetime import date
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import Field, field_validator, model_validator
 
@@ -132,10 +132,10 @@ class StrategyConfig(BaseFinanceModel):
         parameters: Strategy-specific parameters
     """
     strategy_type: StrategyType = Field(..., description="Strategy type")
-    symbols: list[str] = Field(..., min_length=1, description="Symbols to trade")
+    symbols: List[str] = Field(..., min_length=1, description="Symbols to trade")
     start_date: date = Field(..., description="Backtest start date")
     end_date: date = Field(..., description="Backtest end date")
-    parameters: dict[str, Any] = Field(
+    parameters: Dict[str, Any] = Field(
         default_factory=dict,
         description="Strategy-specific parameters"
     )
@@ -455,10 +455,10 @@ class BacktestResult(BaseCalculationResult):
     benchmark: Optional[BenchmarkComparison] = Field(None, description="Benchmark comparison")
 
     # Trade history
-    trades: list[TradeExecution] = Field(..., description="All trades")
+    trades: List[TradeExecution] = Field(..., description="All trades")
 
     # Equity curve
-    equity_curve: list[EquityCurvePoint] = Field(..., description="Equity curve")
+    equity_curve: List[EquityCurvePoint] = Field(..., description="Equity curve")
 
     # Verdict
     recommendation: BacktestRecommendation = Field(..., description="Recommendation")
@@ -475,13 +475,13 @@ class StrategyComparisonResult(BaseCalculationResult):
         ranking: Strategies ranked by performance
         recommendation: Overall recommendation
     """
-    strategies: list[BacktestResult] = Field(..., description="All strategy results")
+    strategies: List[BacktestResult] = Field(..., description="All strategy results")
     winner: str = Field(..., description="Best strategy name")
-    comparison_metrics: dict[str, dict[str, float]] = Field(
+    comparison_metrics: Dict[str, Dict[str, float]] = Field(
         ...,
         description="Metrics by strategy"
     )
-    ranking: list[tuple[str, float]] = Field(
+    ranking: List[Tuple[str, float]] = Field(
         ...,
         description="Strategies ranked by score"
     )
