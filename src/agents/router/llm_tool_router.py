@@ -426,24 +426,20 @@ CRITICAL RULES:
 </instructions>
 
 <output_format>
-Respond with ONLY valid JSON (no markdown code blocks, no explanation text):
+Provide your response inside <routing> tags as valid JSON:
 
+<routing>
 {{
   "selected_tools": ["tool1", "tool2"],
   "complexity": "simple|medium|complex",
   "execution_strategy": "direct|iterative|parallel",
   "reasoning": "Brief explanation of tool selection",
-  "confidence": 0.9
+  "confidence": 0.0-1.0
 }}
-
-IMPORTANT:
-- complexity values: "simple" (1-2 tools), "medium" (3-5 tools), "complex" (6+ tools)
-- execution_strategy values: "direct", "iterative", "parallel"
-- confidence: number between 0.0 and 1.0
-- selected_tools: array of tool names from the catalog above
+</routing>
 </output_format>
 
-Analyze the query and respond with JSON only:
+Now analyze the query and provide your routing decision:
 """
 
     async def _call_llm(self, prompt: str) -> Dict[str, Any]:
@@ -451,18 +447,15 @@ Analyze the query and respond with JSON only:
 
         for attempt in range(self.max_retries + 1):
             try:
-                # Cross-model compatible system prompt (no XML tags)
-                system_content = (
-                    "You are a tool routing system. Analyze the query and select appropriate tools. "
-                    "Respond with ONLY valid JSON (no markdown, no code blocks, no explanation). "
-                    "Your response must be a single JSON object."
-                )
                 params = {
                     "model_name": self.model_name,
                     "messages": [
                         {
                             "role": "system",
-                            "content": system_content,
+                            "content": (
+                                "You are a tool routing system. "
+                                "Output your decision inside <routing> tags as valid JSON."
+                            ),
                         },
                         {"role": "user", "content": prompt},
                     ],
