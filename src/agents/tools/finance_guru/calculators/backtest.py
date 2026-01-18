@@ -90,6 +90,14 @@ class BacktestEngine(BaseCalculator):
         super().__init__()
         self.context = CalculationContext(calculator_name="BacktestEngine")
 
+    def calculate(self, data, **kwargs):
+        """Implement abstract method - routes to run_backtest()."""
+        strategy_config = kwargs.get("strategy_config")
+        backtest_config = kwargs.get("backtest_config", BacktestConfig())
+        price_data = kwargs.get("price_data", data)
+        benchmark_data = kwargs.get("benchmark_data")
+        return self.run_backtest(strategy_config, backtest_config, price_data, benchmark_data)
+
     def run_backtest(
         self,
         strategy_config: StrategyConfig,

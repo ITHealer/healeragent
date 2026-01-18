@@ -69,6 +69,11 @@ class PortfolioOptimizer(BaseCalculator):
         super().__init__()
         self.context = CalculationContext(calculator_name="PortfolioOptimizer")
 
+    def calculate(self, data, **kwargs):
+        """Implement abstract method - routes to optimize()."""
+        config = kwargs.get("config", OptimizationConfig())
+        return self.optimize(data, config)
+
     def _calculate_returns(self, prices: list[float]) -> np.ndarray:
         """Calculate returns from price series."""
         prices_arr = np.array(prices)
@@ -439,6 +444,11 @@ class CorrelationEngine(BaseCalculator):
     def __init__(self):
         super().__init__()
         self.context = CalculationContext(calculator_name="CorrelationEngine")
+
+    def calculate(self, data, **kwargs):
+        """Implement abstract method - routes to calculate_correlation_matrix()."""
+        config = kwargs.get("config", CorrelationConfig())
+        return self.calculate_correlation_matrix(data, config)
 
     def _calculate_returns_from_prices(self, prices: list[float]) -> np.ndarray:
         """Calculate returns from prices."""
@@ -855,6 +865,11 @@ class RebalancingCalculator(BaseCalculator):
         super().__init__()
         self.context = CalculationContext(calculator_name="RebalancingCalculator")
         self.optimizer = PortfolioOptimizer()
+
+    def calculate(self, data, **kwargs):
+        """Implement abstract method - routes to suggest_rebalancing()."""
+        config = kwargs.get("config", OptimizationConfig())
+        return self.suggest_rebalancing(data, config)
 
     def suggest_rebalancing(
         self,

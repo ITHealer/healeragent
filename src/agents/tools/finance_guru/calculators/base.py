@@ -104,10 +104,10 @@ class CalculationContext:
 
     # Identification
     calculator_name: str
-    method_name: str
+    method_name: str = "calculate"  # Default method name
 
     # Timing
-    started_at: datetime = field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
     # Input summary (for logging, not full data)
@@ -119,17 +119,37 @@ class CalculationContext:
     # Debug info
     debug_info: Dict[str, Any] = field(default_factory=dict)
 
+    # Error tracking
+    error_message: Optional[str] = None
+
+    def start(self) -> None:
+        """Mark calculation as started."""
+        self.started_at = datetime.utcnow()
+        self.completed_at = None
+        self.error_message = None
+
     def complete(self) -> None:
         """Mark calculation as complete."""
         self.completed_at = datetime.utcnow()
 
+    def fail(self, error: str) -> None:
+        """Mark calculation as failed."""
+        self.completed_at = datetime.utcnow()
+        self.error_message = error
+
     @property
     def duration_ms(self) -> Optional[float]:
         """Calculate duration in milliseconds."""
-        if self.completed_at is None:
+        if self.completed_at is None or self.started_at is None:
             return None
         delta = self.completed_at - self.started_at
         return delta.total_seconds() * 1000
+
+    @property
+    def elapsed_ms(self) -> int:
+        """Get elapsed time in milliseconds (alias for compatibility)."""
+        duration = self.duration_ms
+        return int(duration) if duration is not None else 0
 
     def add_warning(self, warning: str) -> None:
         """Add a warning to the context."""
@@ -140,11 +160,12 @@ class CalculationContext:
         return {
             "calculator": self.calculator_name,
             "method": self.method_name,
-            "started_at": self.started_at.isoformat(),
+            "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "duration_ms": self.duration_ms,
             "warnings_count": len(self.warnings),
             "input_summary": self.input_summary,
+            "error": self.error_message,
         }
 
 

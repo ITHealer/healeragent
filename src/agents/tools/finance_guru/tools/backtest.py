@@ -187,9 +187,7 @@ class RunBacktestTool(BaseTool):
         super().__init__()
         self.engine = BacktestEngine()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="runBacktest",
             category="backtest",
             description=(
@@ -389,9 +387,7 @@ class CompareStrategiesTool(BaseTool):
         super().__init__()
         self.engine = BacktestEngine()
 
-    @property
-    def schema(self) -> ToolSchema:
-        return ToolSchema(
+        self.schema = ToolSchema(
             name="compareStrategies",
             category="backtest",
             description=(
