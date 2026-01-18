@@ -129,7 +129,7 @@ TOOL_DEFINITIONS = {
     #
     # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM) [Coming]
     # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.) ✅ IMPLEMENTED
-    # Phase 3: Enhanced Risk (Sortino, Calmar, Treynor) [Coming]
+    # Phase 3: Enhanced Risk (VaR, Sharpe, Sortino, etc.) ✅ IMPLEMENTED
     # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) [Coming]
     # Phase 5: Backtest (runBacktest, compareStrategies) [Coming]
     # ========================================================================
@@ -141,6 +141,12 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetCCITool", None),
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetParabolicSARTool", None),
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetEnhancedTechnicalsTool", None),
+        # Phase 3: Enhanced Risk Metrics
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetRiskMetricsTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetVaRTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetSharpeRatioTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetMaxDrawdownTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetBetaAlphaTool", None),
         # Phase 1: Valuation Tools [Coming]
         # ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
     ],

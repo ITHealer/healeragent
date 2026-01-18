@@ -9,9 +9,9 @@ the AI agent during the THINK → ACT → OBSERVE loop.
 
 TOOL CATEGORIES:
 - Enhanced Technical (Phase 2): Ichimoku, Fibonacci, Williams %R, CCI, Parabolic SAR
+- Enhanced Risk (Phase 3): VaR, Sharpe, Sortino, Calmar, Max Drawdown, Beta/Alpha
 - Valuation: calculateDCF, calculateGraham, calculateDDM [Coming]
 - Portfolio: analyzePortfolio, calculateCorrelation, suggestRebalancing [Coming]
-- Risk: calculateSortino, calculateCalmar (enhanced metrics beyond assessRisk) [Coming]
 - Backtest: runBacktest, compareStrategies [Coming]
 
 USAGE:
@@ -22,7 +22,7 @@ USAGE:
     → getIchimokuCloud(symbol="AAPL")
 
     Turn 2: ACT
-    → getFibonacciLevels(symbol="AAPL", lookback=50)
+    → getRiskMetrics(symbol="AAPL", benchmark_symbol="SPY")
 
 Author: HealerAgent Development Team
 """
@@ -36,6 +36,14 @@ from src.agents.tools.finance_guru.tools.technical_enhanced import (
     GetEnhancedTechnicalsTool,
 )
 
+from src.agents.tools.finance_guru.tools.risk_metrics import (
+    GetRiskMetricsTool,
+    GetVaRTool,
+    GetSharpeRatioTool,
+    GetMaxDrawdownTool,
+    GetBetaAlphaTool,
+)
+
 __all__ = [
     # Enhanced Technical Tools (Phase 2)
     "GetIchimokuCloudTool",
@@ -44,4 +52,10 @@ __all__ = [
     "GetCCITool",
     "GetParabolicSARTool",
     "GetEnhancedTechnicalsTool",
+    # Enhanced Risk Tools (Phase 3)
+    "GetRiskMetricsTool",
+    "GetVaRTool",
+    "GetSharpeRatioTool",
+    "GetMaxDrawdownTool",
+    "GetBetaAlphaTool",
 ]

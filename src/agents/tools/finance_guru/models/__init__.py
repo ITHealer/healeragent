@@ -14,9 +14,9 @@ MODULES:
 - base.py: Common base models and types
 - price_data.py: Price series and market data models
 - technical_enhanced.py: Enhanced technical indicator models (Phase 2)
+- risk_metrics.py: Enhanced risk metrics models (Phase 3)
 - valuation.py: Valuation calculation models (DCF, Graham, DDM) [Coming]
 - portfolio.py: Portfolio analysis models [Coming]
-- risk.py: Risk metrics models [Coming]
 
 Author: HealerAgent Development Team
 """
@@ -70,6 +70,27 @@ from src.agents.tools.finance_guru.models.technical_enhanced import (
     EnhancedTechnicalOutput,
 )
 
+from src.agents.tools.finance_guru.models.risk_metrics import (
+    # Input Models
+    RiskDataInput,
+    BenchmarkDataInput,
+    # Configuration
+    RiskCalculationConfig,
+    # Output Models
+    VaROutput,
+    CVaROutput,
+    SharpeRatioOutput,
+    SortinoRatioOutput,
+    TreynorRatioOutput,
+    InformationRatioOutput,
+    CalmarRatioOutput,
+    MaxDrawdownOutput,
+    OmegaRatioOutput,
+    BetaAlphaOutput,
+    VolatilityOutput,
+    RiskMetricsOutput,
+)
+
 __all__ = [
     # Base
     "BaseFinanceModel",
@@ -106,4 +127,20 @@ __all__ = [
     "ParabolicSARConfig",
     "ParabolicSAROutput",
     "EnhancedTechnicalOutput",
+    # Enhanced Risk Metrics (Phase 3)
+    "RiskDataInput",
+    "BenchmarkDataInput",
+    "RiskCalculationConfig",
+    "VaROutput",
+    "CVaROutput",
+    "SharpeRatioOutput",
+    "SortinoRatioOutput",
+    "TreynorRatioOutput",
+    "InformationRatioOutput",
+    "CalmarRatioOutput",
+    "MaxDrawdownOutput",
+    "OmegaRatioOutput",
+    "BetaAlphaOutput",
+    "VolatilityOutput",
+    "RiskMetricsOutput",
 ]
