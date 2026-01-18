@@ -762,6 +762,17 @@ class ValuationCalculator(BaseCalculator):
         self.ddm_calc = DDMCalculator()
         self.comparable_calc = ComparableCalculator()
 
+    def calculate(self, data, **kwargs):
+        """Implement abstract method - routes to calculate_summary()."""
+        return self.calculate_summary(
+            symbol=kwargs.get("symbol", ""),
+            current_price=kwargs.get("current_price", 0),
+            dcf_result=kwargs.get("dcf_result"),
+            graham_result=kwargs.get("graham_result"),
+            ddm_result=kwargs.get("ddm_result"),
+            comparable_result=kwargs.get("comparable_result"),
+        )
+
     def calculate_summary(
         self,
         symbol: str,
