@@ -13,9 +13,10 @@ Pydantic ensures:
 MODULES:
 - base.py: Common base models and types
 - price_data.py: Price series and market data models
-- valuation.py: Valuation calculation models (DCF, Graham, DDM)
-- portfolio.py: Portfolio analysis models
-- risk.py: Risk metrics models
+- technical_enhanced.py: Enhanced technical indicator models (Phase 2)
+- valuation.py: Valuation calculation models (DCF, Graham, DDM) [Coming]
+- portfolio.py: Portfolio analysis models [Coming]
+- risk.py: Risk metrics models [Coming]
 
 Author: HealerAgent Development Team
 """
@@ -43,6 +44,32 @@ from src.agents.tools.finance_guru.models.price_data import (
     ReturnsData,
 )
 
+from src.agents.tools.finance_guru.models.technical_enhanced import (
+    # Input Model
+    OHLCDataInput,
+    # Ichimoku Cloud
+    IchimokuConfig,
+    IchimokuLineOutput,
+    IchimokuCloudOutput,
+    IchimokuSignals,
+    IchimokuOutput,
+    # Fibonacci
+    FibonacciConfig,
+    FibonacciLevel,
+    FibonacciOutput,
+    # Williams %R
+    WilliamsRConfig,
+    WilliamsROutput,
+    # CCI
+    CCIConfig,
+    CCIOutput,
+    # Parabolic SAR
+    ParabolicSARConfig,
+    ParabolicSAROutput,
+    # Combined
+    EnhancedTechnicalOutput,
+)
+
 __all__ = [
     # Base
     "BaseFinanceModel",
@@ -62,4 +89,21 @@ __all__ = [
     "PriceDataInput",
     "OHLCVData",
     "ReturnsData",
+    # Enhanced Technical (Phase 2)
+    "OHLCDataInput",
+    "IchimokuConfig",
+    "IchimokuLineOutput",
+    "IchimokuCloudOutput",
+    "IchimokuSignals",
+    "IchimokuOutput",
+    "FibonacciConfig",
+    "FibonacciLevel",
+    "FibonacciOutput",
+    "WilliamsRConfig",
+    "WilliamsROutput",
+    "CCIConfig",
+    "CCIOutput",
+    "ParabolicSARConfig",
+    "ParabolicSAROutput",
+    "EnhancedTechnicalOutput",
 ]

@@ -123,19 +123,26 @@ TOOL_DEFINITIONS = {
     ],
 
     # ========================================================================
-    # FINANCE GURU TOOLS - Quantitative Analysis (Coming in Phase 1-5)
+    # FINANCE GURU TOOLS - Quantitative Analysis
     # These are COMPUTATION tools that work with data from existing tools.
     # See: docs/ARCHITECTURE_CHAT_V2.md for integration details.
     #
-    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM)
-    # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.)
-    # Phase 3: Enhanced Risk (Sortino, Calmar, Treynor)
-    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation)
-    # Phase 5: Backtest (runBacktest, compareStrategies)
+    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM) [Coming]
+    # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.) ✅ IMPLEMENTED
+    # Phase 3: Enhanced Risk (Sortino, Calmar, Treynor) [Coming]
+    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) [Coming]
+    # Phase 5: Backtest (runBacktest, compareStrategies) [Coming]
     # ========================================================================
     "finance_guru": [
-        # Tools will be added here as they are implemented
-        # Example: ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
+        # Phase 2: Enhanced Technical Indicators
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetIchimokuCloudTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetFibonacciLevelsTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetWilliamsRTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetCCITool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetParabolicSARTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetEnhancedTechnicalsTool", None),
+        # Phase 1: Valuation Tools [Coming]
+        # ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
     ],
 
 }
