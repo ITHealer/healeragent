@@ -91,6 +91,60 @@ from src.agents.tools.finance_guru.models.risk_metrics import (
     RiskMetricsOutput,
 )
 
+from src.agents.tools.finance_guru.models.portfolio import (
+    # Enums
+    OptimizationMethod,
+    CorrelationMethod,
+    RiskModel,
+    # Input Models
+    AssetData,
+    PortfolioDataInput,
+    PortfolioPriceData,
+    # Configuration
+    OptimizationConfig,
+    CorrelationConfig,
+    BlackLittermanConfig,
+    EfficientFrontierConfig,
+    # Output Models
+    AssetAllocation,
+    OptimizationOutput,
+    FrontierPoint,
+    EfficientFrontierOutput,
+    CorrelationMatrixOutput,
+    CovarianceMatrixOutput,
+    RollingCorrelationOutput,
+    PortfolioCorrelationOutput,
+    RebalancingSuggestion,
+    RebalancingOutput,
+)
+
+from src.agents.tools.finance_guru.models.valuation import (
+    # Enums
+    ValuationMethod,
+    DDMType,
+    GrowthAssumption,
+    # DCF Models
+    DCFInputData,
+    DCFConfig,
+    DCFProjection,
+    DCFOutput,
+    # Graham Models
+    GrahamInputData,
+    GrahamConfig,
+    GrahamOutput,
+    # DDM Models
+    DDMInputData,
+    DDMConfig,
+    DDMOutput,
+    # Comparable Models
+    ComparableCompany,
+    ComparableInputData,
+    MultipleValuation,
+    ComparableOutput,
+    # Summary
+    ValuationSummary,
+)
+
 __all__ = [
     # Base
     "BaseFinanceModel",
@@ -143,4 +197,44 @@ __all__ = [
     "BetaAlphaOutput",
     "VolatilityOutput",
     "RiskMetricsOutput",
+    # Portfolio Analysis (Phase 4)
+    "OptimizationMethod",
+    "CorrelationMethod",
+    "RiskModel",
+    "AssetData",
+    "PortfolioDataInput",
+    "PortfolioPriceData",
+    "OptimizationConfig",
+    "CorrelationConfig",
+    "BlackLittermanConfig",
+    "EfficientFrontierConfig",
+    "AssetAllocation",
+    "OptimizationOutput",
+    "FrontierPoint",
+    "EfficientFrontierOutput",
+    "CorrelationMatrixOutput",
+    "CovarianceMatrixOutput",
+    "RollingCorrelationOutput",
+    "PortfolioCorrelationOutput",
+    "RebalancingSuggestion",
+    "RebalancingOutput",
+    # Valuation Models (Phase 1)
+    "ValuationMethod",
+    "DDMType",
+    "GrowthAssumption",
+    "DCFInputData",
+    "DCFConfig",
+    "DCFProjection",
+    "DCFOutput",
+    "GrahamInputData",
+    "GrahamConfig",
+    "GrahamOutput",
+    "DDMInputData",
+    "DDMConfig",
+    "DDMOutput",
+    "ComparableCompany",
+    "ComparableInputData",
+    "MultipleValuation",
+    "ComparableOutput",
+    "ValuationSummary",
 ]

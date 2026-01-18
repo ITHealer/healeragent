@@ -52,6 +52,30 @@ from src.agents.tools.finance_guru.calculators.risk_metrics import (
     calculate_sharpe,
 )
 
+from src.agents.tools.finance_guru.calculators.portfolio import (
+    # Calculators
+    PortfolioOptimizer,
+    CorrelationEngine,
+    RebalancingCalculator,
+    # Convenience functions
+    optimize_portfolio,
+    calculate_correlation,
+    generate_frontier,
+)
+
+from src.agents.tools.finance_guru.calculators.valuation import (
+    # Calculators
+    DCFCalculator,
+    GrahamCalculator,
+    DDMCalculator,
+    ComparableCalculator,
+    ValuationCalculator,
+    # Convenience functions
+    calculate_dcf,
+    calculate_graham,
+    calculate_ddm,
+)
+
 __all__ = [
     # Base
     "BaseCalculator",
@@ -77,4 +101,20 @@ __all__ = [
     "calculate_risk_metrics",
     "calculate_var",
     "calculate_sharpe",
+    # Portfolio Analysis (Phase 4)
+    "PortfolioOptimizer",
+    "CorrelationEngine",
+    "RebalancingCalculator",
+    "optimize_portfolio",
+    "calculate_correlation",
+    "generate_frontier",
+    # Valuation (Phase 1)
+    "DCFCalculator",
+    "GrahamCalculator",
+    "DDMCalculator",
+    "ComparableCalculator",
+    "ValuationCalculator",
+    "calculate_dcf",
+    "calculate_graham",
+    "calculate_ddm",
 ]

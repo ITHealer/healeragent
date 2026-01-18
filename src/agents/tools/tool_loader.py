@@ -127,13 +127,18 @@ TOOL_DEFINITIONS = {
     # These are COMPUTATION tools that work with data from existing tools.
     # See: docs/ARCHITECTURE_CHAT_V2.md for integration details.
     #
-    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM) [Coming]
+    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM) ✅ IMPLEMENTED
     # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.) ✅ IMPLEMENTED
     # Phase 3: Enhanced Risk (VaR, Sharpe, Sortino, etc.) ✅ IMPLEMENTED
-    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) [Coming]
+    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) ✅ IMPLEMENTED
     # Phase 5: Backtest (runBacktest, compareStrategies) [Coming]
     # ========================================================================
     "finance_guru": [
+        # Phase 1: Valuation Tools
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateGrahamTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateDDMTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "GetValuationSummaryTool", None),
         # Phase 2: Enhanced Technical Indicators
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetIchimokuCloudTool", None),
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetFibonacciLevelsTool", None),
@@ -147,8 +152,12 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.finance_guru.tools.risk_metrics", "GetSharpeRatioTool", None),
         ("src.agents.tools.finance_guru.tools.risk_metrics", "GetMaxDrawdownTool", None),
         ("src.agents.tools.finance_guru.tools.risk_metrics", "GetBetaAlphaTool", None),
-        # Phase 1: Valuation Tools [Coming]
-        # ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
+        # Phase 4: Portfolio Analysis
+        ("src.agents.tools.finance_guru.tools.portfolio", "OptimizePortfolioTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "GetCorrelationMatrixTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "GetEfficientFrontierTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "AnalyzePortfolioDiversificationTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "SuggestRebalancingTool", None),
     ],
 
 }

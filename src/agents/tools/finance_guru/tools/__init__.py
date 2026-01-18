@@ -44,6 +44,21 @@ from src.agents.tools.finance_guru.tools.risk_metrics import (
     GetBetaAlphaTool,
 )
 
+from src.agents.tools.finance_guru.tools.portfolio import (
+    OptimizePortfolioTool,
+    GetCorrelationMatrixTool,
+    GetEfficientFrontierTool,
+    AnalyzePortfolioDiversificationTool,
+    SuggestRebalancingTool,
+)
+
+from src.agents.tools.finance_guru.tools.valuation import (
+    CalculateDCFTool,
+    CalculateGrahamTool,
+    CalculateDDMTool,
+    GetValuationSummaryTool,
+)
+
 __all__ = [
     # Enhanced Technical Tools (Phase 2)
     "GetIchimokuCloudTool",
@@ -58,4 +73,15 @@ __all__ = [
     "GetSharpeRatioTool",
     "GetMaxDrawdownTool",
     "GetBetaAlphaTool",
+    # Portfolio Analysis Tools (Phase 4)
+    "OptimizePortfolioTool",
+    "GetCorrelationMatrixTool",
+    "GetEfficientFrontierTool",
+    "AnalyzePortfolioDiversificationTool",
+    "SuggestRebalancingTool",
+    # Valuation Tools (Phase 1)
+    "CalculateDCFTool",
+    "CalculateGrahamTool",
+    "CalculateDDMTool",
+    "GetValuationSummaryTool",
 ]
