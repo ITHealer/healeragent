@@ -488,6 +488,51 @@ class GetTechnicalIndicatorsTool(BaseTool):
         }
 
         # =====================================================================
+        # VOLATILITY PACK: Combined volatility metrics for risk framing
+        # This helps LLM explain WHY risk level is what it is
+        # =====================================================================
+        # 1. ATR% (already calculated above)
+        # 2. BB Width = (upper - lower) / middle (Bollinger Band width as % of price)
+        bb_width = None
+        bb_width_pct = None
+        if bb_upper and bb_lower and bb_middle and bb_middle > 0:
+            bb_width = bb_upper - bb_lower
+            bb_width_pct = (bb_width / bb_middle) * 100
+
+        # 3. Volatility Regime classification
+        # Based on ATR% and BB_width combined
+        volatility_regime = "NORMAL"
+        volatility_note = ""
+        if atr_pct:
+            if atr_pct > 4.0:  # >4% daily range = high volatility
+                volatility_regime = "HIGH"
+                volatility_note = f"ATR={atr_pct:.1f}% (>4%) - expect large daily swings"
+            elif atr_pct > 2.5:
+                volatility_regime = "ELEVATED"
+                volatility_note = f"ATR={atr_pct:.1f}% (2.5-4%) - above normal volatility"
+            elif atr_pct < 1.0:  # <1% daily range = low volatility (often precedes breakout)
+                volatility_regime = "LOW"
+                volatility_note = f"ATR={atr_pct:.1f}% (<1%) - low volatility, potential squeeze"
+            else:
+                volatility_regime = "NORMAL"
+                volatility_note = f"ATR={atr_pct:.1f}% (1-2.5%) - normal volatility"
+
+        # BB squeeze detection (low volatility + BB squeeze = potential breakout)
+        bb_squeeze = result['indicators']['bollinger_bands'].get('squeeze', False)
+        if bb_squeeze and volatility_regime == "LOW":
+            volatility_note += " | BB SQUEEZE detected - breakout imminent"
+
+        result['indicators']['volatility_pack'] = {
+            "atr_pct": round(atr_pct, 2) if atr_pct else None,
+            "bb_width": round(bb_width, 2) if bb_width else None,
+            "bb_width_pct": round(bb_width_pct, 2) if bb_width_pct else None,
+            "volatility_regime": volatility_regime,  # LOW/NORMAL/ELEVATED/HIGH
+            "volatility_note": volatility_note,
+            "bb_squeeze": bb_squeeze,
+            "risk_framing": f"Volatility is {volatility_regime}. Daily range ~{atr_pct:.1f}% of price. Position size accordingly."
+        }
+
+        # =====================================================================
         # VWAP Analysis (cumulative from period start)
         # P1 FIX: IMPORTANT CLARIFICATION on VWAP variant:
         # - This is CUMULATIVE VWAP from daily data (NOT intraday session VWAP)
@@ -509,6 +554,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "anchor_type": "start_of_period",
             "anchor_date": first_date.strftime('%Y-%m-%d'),
             "anchor_reason": "start_of_period",  # Could be: earnings, swing_low, breakout, etc.
+            # ⚠️ CONFIDENCE LEVEL for timing decisions
+            # start_of_period = LOW confidence (arbitrary anchor, not event-based)
+            # Better anchors: swing_low, earnings_gap, breakout = HIGH confidence
+            "anchor_confidence": "LOW",
+            "anchor_confidence_note": "start_of_period anchor is arbitrary. For better timing, use event-based anchors (earnings, swing low/high, breakout).",
             "calculation": f"AVWAP from {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}",
             "avwap_value": vwap,
             "price_vs_avwap_pct": vwap_analysis.get('diff_pct'),
@@ -516,21 +566,66 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "position": vwap_analysis.get('position'),
             "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis),
             "interpretation": "Price > AVWAP = avg buyer in profit; Price < AVWAP = avg buyer underwater",
-            "note": "AVWAP (anchor=start_of_period) measures avg cost basis from period start. Large deviations (>10%) normal for long periods."
+            "note": "⚠️ AVWAP anchor=start_of_period has LOW timing confidence. Use for general context only, not entry/exit timing."
         }
 
         # =====================================================================
-        # Volume Analysis (20-day average)
+        # Volume Analysis (20-day average) + Volume Pack for trading decisions
         # =====================================================================
         volume = indicator_values.get('volume')
         volume_avg = indicator_values.get('volume_sma_20')
         volume_ratio = indicator_values.get('volume_ratio')
         # P0 FIX: analyze_volume handles None - pass raw values
         volume_analysis = analyze_volume(volume, volume_avg)
+
+        # VOLUME PACK: Calculate additional metrics for LLM context
+        # 1. RVOL (Relative Volume) = today's volume / 20-day average
+        rvol = volume_ratio if volume_ratio else (volume / volume_avg if volume_avg and volume_avg > 0 else None)
+
+        # 2. Volume trend (5-day vs previous 5-day)
+        volume_trend = "N/A"
+        volume_trend_pct = None
+        if len(df) >= 10 and 'volume' in df.columns:
+            recent_5d_vol = df['volume'].iloc[-5:].mean()
+            prev_5d_vol = df['volume'].iloc[-10:-5].mean()
+            if prev_5d_vol and prev_5d_vol > 0:
+                volume_trend_pct = ((recent_5d_vol - prev_5d_vol) / prev_5d_vol) * 100
+                if volume_trend_pct > 20:
+                    volume_trend = "RISING_STRONG"
+                elif volume_trend_pct > 5:
+                    volume_trend = "RISING"
+                elif volume_trend_pct < -20:
+                    volume_trend = "FALLING_STRONG"
+                elif volume_trend_pct < -5:
+                    volume_trend = "FALLING"
+                else:
+                    volume_trend = "STABLE"
+
+        # 3. Price-Volume Confirmation
+        # Check if price move is confirmed by volume (important for breakouts)
+        price_change_1d = result.get('price_context', {}).get('change_1d_pct', 0) or 0
+        volume_confirms_price = False
+        volume_confirmation_note = ""
+        if rvol:
+            if abs(price_change_1d) > 1.5 and rvol > 1.2:
+                volume_confirms_price = True
+                volume_confirmation_note = f"Price move ({price_change_1d:+.1f}%) confirmed by volume (RVOL={rvol:.2f}x)"
+            elif abs(price_change_1d) > 1.5 and rvol < 0.8:
+                volume_confirmation_note = f"⚠️ Price move ({price_change_1d:+.1f}%) NOT confirmed by volume (RVOL={rvol:.2f}x) - suspect move"
+            else:
+                volume_confirmation_note = f"Normal volume (RVOL={rvol:.2f}x)"
+
         result['indicators']['volume'] = {
             "current": volume,
             "average_20d": volume_avg,
             "ratio": volume_ratio,
+            # NEW: Volume Pack for trading decisions
+            "rvol": round(rvol, 2) if rvol else None,  # Relative Volume (today vs 20d avg)
+            "rvol_interpretation": "RVOL>1.5=high interest, RVOL<0.7=low interest",
+            "volume_trend": volume_trend,  # RISING/FALLING/STABLE
+            "volume_trend_pct": round(volume_trend_pct, 1) if volume_trend_pct else None,
+            "volume_confirms_price": volume_confirms_price,
+            "volume_confirmation_note": volume_confirmation_note,
             "period_days": self.cfg.VOLUME_SMA_PERIOD,
             "signal": volume_analysis.get('signal'),
             "explanation": self._get_volume_explanation(volume, volume_avg, volume_ratio, volume_analysis)
@@ -1391,25 +1486,45 @@ class GetTechnicalIndicatorsTool(BaseTool):
         signal_breakdown = {
             "bullish_indicators": [],
             "bearish_indicators": [],
-            "neutral_indicators": []
+            "neutral_indicators": [],
+            # NEW: Separate trend vs mean-reversion to avoid confusion
+            # Trend signals: follow the trend direction (MACD, MA, OBV)
+            # Mean-reversion signals: expect bounce from extreme (RSI oversold, Stoch oversold)
+            "trend_bullish": [],      # Trend-following bullish (e.g., MACD bullish, MA alignment)
+            "trend_bearish": [],      # Trend-following bearish
+            "mean_reversion_bullish": [],  # Oversold → expect bounce (NOT trend bullish!)
+            "mean_reversion_bearish": []   # Overbought → expect pullback (NOT trend bearish!)
         }
 
-        # Categorize each indicator signal
+        # =====================================================================
+        # CATEGORIZE SIGNALS: Trend vs Mean-Reversion
+        # This prevents LLM from confusing "oversold=bullish" with "trend=bullish"
+        # =====================================================================
+
+        # RSI: Mean-reversion indicator
+        # IMPORTANT: Oversold = potential bounce, NOT same as bullish trend
+        rsi_condition = rsi_analysis.get('condition', '')
         if rsi_analysis.get('signal') == 'BUY':
-            signal_breakdown["bullish_indicators"].append("RSI (oversold)")
+            # ⚠️ This is MEAN-REVERSION bullish, not trend bullish
+            signal_breakdown["bullish_indicators"].append("RSI (oversold→rebound)")
+            signal_breakdown["mean_reversion_bullish"].append("RSI oversold")
         elif rsi_analysis.get('signal') == 'SELL':
-            signal_breakdown["bearish_indicators"].append("RSI (overbought)")
+            signal_breakdown["bearish_indicators"].append("RSI (overbought→pullback)")
+            signal_breakdown["mean_reversion_bearish"].append("RSI overbought")
         else:
             signal_breakdown["neutral_indicators"].append("RSI")
 
+        # MACD: Trend-following indicator
         if macd_analysis.get('signal') == 'BULLISH':
             signal_breakdown["bullish_indicators"].append("MACD")
+            signal_breakdown["trend_bullish"].append("MACD bullish crossover")
         elif macd_analysis.get('signal') == 'BEARISH':
             signal_breakdown["bearish_indicators"].append("MACD")
+            signal_breakdown["trend_bearish"].append("MACD bearish crossover")
         else:
             signal_breakdown["neutral_indicators"].append("MACD")
 
-        # MA Trend (Price vs SMA20/50/200 alignment):
+        # MA Alignment: Trend-following indicator
         # - BULLISH: Price above 2-3 MAs
         # - BEARISH: Price below all MAs
         # - NEUTRAL/MIXED: Price above only 1 MA (conflicting timeframes)
@@ -1417,15 +1532,22 @@ class GetTechnicalIndicatorsTool(BaseTool):
         ma_trend_label = f"MA Alignment ({trend_analysis.get('trend', 'MIXED')})"
         if trend_signal == 'BULLISH':
             signal_breakdown["bullish_indicators"].append(ma_trend_label)
+            signal_breakdown["trend_bullish"].append("Price above MAs (bullish structure)")
         elif trend_signal == 'BEARISH':
             signal_breakdown["bearish_indicators"].append(ma_trend_label)
+            signal_breakdown["trend_bearish"].append("Price below MAs (bearish structure)")
         else:
             signal_breakdown["neutral_indicators"].append(ma_trend_label)
 
+        # Stochastic: Mean-reversion indicator (like RSI)
+        # IMPORTANT: Oversold = potential bounce, NOT same as bullish trend
+        stoch_condition = stoch_analysis.get('condition', '')
         if stoch_analysis.get('signal') == 'BUY':
-            signal_breakdown["bullish_indicators"].append("Stochastic")
+            signal_breakdown["bullish_indicators"].append("Stochastic (oversold→rebound)")
+            signal_breakdown["mean_reversion_bullish"].append("Stochastic oversold")
         elif stoch_analysis.get('signal') == 'SELL':
-            signal_breakdown["bearish_indicators"].append("Stochastic")
+            signal_breakdown["bearish_indicators"].append("Stochastic (overbought→pullback)")
+            signal_breakdown["mean_reversion_bearish"].append("Stochastic overbought")
         else:
             signal_breakdown["neutral_indicators"].append("Stochastic")
 
@@ -1437,27 +1559,34 @@ class GetTechnicalIndicatorsTool(BaseTool):
             signal_breakdown["neutral_indicators"].append("ADX")
 
         # AVWAP (anchor=start_of_period) - Anchored VWAP from dataset start
+        # ⚠️ LOW CONFIDENCE for timing: start_of_period anchor is arbitrary, not event-based
+        # Better anchors: swing low, earnings gap, breakout level
+        avwap_label = "AVWAP (⚠️low timing conf.)"
         if 'BULLISH' in vwap_signal:
-            signal_breakdown["bullish_indicators"].append("AVWAP")
+            signal_breakdown["bullish_indicators"].append(avwap_label)
         elif 'BEARISH' in vwap_signal:
-            signal_breakdown["bearish_indicators"].append("AVWAP")
+            signal_breakdown["bearish_indicators"].append(avwap_label)
         else:
-            signal_breakdown["neutral_indicators"].append("AVWAP")
+            signal_breakdown["neutral_indicators"].append(avwap_label)
 
-        # OBV - fix extra space when no divergence
+        # OBV: Trend-following volume indicator
         obv_label = "OBV (divergence)" if 'DIVERGENCE' in obv_signal else "OBV"
         if 'BULLISH' in obv_signal:
             signal_breakdown["bullish_indicators"].append(obv_label)
+            signal_breakdown["trend_bullish"].append("OBV confirms buying pressure")
         elif 'BEARISH' in obv_signal:
             signal_breakdown["bearish_indicators"].append(obv_label)
+            signal_breakdown["trend_bearish"].append("OBV confirms selling pressure")
         else:
             signal_breakdown["neutral_indicators"].append("OBV")
 
-        # Use specific crossover type for transparency
+        # MA Crossover: Trend-following signals
         if has_golden_cross:
             signal_breakdown["bullish_indicators"].append("MA Crossover (Golden Cross)")
+            signal_breakdown["trend_bullish"].append("Golden Cross (SMA50>SMA200)")
         elif has_death_cross:
             signal_breakdown["bearish_indicators"].append("MA Crossover (Death Cross)")
+            signal_breakdown["trend_bearish"].append("Death Cross (SMA50<SMA200)")
         elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bullish':
             signal_breakdown["bullish_indicators"].append("MA Crossover (SMA20/50)")
         elif isinstance(sma_20_50, dict) and sma_20_50.get('type') == 'bearish':
