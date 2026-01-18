@@ -2079,18 +2079,38 @@ IMPORTANT:
 
 Tools available: [{tool_list_str}]
 
-**Execution Strategy (Incremental):**
-1. **Turn 1**: Start with essential data (price, basic indicators) for ALL symbols
-2. **Turn 2**: Add detailed analysis (patterns, support/resistance) for TOP symbols
-3. **Turn 3+**: Get fundamentals/news only for most relevant symbols
-4. Do NOT call all tools for all symbols at once - this will overflow context
+### Tool Categories (CRITICAL FOR CORRECT SELECTION)
+
+**MARKET-WIDE TOOLS** (NO symbol required - call once for market overview):
+- getEconomicData → Macro context: Treasury rates, GDP, CPI, unemployment
+- getMarketBreadth → Market health: advance/decline ratio, market sentiment
+- getMarketIndices → Index performance: S&P 500, Nasdaq, Dow Jones
+- getSectorPerformance → Sector rotation: which sectors leading/lagging
+- getTopGainers, getTopLosers → Market movers today
+- getMarketNews → General market news and events
+
+**STOCK-SPECIFIC TOOLS** (REQUIRE symbol parameter):
+- getStockPrice → Current price, change, volume
+- getTechnicalIndicators → RSI, MACD, Moving Averages
+- getRelativeStrength → Stock strength vs S&P 500 benchmark
+- detectChartPatterns → Chart patterns (head & shoulders, triangles, etc.)
+- getSupportResistance → Key price levels
+- getFinancialRatios → Valuation: P/E, P/B, ROE, margins
+- getIncomeStatement, getBalanceSheet, getCashFlow → Financial statements
+- getAnalystRatings → Wall Street consensus, price targets
+
+### Execution Strategy (Incremental)
+1. **Turn 1**: Market context (if needed) + price/basic indicators for ALL symbols
+2. **Turn 2**: Technical deep-dive (patterns, support/resistance) for TOP symbols
+3. **Turn 3+**: Fundamentals/news only for most relevant symbols
 
 **Priority Order:**
-1. getStockPrice → Basic price snapshot for all
-2. getTechnicalIndicators → Key indicators (RSI, MACD) for all
-3. detectChartPatterns, getSupportResistance → Only for interesting symbols
-4. getIncomeStatement, getBalanceSheet, getCashFlow → Only for deep-dive symbols
-5. getStockNews, webSearch → Only if specifically needed
+1. getEconomicData (if macro context needed) → Once for market environment
+2. getStockPrice → Basic price snapshot for all symbols
+3. getTechnicalIndicators, getRelativeStrength → Key indicators for all
+4. detectChartPatterns, getSupportResistance → Only for interesting symbols
+5. Fundamentals tools → Only for deep-dive analysis
+6. getStockNews, webSearch → Only if specifically needed
 
 **After each turn:**
 - Evaluate which symbols need more analysis
@@ -2100,20 +2120,48 @@ Tools available: [{tool_list_str}]
             # SIMPLE/MEDIUM query - can call all tools in first turn
             execution_guidelines = f"""## TOOL EXECUTION GUIDELINES
 
-**IMPORTANT: The router has pre-selected these tools as needed for this query:**
+**IMPORTANT: The router has pre-selected these tools for this query:**
 Tools to use: [{tool_list_str}]
 
-**Execution Rules:**
-1. You MUST call ALL the pre-selected tools above in your first turn to gather comprehensive data
-2. Execute multiple tools in parallel when possible
-3. If a tool fails, note the limitation but still proceed
-4. Only skip a tool if it's truly redundant with another tool's data
-5. After gathering all data, synthesize into a comprehensive response
+### Tool Categories (CRITICAL FOR CORRECT PARAMETERS)
 
-**Evaluation after tool calls:**
-- Check if you have enough data to fully answer the user's question
-- If missing critical information, call additional tools
-- If data is sufficient, proceed to final response"""
+**MARKET-WIDE TOOLS** (NO symbol parameter - call without symbol):
+- getEconomicData → Macro: Treasury rates, GDP, CPI, unemployment (call once)
+- getMarketBreadth → Market health: advance/decline, sentiment (call once)
+- getMarketIndices → Index levels: S&P 500, Nasdaq, Dow (call once)
+- getSectorPerformance → Sector rotation analysis (call once)
+- getTopGainers, getTopLosers, getMostActives → Market movers (call once)
+- getMarketNews → General news (call once)
+- stockScreener → Find stocks matching criteria (call once with filters)
+- webSearch → Web search for news/info (call once with query)
+
+**STOCK-SPECIFIC TOOLS** (REQUIRE symbol parameter):
+- getStockPrice(symbol) → Price, change, volume
+- getTechnicalIndicators(symbol) → RSI, MACD, SMA, EMA
+- getRelativeStrength(symbol) → RS rating vs S&P 500
+- detectChartPatterns(symbol) → Chart patterns detected
+- getSupportResistance(symbol) → Support/resistance levels
+- getFinancialRatios(symbol) → Valuation metrics
+- getGrowthMetrics(symbol) → Revenue/earnings growth
+- getIncomeStatement(symbol), getBalanceSheet(symbol), getCashFlow(symbol) → Financials
+- getAnalystRatings(symbol) → Analyst consensus, price targets
+- getPriceTargets(symbol) → Analyst price targets detail
+- getStockNews(symbol) → Company-specific news
+- getSentiment(symbol) → News sentiment analysis
+- assessRisk(symbol) → Risk metrics
+- suggestStopLoss(symbol) → Stop-loss recommendation
+
+### Execution Rules
+1. **Call ALL pre-selected tools** in your first turn
+2. For MARKET-WIDE tools: Call ONCE without symbol
+3. For STOCK-SPECIFIC tools: Call with the correct symbol from context
+4. Execute multiple tools in parallel when possible
+5. If a tool fails, note the limitation but proceed with others
+
+### After gathering data
+- Check if you have enough data to answer the user's question
+- If missing critical information, identify and call additional tools
+- When data is sufficient, synthesize into a comprehensive response"""
 
         # Combine skill prompt with runtime context
         system_prompt = f"""{skill_prompt}
@@ -2205,6 +2253,21 @@ Tools to use: [{tool_list_str}]
 
 Analyze the data above and provide a **comprehensive, data-driven response** to the user's query.
 
+### Understanding the Data Types
+
+**MACRO/MARKET DATA** (from market-wide tools - provides context):
+- Economic data (getEconomicData): Treasury rates, GDP, CPI → Fed policy implications
+- Market breadth (getMarketBreadth): A/D ratio → overall market health
+- Sector performance (getSectorPerformance): Sector rotation → risk appetite
+- Market indices: S&P 500, Nasdaq → benchmark performance
+
+**STOCK-SPECIFIC DATA** (from symbol-specific tools):
+- Price data: Current price, change, volume, 52-week range
+- Technical indicators: RSI (>70 overbought, <30 oversold), MACD (trend), Moving Averages
+- Relative strength: RS rating vs S&P 500 → outperformance/underperformance
+- Fundamentals: P/E, P/B, ROE, margins → valuation
+- Analyst ratings: Buy/Hold/Sell consensus, price targets
+
 ### Data Integrity Requirements (MANDATORY)
 1. **USE ALL DATA**: Every piece of data from tools MUST be included in your analysis
 2. **CITE SPECIFIC NUMBERS**: Always quote exact values (prices, ratios, percentages) from tool results
@@ -2212,17 +2275,19 @@ Analyze the data above and provide a **comprehensive, data-driven response** to 
 4. **SOURCE ATTRIBUTION**: Reference which tool provided each data point when relevant
 
 ### Analysis Quality Requirements
-1. **EXPLAIN SIGNIFICANCE**: For every metric, explain what it means for investment decisions
+1. **CONNECT MACRO TO MICRO**: Link market conditions to stock-specific analysis
+   - Example: "With 10Y Treasury at 4.5% (rising rate environment), growth stocks like NVDA face headwinds"
+2. **EXPLAIN SIGNIFICANCE**: For every metric, explain what it means for investment decisions
    - Example: "RSI at 72 indicates overbought conditions, suggesting potential short-term pullback"
-2. **PROVIDE CONTEXT**: Compare metrics to benchmarks, historical ranges, or sector averages
-3. **IDENTIFY PATTERNS**: Connect data points to reveal trends, divergences, or confirmations
-4. **BALANCED VIEW**: Present both bullish and bearish signals objectively
+3. **COMPARE TO BENCHMARKS**: Use relative strength data, sector averages, historical ranges
+4. **IDENTIFY PATTERNS**: Connect data points to reveal trends, divergences, or confirmations
+5. **BALANCED VIEW**: Present both bullish and bearish signals objectively
 
 ### Actionable Output Requirements
 1. **SPECIFIC RECOMMENDATIONS**: Provide clear action items based on data
    - Entry/exit levels, support/resistance zones, key price targets
-2. **RISK ASSESSMENT**: Identify risks and suggest risk management strategies
-3. **STRATEGIC INSIGHTS**: Offer short-term and long-term perspectives
+2. **RISK ASSESSMENT**: Identify risks considering both market and stock-specific factors
+3. **STRATEGIC INSIGHTS**: Offer short-term (trading) and long-term (investing) perspectives
 4. **DECISION FRAMEWORK**: Help user understand when to act and what to monitor
 
 ### Response Style
@@ -2939,7 +3004,7 @@ IMPORTANT:
         if conversation_summary:
             user_context += f"\n\n<CONVERSATION_SUMMARY>\n{conversation_summary}\n</CONVERSATION_SUMMARY>"
 
-        # Build system prompt - simplified and natural
+        # Build system prompt with comprehensive tool guidance
         system_prompt = f"""{base_prompt}
 
 ---
@@ -2947,31 +3012,73 @@ IMPORTANT:
 {chr(10).join('- ' + p for p in context_parts)}
 {user_context}
 
-## Tool Usage
+## Tool Calling Protocol
 
-You have access to various data tools. Use them to gather real data before responding.
+You have access to specialized data tools. Follow this workflow:
 
-**Key principles:**
+### Step 1: Analyze & Plan
+- Identify what data is needed to answer the query
+- Select appropriate tools from the categories below
+- Plan tool calls (can call multiple in parallel)
+
+### Step 2: Call Tools
+- Execute tools to get real-time data
+- NEVER fabricate numbers - only use actual tool results
+
+### Step 3: Synthesize Response
+- Analyze all tool results together
+- Cite specific data from results
+- Provide actionable insights
+
+### Tool Categories (CRITICAL FOR CORRECT USAGE)
+
+**MARKET-WIDE TOOLS** (NO symbol needed - call once):
+- getEconomicData → Macro: Treasury rates, GDP, CPI, unemployment
+- getMarketBreadth → Market health: advance/decline ratio
+- getMarketIndices → Index levels: S&P 500, Nasdaq, Dow
+- getSectorPerformance → Sector rotation analysis
+- getTopGainers, getTopLosers, getMostActives → Market movers
+- getMarketNews → General market news
+- stockScreener → Find stocks matching criteria
+- webSearch → Web search for news/info
+
+**STOCK-SPECIFIC TOOLS** (REQUIRE symbol parameter):
+- getStockPrice(symbol) → Price, change, volume
+- getTechnicalIndicators(symbol) → RSI, MACD, SMA, EMA
+- getRelativeStrength(symbol) → RS rating vs S&P 500
+- detectChartPatterns(symbol) → Chart patterns
+- getSupportResistance(symbol) → Key price levels
+- getFinancialRatios(symbol) → P/E, P/B, ROE, margins
+- getGrowthMetrics(symbol) → Revenue/earnings growth
+- getIncomeStatement(symbol), getBalanceSheet(symbol), getCashFlow(symbol)
+- getAnalystRatings(symbol) → Analyst consensus, price targets
+- getStockNews(symbol) → Company-specific news
+- getSentiment(symbol) → News sentiment
+- assessRisk(symbol) → Risk metrics
+
+### Key Principles
 1. **Call tools first** - Get actual data before making claims
-2. **Use the `think` tool** - Plan your approach and analyze results
-3. **Cite data sources** - Reference where numbers come from
-4. **Be accurate** - Never fabricate numbers, only use tool results
-5. **Respond naturally** - Match the user's language, be conversational"""
+2. **Cite data sources** - Reference specific numbers from tool results
+3. **Be accurate** - Never fabricate numbers, only use tool results
+4. **Respond naturally** - Match the user's language"""
 
         # Add think tool instruction if enabled
         if enable_think_tool:
             system_prompt += """
 
 **Think Tool (RECOMMENDED):**
-Use the `think` tool to plan your approach and analyze data before responding.
+Use `think` to organize your reasoning:
+- Before tools: Plan what data you need
+- After tools: Analyze results and identify insights
 Pattern: think(plan) → call tools → think(analyze) → respond"""
 
         # Add web search instruction if enabled
         if enable_web_search:
             system_prompt += """
 
-**Web Search (RECOMMENDED):**
-Use `webSearch` for latest news and market context. Include source citations."""
+**Web Search (AVAILABLE):**
+Use `webSearch` for latest news and market context.
+Include source citations: [Title](URL)"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
