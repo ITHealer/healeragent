@@ -154,7 +154,10 @@ class GetStockNewsTool(BaseTool):
                 self.logger.info(
                     f"[getStockNews] ✅ CACHED ({int(execution_time)}ms)"
                 )
-                
+
+                # Generate formatted context for LLM
+                formatted_context = self._generate_formatted_context(cached_data)
+
                 return create_success_output(
                     tool_name="getStockNews",
                     data=cached_data,
@@ -164,7 +167,8 @@ class GetStockNewsTool(BaseTool):
                         "limit": limit,
                         "page": page,
                         "from_cache": True
-                    }
+                    },
+                    formatted_context=formatted_context
                 )
             
             # Fetch from API
@@ -201,12 +205,15 @@ class GetStockNewsTool(BaseTool):
                     self.logger.debug(f"[CACHE] Error closing Redis: {e}")
             
             execution_time = (datetime.now() - start_time).total_seconds() * 1000
-            
+
             self.logger.info(
                 f"[getStockNews] ✅ SUCCESS ({int(execution_time)}ms) - "
                 f"{result_data['article_count']} articles"
             )
-            
+
+            # Generate formatted context for LLM
+            formatted_context = self._generate_formatted_context(result_data)
+
             return create_success_output(
                 tool_name="getStockNews",
                 data=result_data,
@@ -217,7 +224,8 @@ class GetStockNewsTool(BaseTool):
                     "page": page,
                     "from_cache": False,
                     "article_count": result_data['article_count']
-                }
+                },
+                formatted_context=formatted_context
             )
             
         except Exception as e:
@@ -288,10 +296,10 @@ class GetStockNewsTool(BaseTool):
         page: int
     ) -> Dict[str, Any]:
         """Format news data to structured output"""
-        
+
         if not isinstance(raw_data, list):
             raw_data = []
-        
+
         # Parse articles
         articles = []
         for item in raw_data[:limit]:
@@ -305,7 +313,7 @@ class GetStockNewsTool(BaseTool):
                 "symbol": item.get("symbol", symbol)
             }
             articles.append(article)
-        
+
         return {
             "symbol": symbol,
             "article_count": len(articles),
@@ -314,6 +322,49 @@ class GetStockNewsTool(BaseTool):
             "articles": articles,
             "timestamp": datetime.now().isoformat()
         }
+
+    def _generate_formatted_context(self, data: Dict[str, Any]) -> str:
+        """
+        Generate human-readable formatted context for LLM consumption.
+
+        Args:
+            data: Formatted news data from _format_news_data()
+
+        Returns:
+            Human-readable string summary of news articles
+        """
+        symbol = data.get("symbol", "Unknown")
+        articles = data.get("articles", [])
+        article_count = data.get("article_count", 0)
+
+        lines = [
+            f"=== {symbol} NEWS SUMMARY ===",
+            f"Total Articles: {article_count}",
+            ""
+        ]
+
+        if not articles:
+            lines.append("No recent news articles found.")
+            return "\n".join(lines)
+
+        # Group by recency (today, this week, older)
+        for i, article in enumerate(articles[:10], 1):  # Limit to top 10 for context
+            title = article.get("title", "Untitled")
+            source = article.get("site", "Unknown")
+            pub_date = article.get("published_date", "")
+            text_preview = article.get("text", "")[:150]  # Short preview
+
+            lines.append(f"[{i}] {title}")
+            lines.append(f"    Source: {source} | Date: {pub_date}")
+            if text_preview:
+                lines.append(f"    Preview: {text_preview}...")
+            lines.append("")
+
+        # Add summary note
+        if article_count > 10:
+            lines.append(f"(Showing top 10 of {article_count} articles)")
+
+        return "\n".join(lines)
 
 
 # Standalone test

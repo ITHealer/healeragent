@@ -2095,6 +2095,60 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 return default
         return default
 
+    def _safe_json_parse(self, response, context: str = "") -> Any:
+        """
+        Safely parse JSON response from API.
+
+        Args:
+            response: httpx Response object
+            context: Description for logging (e.g., "GDP", "Treasury")
+
+        Returns:
+            Parsed JSON data or None if parsing fails
+
+        Common error cases handled:
+        - Empty response body
+        - HTML error pages (e.g., 403 Forbidden)
+        - Invalid JSON format
+        - API error messages
+        """
+        try:
+            # Check for empty response
+            if not response.text or not response.text.strip():
+                self.logger.warning(f"[Economic Data] {context}: Empty response body")
+                return None
+
+            # Check content type (optional - some APIs don't set it correctly)
+            content_type = response.headers.get('content-type', '')
+            if 'text/html' in content_type:
+                self.logger.warning(f"[Economic Data] {context}: Received HTML instead of JSON - likely API error page")
+                self.logger.debug(f"[Economic Data] {context}: Response preview: {response.text[:200]}")
+                return None
+
+            # Try to parse JSON
+            data = response.json()
+
+            # Check for FMP API error format
+            if isinstance(data, dict):
+                if "Error Message" in data:
+                    self.logger.warning(f"[Economic Data] {context}: API error - {data['Error Message']}")
+                    return None
+                if "message" in data and "error" in str(data.get("message", "")).lower():
+                    self.logger.warning(f"[Economic Data] {context}: API error - {data['message']}")
+                    return None
+
+            return data
+
+        except json.JSONDecodeError as e:
+            # Log the actual response content for debugging
+            preview = response.text[:200] if response.text else "(empty)"
+            self.logger.warning(f"[Economic Data] {context}: JSON parse error - {e}")
+            self.logger.debug(f"[Economic Data] {context}: Response preview: {preview}")
+            return None
+        except Exception as e:
+            self.logger.warning(f"[Economic Data] {context}: Unexpected parse error - {e}")
+            return None
+
     async def _fetch_economic_data(self) -> Dict[str, Any]:
         """
         Fetch economic/macro data for market context.
@@ -2128,8 +2182,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 try:
                     treasury_url = f"{self.FMP_STABLE_URL}/treasury-rates"
                     response = await client.get(treasury_url, params={"apikey": self.api_key})
-                    if response.status_code == 200 and response.text.strip():
-                        treasury_data = response.json()
+                    if response.status_code == 200:
+                        # Use safe JSON parse to handle API errors gracefully
+                        treasury_data = self._safe_json_parse(response, context="Treasury")
                         if treasury_data and isinstance(treasury_data, list):
                             latest = treasury_data[0]
                             # P0 FIX: Safe float conversion for all numeric values
@@ -2165,8 +2220,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                     econ_url = f"{self.FMP_STABLE_URL}/economic-indicators"
                     # First try realGDPGrowth which should return growth rate directly
                     response = await client.get(econ_url, params={"name": "realGDPGrowth", "apikey": self.api_key})
-                    if response.status_code == 200 and response.text.strip():
-                        gdp_data = response.json()
+                    if response.status_code == 200:
+                        # Use safe JSON parse to handle API errors gracefully
+                        gdp_data = self._safe_json_parse(response, context="realGDPGrowth")
                         if gdp_data and isinstance(gdp_data, list) and len(gdp_data) > 0:
                             latest = gdp_data[0]
                             # P0 FIX: Safe float conversion
@@ -2183,8 +2239,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         else:
                             # Fallback: fetch GDP and calculate YoY growth
                             response2 = await client.get(econ_url, params={"name": "GDP", "apikey": self.api_key})
-                            if response2.status_code == 200 and response2.text.strip():
-                                gdp_raw = response2.json()
+                            if response2.status_code == 200:
+                                gdp_raw = self._safe_json_parse(response2, context="GDP fallback")
                                 if gdp_raw and isinstance(gdp_raw, list) and len(gdp_raw) >= 5:
                                     # Calculate YoY growth (compare to ~4 quarters ago)
                                     current = gdp_raw[0].get("value", 0)
@@ -2202,7 +2258,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                             "note": "YoY GDP growth (%) calculated from nominal GDP. Released quarterly."
                                         }
                     else:
-                        self.logger.warning(f"[Economic Data] GDP API failed: {response.status_code} | {response.text[:200]}")
+                        self.logger.warning(f"[Economic Data] GDP API failed: HTTP {response.status_code}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] GDP fetch error: {e}")
 
@@ -2210,8 +2266,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 # Try inflationRate first (returns % directly), fallback to CPI YoY calculation
                 try:
                     response = await client.get(econ_url, params={"name": "inflationRate", "apikey": self.api_key})
-                    if response.status_code == 200 and response.text.strip():
-                        inflation_data = response.json()
+                    if response.status_code == 200:
+                        # Use safe JSON parse to handle API errors gracefully
+                        inflation_data = self._safe_json_parse(response, context="inflationRate")
                         if inflation_data and isinstance(inflation_data, list) and len(inflation_data) > 0:
                             latest = inflation_data[0]
                             # P0 FIX: Safe float conversion
@@ -2230,8 +2287,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
                         else:
                             # Fallback: fetch CPI index and calculate YoY inflation
                             response2 = await client.get(econ_url, params={"name": "CPI", "apikey": self.api_key})
-                            if response2.status_code == 200 and response2.text.strip():
-                                cpi_raw = response2.json()
+                            if response2.status_code == 200:
+                                cpi_raw = self._safe_json_parse(response2, context="CPI fallback")
                                 if cpi_raw and isinstance(cpi_raw, list) and len(cpi_raw) >= 13:
                                     # P0 FIX: Safe float conversion for CPI calculations
                                     # Calculate YoY inflation (compare to 12 months ago)
@@ -2264,8 +2321,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
                 # 4. Unemployment Rate (FMP stable API)
                 try:
                     response = await client.get(econ_url, params={"name": "unemploymentRate", "apikey": self.api_key})
-                    if response.status_code == 200 and response.text.strip():
-                        unemp_data = response.json()
+                    if response.status_code == 200:
+                        # Use safe JSON parse to handle API errors gracefully
+                        unemp_data = self._safe_json_parse(response, context="unemploymentRate")
                         if unemp_data and isinstance(unemp_data, list) and len(unemp_data) > 0:
                             latest = unemp_data[0]
                             result["unemployment"] = {
@@ -2276,7 +2334,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
                                 "note": "Unemployment rate (%). Released monthly (first Friday of month)."
                             }
                     else:
-                        self.logger.warning(f"[Economic Data] Unemployment API failed: {response.status_code} | {response.text[:200]}")
+                        self.logger.warning(f"[Economic Data] Unemployment API failed: HTTP {response.status_code}")
                 except Exception as e:
                     self.logger.warning(f"[Economic Data] Unemployment fetch error: {e}")
 
