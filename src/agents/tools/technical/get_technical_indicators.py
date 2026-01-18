@@ -613,7 +613,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
             ma_crossovers=ma_crossovers,
             outlook=result['outlook'],
             support_levels=support_levels,
-            resistance_levels=resistance_levels
+            resistance_levels=resistance_levels,
+            atr_value=result['indicators']['atr'].get('value')  # Pass ATR value
         )
 
         # =====================================================================
@@ -1056,7 +1057,8 @@ class GetTechnicalIndicatorsTool(BaseTool):
         ma_crossovers: Dict,
         outlook: Dict,
         support_levels: List,
-        resistance_levels: List
+        resistance_levels: List,
+        atr_value: float = None  # ATR value for position sizing
     ) -> Dict[str, Any]:
         """Generate actionable trading recommendations."""
 
@@ -1258,7 +1260,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
         # P1 FIX: ATR-based SL/TP instead of fixed percentages
         # This makes targets robust across different symbols/volatility levels
         # =======================================================================
-        atr_value = result.get('indicators', {}).get('atr', {}).get('value')
+        # atr_value is passed as parameter from caller
         if not atr_value or atr_value <= 0:
             # Fallback: estimate ATR as 2% of current price
             atr_value = current_price * 0.02
