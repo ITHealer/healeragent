@@ -17,7 +17,7 @@ Created: 2025-01-18
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
+from typing import Any, Dict, Generic, List, Optional, Tuple, TypeVar, Union
 
 from pydantic import (
     BaseModel,
@@ -374,7 +374,7 @@ def validate_date_range(
     end_date: date,
     min_days: int = 1,
     max_days: int = 3650,  # 10 years
-) -> tuple[date, date]:
+) -> Tuple[date, date]:
     """Validate a date range is sensible."""
     if start_date >= end_date:
         raise FinanceValidationError(
