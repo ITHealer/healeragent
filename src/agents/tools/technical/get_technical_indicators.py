@@ -498,22 +498,25 @@ class GetTechnicalIndicatorsTool(BaseTool):
         vwap = indicator_values.get('vwap')
         # P0 FIX: analyze_vwap handles None via pd.isna()
         vwap_analysis = analyze_vwap(current_price, vwap)
-        # VWAP Terminology Fix:
-        # - This is "Period VWAP" = cumulative VWAP from start of analysis period
-        # - NOT "AVWAP" which implies specific anchor (earnings, swing low, etc.)
+        # AVWAP (Anchored VWAP) Terminology:
+        # - This is AVWAP with anchor = start_of_period (first bar of dataset)
+        # - anchor_reason explains WHY this anchor was chosen
         # - NOT "Session VWAP" which resets daily (intraday only)
+        # - For swing/position trading, AVWAP from period start shows avg cost basis
         result['indicators']['vwap'] = {
             "value": vwap,
-            "variant": "PERIOD_VWAP",  # Cumulative from period start
-            "anchor_type": "period_start",  # Auto-anchor at first bar of period
+            "variant": "AVWAP",  # Anchored VWAP
+            "anchor_type": "start_of_period",
             "anchor_date": first_date.strftime('%Y-%m-%d'),
-            "calculation": f"Cumulative VWAP from {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}",
-            "price_vs_vwap_pct": vwap_analysis.get('diff_pct'),
+            "anchor_reason": "start_of_period",  # Could be: earnings, swing_low, breakout, etc.
+            "calculation": f"AVWAP from {first_date.strftime('%Y-%m-%d')} to {last_date.strftime('%Y-%m-%d')}",
+            "avwap_value": vwap,
+            "price_vs_avwap_pct": vwap_analysis.get('diff_pct'),
             "signal": vwap_analysis.get('signal'),
             "position": vwap_analysis.get('position'),
             "explanation": self._get_vwap_explanation(current_price, vwap, vwap_analysis),
-            "interpretation": "Price > Period VWAP = avg buyer in profit; Price < Period VWAP = avg buyer underwater",
-            "note": "Period VWAP measures avg cost basis of ALL trades in period. Large deviations (>10%) normal for long periods."
+            "interpretation": "Price > AVWAP = avg buyer in profit; Price < AVWAP = avg buyer underwater",
+            "note": "AVWAP (anchor=start_of_period) measures avg cost basis from period start. Large deviations (>10%) normal for long periods."
         }
 
         # =====================================================================
@@ -1433,18 +1436,20 @@ class GetTechnicalIndicatorsTool(BaseTool):
         else:
             signal_breakdown["neutral_indicators"].append("ADX")
 
-        # Use "Period VWAP" for consistency (not AVWAP since no specific anchor)
+        # AVWAP (anchor=start_of_period) - Anchored VWAP from dataset start
         if 'BULLISH' in vwap_signal:
-            signal_breakdown["bullish_indicators"].append("Period VWAP")
+            signal_breakdown["bullish_indicators"].append("AVWAP")
         elif 'BEARISH' in vwap_signal:
-            signal_breakdown["bearish_indicators"].append("Period VWAP")
+            signal_breakdown["bearish_indicators"].append("AVWAP")
         else:
-            signal_breakdown["neutral_indicators"].append("Period VWAP")
+            signal_breakdown["neutral_indicators"].append("AVWAP")
 
+        # OBV - fix extra space when no divergence
+        obv_label = "OBV (divergence)" if 'DIVERGENCE' in obv_signal else "OBV"
         if 'BULLISH' in obv_signal:
-            signal_breakdown["bullish_indicators"].append(f"OBV {'(divergence)' if 'DIVERGENCE' in obv_signal else ''}")
+            signal_breakdown["bullish_indicators"].append(obv_label)
         elif 'BEARISH' in obv_signal:
-            signal_breakdown["bearish_indicators"].append(f"OBV {'(divergence)' if 'DIVERGENCE' in obv_signal else ''}")
+            signal_breakdown["bearish_indicators"].append(obv_label)
         else:
             signal_breakdown["neutral_indicators"].append("OBV")
 
@@ -1483,16 +1488,16 @@ class GetTechnicalIndicatorsTool(BaseTool):
             "weighted_bearish_score": round(bearish_count, 2),
             "weighted_neutral_score": round(neutral_weighted, 2),
             "weighted_total": round(total_weighted, 2),
-            # Dominant Signal Share: % of total weight held by dominant side (bullish or bearish)
-            # This is NOT "agreement" (which implies consensus) - it's the strongest signal's share
-            # Formula: max(weighted_bullish, weighted_bearish) / weighted_total
-            "dominant_signal_pct": round(max(bullish_pct, bearish_pct) * 100, 1),
+            # Dominant Signal Share (WEIGHTED): % of total weight held by dominant side
+            # Formula: max(weighted_bullish_score, weighted_bearish_score) / weighted_total
+            # This uses WEIGHTED scores (not simple count) for consistency with action threshold
+            "dominant_signal_pct_weighted": round(max(bullish_pct, bearish_pct) * 100, 1),
             "signal_breakdown": signal_breakdown,
             "short_term_trade": short_term,
             "swing_trade": swing_trade,
             "key_levels": key_levels,
             "risk_level": risk_level,
-            "note": "dominant_signal_pct = max(bullish, bearish) / total. Action threshold: dominant >= 60%."
+            "note": "dominant_signal_pct_weighted = max(weighted_bullish, weighted_bearish) / weighted_total. Action threshold: dominant >= 60%."
         }
 
     def _generate_llm_summary(self, symbol: str, current_price: float, result: Dict) -> str:
@@ -1563,8 +1568,9 @@ class GetTechnicalIndicatorsTool(BaseTool):
         stoch_cond = (indicators.get('stochastic', {}).get('condition') or 'N/A').upper()
         vwap_data = indicators.get('vwap', {})
         vwap_signal = vwap_data.get('signal', 'N/A')
-        vwap_pct = vwap_data.get('price_vs_vwap_pct', 'N/A')
-        vwap_anchor_date = vwap_data.get('anchor_date', 'N/A')
+        avwap_pct = vwap_data.get('price_vs_avwap_pct', 'N/A')
+        avwap_anchor_date = vwap_data.get('anchor_date', 'N/A')
+        avwap_anchor_reason = vwap_data.get('anchor_reason', 'start_of_period')
 
         obv_sig = indicators.get('obv', {}).get('signal', 'N/A')
         obv_div = indicators.get('obv', {}).get('divergence') or 'No divergence'
@@ -1581,10 +1587,10 @@ class GetTechnicalIndicatorsTool(BaseTool):
             else:
                 ma_alignment = "N/A (SMA200 not available)"
 
-        # Use dominant_signal_pct (not "agreement" - it's strongest signal's share, not consensus)
-        # Formula: max(weighted_bullish, weighted_bearish) / weighted_total
+        # Use dominant_signal_pct_weighted (based on weighted scores, not count)
+        # Formula: max(weighted_bullish_score, weighted_bearish_score) / weighted_total
         # ADX strength shows actual trend strength (weak/moderate/strong/very_strong)
-        dominant_pct = rec.get('dominant_signal_pct', 50)  # Dominant side's share of total weight
+        dominant_pct = rec.get('dominant_signal_pct_weighted', 50)  # Weighted dominant signal share
         weighted_total = rec.get('weighted_total', 8)
         weighted_bull = rec.get('weighted_bullish_score', 0)
         weighted_bear = rec.get('weighted_bearish_score', 0)
@@ -1676,7 +1682,7 @@ class GetTechnicalIndicatorsTool(BaseTool):
             f"- Trend: {ma_data.get('trend', 'N/A')}",
             f"- ADX (14d): {adx_val_str} - {adx_strength} trend",
             f"- Stochastic: {stoch_cond}",
-            f"- Period VWAP: {vwap_signal} (Price vs VWAP: {vwap_pct}%) [from {vwap_anchor_date}]",
+            f"- AVWAP (anchor={avwap_anchor_reason}): {vwap_signal} (Price vs AVWAP: {avwap_pct}%) [from {avwap_anchor_date}]",
             f"- OBV: {obv_sig} - {obv_div}",
             "",
             "MOVING AVERAGE CROSSOVERS (P1 FIX - separated for clarity):",
