@@ -701,12 +701,36 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                             self.logger.info(f"[GEMINI] Function call: {fc.name}")
 
                 else:
-                    # Log when content or parts are missing
+                    # Log when content or parts are missing/empty
+                    # Note: hasattr returns True even for empty parts list
+                    parts_count = 0
+                    parts_info = []
+                    if candidate_content and hasattr(candidate_content, 'parts'):
+                        parts_count = len(candidate_content.parts) if candidate_content.parts else 0
+                        # Log what types of parts exist (even if they don't have content)
+                        for i, part in enumerate(candidate_content.parts or []):
+                            part_attrs = []
+                            for attr in ['text', 'thought', 'function_call', 'function_response', 'inline_data', 'file_data']:
+                                if hasattr(part, attr) and getattr(part, attr):
+                                    part_attrs.append(attr)
+                            parts_info.append(f"part[{i}]={','.join(part_attrs) or 'empty'}")
+
                     self.logger.warning(
-                        f"[GEMINI] No content/parts found in response. "
-                        f"candidate_content={candidate_content is not None}, "
-                        f"has_parts={hasattr(candidate_content, 'parts') if candidate_content else False}"
+                        f"[GEMINI] Empty/unhandled parts in response. "
+                        f"candidate_content_exists={candidate_content is not None}, "
+                        f"parts_count={parts_count}, "
+                        f"parts_info={parts_info}, "
+                        f"finish_reason={finish_reason}"
                     )
+
+                    # Fallback: Try response.text if parts is empty but response exists
+                    # This handles edge cases where SDK wraps content differently
+                    try:
+                        if hasattr(response, 'text') and response.text:
+                            content = response.text
+                            self.logger.info(f"[GEMINI] Recovered content via response.text fallback (len={len(content)})")
+                    except (ValueError, AttributeError) as e:
+                        self.logger.debug(f"[GEMINI] response.text fallback failed: {e}")
             else:
                 # No candidates in response
                 self.logger.warning(
