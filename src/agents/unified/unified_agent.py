@@ -3243,10 +3243,23 @@ You are in Tool Search Mode. You currently only have access to `tool_search` and
 - Each request is independent - previous failures are IRRELEVANT to this request
 - If a tool failed before, TRY IT AGAIN - the issue may have been fixed
 
+**🚀 PARALLEL TOOL EXECUTION (CRITICAL FOR SPEED):**
+After tool_search returns discovered tools, you MUST call ALL relevant tools in your NEXT SINGLE TURN.
+
+❌ WRONG (SLOW - causes multiple round trips):
+   Turn 2: getTechnicalIndicators(NVDA)
+   Turn 3: getFinancialRatios(NVDA)
+   Turn 4: getStockNews(NVDA)
+
+✅ CORRECT (FAST - all tools in one turn, executed in parallel):
+   Turn 2: [getTechnicalIndicators(NVDA), getFinancialRatios(NVDA), getStockNews(NVDA)]
+
+You CAN and SHOULD call multiple tools simultaneously. The system will execute them in parallel.
+
 **REQUIRED PATTERN:**
-1. Call `tool_search(query="...")` to find relevant tools
-2. Call the discovered tools to gather data
-3. Only then provide your analysis based on REAL data"""
+1. Turn 1: Call `tool_search(query="...")` to find relevant tools
+2. Turn 2: Call ALL discovered tools you need IN ONE TURN (they run in parallel!)
+3. Turn 3: Analyze all results and provide comprehensive response"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
