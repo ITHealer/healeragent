@@ -489,6 +489,63 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         return tc.get("function", {}).get("name", "unknown")
         return "unknown"
 
+    def _convert_args_to_dict(self, args) -> Dict[str, Any]:
+        """
+        Convert Gemini MapComposite/protobuf args to a plain Python dict.
+
+        MapComposite is a Gemini SDK wrapper around protobuf Struct.
+        It doesn't have DESCRIPTOR attribute, so json_format.MessageToDict fails.
+        We need to recursively convert it to a plain dict.
+
+        Args:
+            args: MapComposite, protobuf Struct, or dict-like object
+
+        Returns:
+            Plain Python dict that can be JSON serialized
+        """
+        if args is None:
+            return {}
+
+        # Method 1: Try to get underlying protobuf and use MessageToDict
+        if hasattr(args, '_pb'):
+            try:
+                return json_format.MessageToDict(args._pb)
+            except Exception:
+                pass
+
+        # Method 2: Try MessageToDict directly (for real protobuf messages)
+        if hasattr(args, 'DESCRIPTOR'):
+            try:
+                return json_format.MessageToDict(args)
+            except Exception:
+                pass
+
+        # Method 3: Recursively convert MapComposite/dict-like objects
+        def recursive_convert(obj):
+            """Recursively convert nested structures to plain Python types."""
+            if obj is None:
+                return None
+            elif isinstance(obj, (str, int, float, bool)):
+                return obj
+            elif isinstance(obj, bytes):
+                return obj.decode('utf-8', errors='replace')
+            elif hasattr(obj, 'items'):  # Dict-like (including MapComposite)
+                return {str(k): recursive_convert(v) for k, v in obj.items()}
+            elif hasattr(obj, '__iter__'):  # List-like
+                return [recursive_convert(item) for item in obj]
+            else:
+                # Try to convert to string as last resort
+                try:
+                    return str(obj)
+                except Exception:
+                    return None
+
+        try:
+            return recursive_convert(args)
+        except Exception as e:
+            self.logger.warning(f"[GEMINI] Failed to convert args to dict: {e}")
+            return {}
+
     def _convert_params(self, openai_params: Dict[str, Any]) -> Dict[str, Any]:
         """Convert OpenAI parameters to Gemini parameters"""
         gemini_params = {}
@@ -553,20 +610,9 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         if hasattr(part, 'function_call') and part.function_call:
                             fc = part.function_call
 
-                            # Convert protobuf Struct to dict properly
-                            # fc.args is a MapComposite (protobuf Struct), not a regular dict
-                            try:
-                                if fc.args:
-                                    # Use json_format.MessageToDict for proper conversion
-                                    args_dict = json_format.MessageToDict(fc.args)
-                                else:
-                                    args_dict = {}
-                            except Exception as e:
-                                self.logger.debug(f"[GEMINI] MessageToDict failed, trying dict(): {e}")
-                                try:
-                                    args_dict = dict(fc.args) if fc.args else {}
-                                except Exception:
-                                    args_dict = {}
+                            # Convert MapComposite/protobuf Struct to dict properly
+                            # fc.args is a MapComposite (Gemini SDK wrapper), not a standard protobuf
+                            args_dict = self._convert_args_to_dict(fc.args)
 
                             tool_call = {
                                 "id": f"call_{fc.name}_{len(tool_calls)}",
