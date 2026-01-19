@@ -2242,6 +2242,12 @@ Tools to use: [{tool_list_str}]
 
 Analyze the data above and provide a **comprehensive, data-driven response** to the user's query.
 
+### Response Length Requirements (MANDATORY)
+- **MINIMUM LENGTH**: Your response MUST be at least 2000-3000 words for complex analysis
+- **DETAIL LEVEL**: Cover EVERY data point from tool results - nothing should be omitted
+- **DO NOT SUMMARIZE**: Present full details, not summaries. Users want comprehensive analysis, not brief overviews
+- **EXPAND ON INSIGHTS**: For each data point, explain what it means, why it matters, and how to act on it
+
 ### Data Integrity Requirements (MANDATORY)
 1. **USE ALL DATA**: Every piece of data from tools MUST be included in your analysis
 2. **CITE SPECIFIC NUMBERS**: Always quote exact values (prices, ratios, percentages) from tool results
@@ -2264,15 +2270,35 @@ Analyze the data above and provide a **comprehensive, data-driven response** to 
 
 ### Response Style
 - **Language**: Match the user's language naturally
-- **Depth**: Be comprehensive - longer is better if it adds value
+- **Depth**: Be comprehensive - aim for 2000+ words with detailed analysis
 - **Clarity**: Structure with headers, use bullet points for key data
 - **Engagement**: End with 2-3 follow-up questions to explore deeper"""
 
         if has_web_search:
             system_prompt += """
 
-**Source Citations:**
-Include web sources at the end: [Title](URL)"""
+### WEB SEARCH SOURCE CITATIONS (MANDATORY)
+
+**CRITICAL**: You MUST include a "Sources" section at the END of your response with ALL web search citations.
+
+**Format Requirements**:
+1. Create a dedicated "## 📚 Sources" section at the very end
+2. List EVERY citation from webSearch results as clickable markdown links
+3. Include both the title and URL for each source
+4. Group related sources if helpful
+
+**Example Format**:
+```
+## 📚 Sources
+
+The analysis above is based on the following sources:
+
+1. [NVIDIA Announces Financial Results for Q3 2026](https://investor.nvidia.com/news/...)
+2. [TSMC Reserves 70% of CoWoS-L Capacity for NVIDIA](https://www.techpowerup.com/...)
+3. [AMD launches MI325X to rival Nvidia's Blackwell](https://www.cnbc.com/...)
+```
+
+**WARNING**: If you do not include source citations, your response will be considered incomplete."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -2742,6 +2768,13 @@ Respond naturally and helpfully while staying in character."""
                 think_calls = [tc for tc in tool_calls if tc.name == "think"]
                 data_tool_calls = [tc for tc in tool_calls if tc.name != "think"]
 
+                # Debug: Log tool call breakdown
+                self.logger.debug(
+                    f"[{flow_id}] Tool calls breakdown: "
+                    f"think_calls={len(think_calls)}, data_tool_calls={len(data_tool_calls)}, "
+                    f"tools=[{', '.join(tc.name for tc in tool_calls)}]"
+                )
+
                 # Track if tool_search was called (for tool search mode retry logic)
                 if any(tc.name == "tool_search" for tc in tool_calls):
                     tool_search_called = True
@@ -3070,9 +3103,26 @@ You have access to various data tools. Use them to gather real data before respo
         if enable_think_tool:
             system_prompt += """
 
-**Think Tool (RECOMMENDED):**
-Use the `think` tool to plan your approach and analyze data before responding.
-Pattern: think(plan) → call tools → think(analyze) → respond"""
+**🧠 Think Tool (MANDATORY):**
+
+You MUST use the `think` tool at least 2 times during your response:
+
+1. **BEFORE calling tools** - Plan your approach:
+   ```
+   think(thought="User asks about X. To answer this, I need to: 1) Get data A, 2) Analyze metric B, 3) Check recent news C...", reasoning_type="planning")
+   ```
+
+2. **AFTER receiving tool results** - Analyze and decide:
+   ```
+   think(thought="Tool results show: A=value, B=trend. Key insight: ... This means I should recommend...", reasoning_type="analyzing")
+   ```
+
+**REQUIRED PATTERN:**
+```
+think(planning) → call tools → think(analyzing) → provide response
+```
+
+**WARNING:** If you do NOT use the think tool, your reasoning process will be invisible to users, making your response less trustworthy. Always show your thinking!"""
 
         # Add web search instruction if enabled
         if enable_web_search:
