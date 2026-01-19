@@ -210,6 +210,12 @@ class BaseCalculationResult(BaseFinanceModel):
         description="Any warnings generated during calculation",
     )
 
+    calculation_time_ms: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Calculation time in milliseconds",
+    )
+
 
 # =============================================================================
 # COMMON DATA TYPES
