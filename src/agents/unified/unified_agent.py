@@ -530,28 +530,8 @@ class UnifiedAgent(LoggerMixin):
             session_id=session_id,
         )
 
-        # Log tool results for data integrity verification
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        for i, result in enumerate(tool_results):
-            tool_name = result.get("tool_name", "unknown")
-            status = result.get("status", "unknown")
-            symbol = result.get("symbol", "N/A")
-            formatted_context = result.get("formatted_context")
-            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
-
-            # Log tool info
-            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-
-            # Log formatted_context status with length
-            if formatted_context:
-                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
-                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
-            else:
-                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
-                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        # Log tool results in LLM format (no truncation)
+        self._log_tool_results_for_llm(tool_results, flow_id)
 
         # Build synthesis prompt
         messages = self._build_synthesis_messages(
@@ -698,28 +678,8 @@ class UnifiedAgent(LoggerMixin):
                 "content": f"Received {success_count}/{len(tool_results)} successful results",
             }
 
-        # Log tool results for data integrity verification
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        for i, result in enumerate(tool_results):
-            tool_name = result.get("tool_name", "unknown")
-            status = result.get("status", "unknown")
-            symbol = result.get("symbol", "N/A")
-            formatted_context = result.get("formatted_context")
-            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
-
-            # Log tool info
-            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-
-            # Log formatted_context status with length
-            if formatted_context:
-                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
-                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
-            else:
-                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
-                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        # Log tool results in LLM format (no truncation)
+        self._log_tool_results_for_llm(tool_results, flow_id)
 
         # Stream synthesis
         if enable_reasoning:
@@ -1705,6 +1665,53 @@ IMPORTANT:
 
         return processed
 
+    def _log_tool_results_for_llm(
+        self,
+        tool_results: List[Dict[str, Any]],
+        flow_id: str,
+    ) -> None:
+        """
+        Log tool results in the same format as passed to LLM.
+
+        This helps debug and verify what data the LLM receives for synthesis.
+        Format mirrors `_build_synthesis_messages` line 2206-2210.
+
+        Args:
+            tool_results: List of tool result dictionaries
+            flow_id: Flow ID for logging
+        """
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        self.logger.info(f"[{flow_id}] 📊 TOOL RESULTS → LLM FORMAT ({len(tool_results)} tools)")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
+        for i, result in enumerate(tool_results, 1):
+            tool_name = result.get("tool_name", "unknown")
+            status = result.get("status", "unknown")
+            formatted_context = result.get("formatted_context")
+            data = result.get("data", {})
+
+            # Header with tool info
+            status_icon = "✅" if status in ["success", "200"] else "❌"
+            self.logger.info(f"[{flow_id}] ───────────────────────────────────────────────────────")
+            self.logger.info(f"[{flow_id}] [{i}] {status_icon} **{tool_name}** | status={status}")
+
+            # Full content in LLM format (no truncation)
+            if formatted_context:
+                self.logger.info(f"[{flow_id}]     📝 formatted_context ({len(formatted_context)} chars):")
+                # Log full content, preserving newlines
+                for line in formatted_context.split('\n'):
+                    self.logger.info(f"[{flow_id}]     | {line}")
+            elif data:
+                # Fallback to JSON data (same as LLM receives)
+                self.logger.info(f"[{flow_id}]     📝 data (json):")
+                data_str = json.dumps(data, indent=2, default=str)
+                for line in data_str.split('\n'):
+                    self.logger.info(f"[{flow_id}]     | {line}")
+            else:
+                self.logger.warning(f"[{flow_id}]     ⚠️ No formatted_context or data available")
+
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
     async def _execute_tool_search(
         self,
         tc: ToolCall,
@@ -1719,7 +1726,7 @@ IMPORTANT:
         3. GPT can then understand what tools are available
 
         Args:
-            tc: ToolCall with query and optional top_k
+            tc: ToolCall with query, optional top_k, and optional exclude_tools
             flow_id: Flow ID for logging
 
         Returns:
@@ -1727,22 +1734,28 @@ IMPORTANT:
         """
         try:
             query = tc.arguments.get("query", "")
-            top_k = tc.arguments.get("top_k", 5)
+            top_k = tc.arguments.get("top_k", 10)  # Default to 10
+            exclude_tools = tc.arguments.get("exclude_tools", [])
 
             if not query:
                 return {
                     "tool_name": "tool_search",
                     "status": "error",
                     "error": "Missing required parameter: query",
+                    "formatted_context": "Error: Missing required parameter 'query' for tool_search.",
                 }
 
+            # Log search parameters
+            exclude_info = f", excluding {len(exclude_tools)} tools" if exclude_tools else ""
             self.logger.info(
-                f"[{flow_id}] tool_search called: '{query[:50]}...' top_k={top_k}"
+                f"[{flow_id}] tool_search: query='{query[:50]}...' top_k={top_k}{exclude_info}"
             )
 
-            # Use ToolSearchService for semantic search
+            # Use ToolSearchService for semantic search with exclusions
             search_service = get_tool_search_service()
-            response = await search_service.search(query, top_k=top_k)
+            response = await search_service.search(
+                query, top_k=top_k, exclude_tools=exclude_tools
+            )
 
             # Format results for LLM
             formatted_result = response.format_for_llm()
