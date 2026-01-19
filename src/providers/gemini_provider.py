@@ -579,6 +579,13 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
 
+                # Debug: Log candidate structure
+                self.logger.debug(
+                    f"[GEMINI] Candidate: finish_reason={getattr(candidate, 'finish_reason', None)}, "
+                    f"has_content={hasattr(candidate, 'content')}, "
+                    f"content_is_none={getattr(candidate, 'content', None) is None}"
+                )
+
                 # Extract finish_reason
                 if hasattr(candidate, 'finish_reason'):
                     gemini_reason = str(candidate.finish_reason)
@@ -594,8 +601,23 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         finish_reason = gemini_reason.lower()
 
                 # Extract content, thinking, and function calls from parts
-                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                    for idx, part in enumerate(candidate.content.parts):
+                # Fix: Properly check if content and parts exist
+                candidate_content = getattr(candidate, 'content', None)
+                if candidate_content is not None and hasattr(candidate_content, 'parts') and candidate_content.parts:
+                    num_parts = len(candidate_content.parts)
+                    self.logger.debug(f"[GEMINI] Processing {num_parts} parts from response")
+
+                    for idx, part in enumerate(candidate_content.parts):
+                        # Debug: Log part type
+                        part_type = "unknown"
+                        if hasattr(part, 'text') and part.text:
+                            part_type = "text"
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            part_type = "function_call"
+                        elif hasattr(part, 'thought') and part.thought:
+                            part_type = "thought"
+                        self.logger.debug(f"[GEMINI] Part {idx}: type={part_type}")
+
                         # Text content
                         if hasattr(part, 'text') and part.text:
                             content += part.text
@@ -678,13 +700,34 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                             finish_reason = "tool_calls"
                             self.logger.info(f"[GEMINI] Function call: {fc.name}")
 
+                else:
+                    # Log when content or parts are missing
+                    self.logger.warning(
+                        f"[GEMINI] No content/parts found in response. "
+                        f"candidate_content={candidate_content is not None}, "
+                        f"has_parts={hasattr(candidate_content, 'parts') if candidate_content else False}"
+                    )
+            else:
+                # No candidates in response
+                self.logger.warning(
+                    f"[GEMINI] No candidates in response. "
+                    f"has_candidates={hasattr(response, 'candidates')}, "
+                    f"candidates_empty={not response.candidates if hasattr(response, 'candidates') else 'N/A'}"
+                )
+
         except Exception as e:
-            self.logger.debug(f"[GEMINI] Could not extract response details: {e}")
+            self.logger.error(f"[GEMINI] Error extracting response details: {e}", exc_info=True)
             # Fallback to basic text extraction
             try:
                 content = response.text
             except:
                 content = ""
+
+        # Log final result summary
+        self.logger.info(
+            f"[GEMINI] Response parsed: content_len={len(content)}, "
+            f"tool_calls={len(tool_calls)}, finish_reason={finish_reason}"
+        )
 
         result = {
             "content": content,

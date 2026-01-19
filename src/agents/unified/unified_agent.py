@@ -2609,6 +2609,40 @@ Respond naturally and helpfully while staying in character."""
                 # No tool calls - check if we should retry or return response
                 if not tool_calls:
                     # ============================================================
+                    # EMPTY RESPONSE HANDLING: Retry when LLM returns nothing
+                    # This can happen due to:
+                    # - Response parsing issues (especially with Gemini)
+                    # - Model confusion
+                    # - Network issues
+                    # ============================================================
+                    if not assistant_content and turn_num < max_turns:
+                        # Check finish_reason for hints about what happened
+                        finish_reason = response.get("finish_reason", "unknown")
+                        self.logger.warning(
+                            f"[{flow_id}] ⚠️ EMPTY RESPONSE: No content and no tool calls! "
+                            f"finish_reason={finish_reason}, turn={turn_num}"
+                        )
+
+                        # If not on last turn, retry with a prompt to continue
+                        retry_message = (
+                            "Please continue with the analysis. Use the available tools to gather data "
+                            "and provide a comprehensive response to the user's query."
+                        )
+                        messages.append({"role": "assistant", "content": ""})
+                        messages.append({"role": "user", "content": retry_message})
+
+                        if enable_reasoning:
+                            yield {
+                                "type": "reasoning",
+                                "phase": "empty_response_retry",
+                                "action": "retry",
+                                "content": f"LLM returned empty response (finish_reason={finish_reason}) - retrying",
+                            }
+
+                        # Continue to next turn
+                        continue
+
+                    # ============================================================
                     # TOOL SEARCH MODE: Force retry if LLM skipped tool_search
                     # This prevents LLM from "giving up" based on past conversation errors
                     # ============================================================
