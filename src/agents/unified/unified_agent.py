@@ -2549,9 +2549,11 @@ Respond naturally and helpfully while staying in character."""
                 enable_think_tool=enable_think_tool,
                 enable_web_search=enable_web_search,
                 system_prompt_override=system_prompt_override,  # Character persona override
+                enable_tool_search_mode=enable_tool_search_mode,  # Pass tool search mode flag
             )
 
             total_tool_calls = 0
+            tool_search_called = False  # Track if tool_search was ever called
 
             for turn_num in range(1, max_turns + 1):
                 yield {"type": "turn_start", "turn": turn_num}
@@ -2591,8 +2593,38 @@ Respond naturally and helpfully while staying in character."""
                     }
                     self.logger.info(f"[{flow_id}] 💭 Thinking: {thinking_content[:100]}...")
 
-                # No tool calls - stream final response
+                # No tool calls - check if we should retry or return response
                 if not tool_calls:
+                    # ============================================================
+                    # TOOL SEARCH MODE: Force retry if LLM skipped tool_search
+                    # This prevents LLM from "giving up" based on past conversation errors
+                    # ============================================================
+                    if enable_tool_search_mode and turn_num == 1 and not tool_search_called:
+                        self.logger.warning(
+                            f"[{flow_id}] ⚠️ TOOL SEARCH MODE: LLM skipped tool_search in turn 1. "
+                            f"Injecting reminder and retrying..."
+                        )
+
+                        # Inject a strong reminder to use tool_search
+                        reminder_message = (
+                            "You must use the tool_search tool to discover available tools before responding. "
+                            "Do not assume tools will fail - try them first. "
+                            "Call tool_search now with a query related to the user's request."
+                        )
+                        messages.append({"role": "assistant", "content": assistant_content or ""})
+                        messages.append({"role": "user", "content": reminder_message})
+
+                        if enable_reasoning:
+                            yield {
+                                "type": "reasoning",
+                                "phase": "tool_search_retry",
+                                "action": "reminder",
+                                "content": "LLM skipped tool_search - injecting reminder to use tools",
+                            }
+
+                        # Continue to next turn instead of returning
+                        continue
+
                     if enable_reasoning:
                         yield {
                             "type": "reasoning",
@@ -2662,6 +2694,10 @@ Respond naturally and helpfully while staying in character."""
                 # ============================================================
                 think_calls = [tc for tc in tool_calls if tc.name == "think"]
                 data_tool_calls = [tc for tc in tool_calls if tc.name != "think"]
+
+                # Track if tool_search was called (for tool search mode retry logic)
+                if any(tc.name == "tool_search" for tc in tool_calls):
+                    tool_search_called = True
 
                 # Process think tool calls FIRST - emit thinking events
                 think_results = []
@@ -2922,6 +2958,7 @@ IMPORTANT:
         enable_think_tool: bool = False,
         enable_web_search: bool = False,
         system_prompt_override: Optional[str] = None,
+        enable_tool_search_mode: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
@@ -2996,6 +3033,30 @@ Pattern: think(plan) → call tools → think(analyze) → respond"""
 
 **Web Search (RECOMMENDED):**
 Use `webSearch` for latest news and market context. Include source citations."""
+
+        # Add CRITICAL instruction for TOOL SEARCH MODE
+        if enable_tool_search_mode:
+            system_prompt += """
+
+**⚠️ TOOL SEARCH MODE (CRITICAL):**
+You are in Tool Search Mode. You currently only have access to `tool_search` and `think` tools.
+
+**MANDATORY FIRST ACTION:**
+1. You MUST call `tool_search` FIRST to discover the tools you need for this task
+2. After tool_search returns available tools, you can use those tools to gather data
+3. DO NOT respond with content before calling tools - always search and use tools first
+
+**IMPORTANT RULES:**
+- NEVER assume tools will fail based on past conversation history
+- NEVER give up without trying - past errors do not predict future results
+- NEVER respond with an "apology for errors" without actually trying the tools
+- Each request is independent - previous failures are IRRELEVANT to this request
+- If a tool failed before, TRY IT AGAIN - the issue may have been fixed
+
+**REQUIRED PATTERN:**
+1. Call `tool_search(query="...")` to find relevant tools
+2. Call the discovered tools to gather data
+3. Only then provide your analysis based on REAL data"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
