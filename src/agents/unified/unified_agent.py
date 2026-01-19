@@ -204,7 +204,6 @@ class UnifiedAgent(LoggerMixin):
     # Slow tools with longer timeouts (seconds)
     SLOW_TOOL_TIMEOUTS = {
         "webSearch": 180.0,     # Web search can take 60+ seconds with OpenAI Responses API
-        "serpSearch": 120.0,    # SerpAPI search
     }
 
     def __init__(
@@ -2432,7 +2431,7 @@ Respond naturally and helpfully while staying in character."""
                 context continuity for follow-up questions.
             enable_think_tool: If True, add STRONG instruction to always use think tool
                 for explicit reasoning before and after tool calls.
-            enable_web_search: If True, FORCE inject webSearch/serpSearch tools
+            enable_web_search: If True, FORCE inject webSearch tool
                 and add instruction to search for latest news/information.
             system_prompt_override: If provided, replace the default skill-based
                 system prompt with this custom prompt. Used for character agents
@@ -2540,12 +2539,12 @@ Respond naturally and helpfully while staying in character."""
                 tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION]
                 discovered_tool_names = set()  # No tools discovered yet
 
-                # FORCE INJECT: Web search tools when enabled
+                # FORCE INJECT: Web search tool when enabled
                 if enable_web_search:
-                    web_search_tools = self.catalog.get_openai_functions(["webSearch", "serpSearch"])
+                    web_search_tools = self.catalog.get_openai_functions(["webSearch"])
                     tools.extend(web_search_tools)
-                    discovered_tool_names.update(["webSearch", "serpSearch"])
-                    self.logger.info(f"[{flow_id}] 🌐 FORCE INJECTED: webSearch, serpSearch (enable_web_search=True)")
+                    discovered_tool_names.add("webSearch")
+                    self.logger.info(f"[{flow_id}] 🌐 FORCE INJECTED: webSearch (enable_web_search=True)")
 
                 self.logger.info(
                     f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with tool_search + think "
@@ -2917,7 +2916,7 @@ Respond naturally and helpfully while staying in character."""
                 # ============================================================
                 called_tool_names = {tc.name for tc in data_tool_calls}
                 news_tools_called = called_tool_names & NEWS_TOOL_NAMES
-                web_search_already_called = "webSearch" in called_tool_names or "serpSearch" in called_tool_names
+                web_search_already_called = "webSearch" in called_tool_names
 
                 should_auto_search = (
                     (enable_web_search or news_tools_called) and
@@ -2998,7 +2997,7 @@ Respond naturally and helpfully while staying in character."""
                 # EXTRACT CITATIONS FROM WEB SEARCH RESULTS
                 # ============================================================
                 for tc, result in zip(tool_calls, tool_results):
-                    if tc.name in ["webSearch", "serpSearch"] and result.get("status") == "success":
+                    if tc.name == "webSearch" and result.get("status") == "success":
                         result_data = result.get("data", {})
                         citations = result_data.get("citations", [])
                         for citation in citations:
