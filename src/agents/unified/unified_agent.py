@@ -2527,6 +2527,11 @@ Respond naturally and helpfully while staying in character."""
                 }
 
             # ================================================================
+            # TRACK WEB SEARCH CITATIONS FOR SOURCES SECTION
+            # ================================================================
+            all_web_citations = []  # List of {"title": str, "url": str}
+
+            # ================================================================
             # TOOL LOADING STRATEGY
             # ================================================================
             if enable_tool_search_mode:
@@ -2719,7 +2724,7 @@ Respond naturally and helpfully while staying in character."""
                         total_chunks = len(chunks)
 
                         for i, chunk in enumerate(chunks):
-                            is_last = (i == total_chunks - 1)
+                            is_last = (i == total_chunks - 1) and not all_web_citations
                             yield {
                                 "type": "content",
                                 "content": chunk + (" " if not is_last else ""),
@@ -2748,11 +2753,44 @@ Respond naturally and helpfully while staying in character."""
                             # Emit chunks as they come, mark all as not final initially
                             yield {"type": "content", "content": chunk, "is_final": False}
 
-                        # Emit final empty chunk to signal completion if we had content
-                        if content_chunks:
-                            yield {"type": "content", "content": "", "is_final": True}
-
                         self.logger.info(f"[{flow_id}] Final response streamed: {len(content_chunks)} chunks")
+
+                    # ============================================================
+                    # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
+                    # ============================================================
+                    if all_web_citations:
+                        self.logger.info(
+                            f"[{flow_id}] 📚 Appending {len(all_web_citations)} web sources to response"
+                        )
+
+                        # Build sources section
+                        sources_lines = [
+                            "",
+                            "",
+                            "---",
+                            "",
+                            "## 📚 Sources",
+                            "",
+                        ]
+                        for i, citation in enumerate(all_web_citations[:15], 1):  # Limit to 15 sources
+                            title = citation.get("title", "Source")[:100]
+                            url = citation.get("url", "")
+                            sources_lines.append(f"{i}. [{title}]({url})")
+
+                        sources_section = "\n".join(sources_lines)
+
+                        # Yield sources as content chunk
+                        yield {"type": "content", "content": sources_section, "is_final": False}
+
+                        # Emit sources metadata event for FE (optional widget rendering)
+                        yield {
+                            "type": "sources",
+                            "citations": all_web_citations[:15],
+                            "count": len(all_web_citations),
+                        }
+
+                    # Signal end of content stream
+                    yield {"type": "content", "content": "", "is_final": True}
 
                     yield {
                         "type": "done",
@@ -2956,6 +2994,27 @@ Respond naturally and helpfully while staying in character."""
                     ],
                 }
 
+                # ============================================================
+                # EXTRACT CITATIONS FROM WEB SEARCH RESULTS
+                # ============================================================
+                for tc, result in zip(tool_calls, tool_results):
+                    if tc.name in ["webSearch", "serpSearch"] and result.get("status") == "success":
+                        result_data = result.get("data", {})
+                        citations = result_data.get("citations", [])
+                        for citation in citations:
+                            title = citation.get("title", "")
+                            url = citation.get("url", "")
+                            if url and url not in [c.get("url") for c in all_web_citations]:
+                                all_web_citations.append({
+                                    "title": title or "Source",
+                                    "url": url,
+                                })
+                        if citations:
+                            self.logger.info(
+                                f"[{flow_id}] 📚 Extracted {len(citations)} citations from {tc.name}, "
+                                f"total: {len(all_web_citations)}"
+                            )
+
                 # Update messages (preserves thought_signature for Gemini 3+)
                 messages.append({
                     "role": "assistant",
@@ -3010,9 +3069,44 @@ IMPORTANT:
                 content_chunks += 1
                 yield {"type": "content", "content": chunk, "is_final": False}
 
+            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
+
+            # ============================================================
+            # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
+            # ============================================================
+            if all_web_citations:
+                self.logger.info(
+                    f"[{flow_id}] 📚 Appending {len(all_web_citations)} web sources to response"
+                )
+
+                # Build sources section
+                sources_lines = [
+                    "",
+                    "",
+                    "---",
+                    "",
+                    "## 📚 Sources",
+                    "",
+                ]
+                for i, citation in enumerate(all_web_citations[:15], 1):  # Limit to 15 sources
+                    title = citation.get("title", "Source")[:100]
+                    url = citation.get("url", "")
+                    sources_lines.append(f"{i}. [{title}]({url})")
+
+                sources_section = "\n".join(sources_lines)
+
+                # Yield sources as content chunk
+                yield {"type": "content", "content": sources_section, "is_final": False}
+
+                # Emit sources metadata event for FE (optional widget rendering)
+                yield {
+                    "type": "sources",
+                    "citations": all_web_citations[:15],
+                    "count": len(all_web_citations),
+                }
+
             # Signal end of content stream
             yield {"type": "content", "content": "", "is_final": True}
-            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
             yield {
                 "type": "done",
                 "total_turns": max_turns,

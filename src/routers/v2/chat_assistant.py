@@ -1541,6 +1541,17 @@ async def stream_chat_v2(
                         f"{stats['total_tool_calls']} tools, {len(stats['final_content'])} chars content"
                     )
 
+                elif event_type == "sources":
+                    # Emit web search sources metadata for FE widget rendering (ChatGPT-style)
+                    citations = event.get("citations", [])
+                    if citations:
+                        _logger.info(f"[CHAT] 📚 Web sources: {len(citations)} citations")
+                        # Emit as dedicated SSE event for FE to render sources widget
+                        yield emitter.emit_sources(
+                            citations=citations,
+                            count=event.get("count", len(citations)),
+                        )
+
                 elif event_type == "error":
                     _logger.error(f"[CHAT] ❌ Agent error: {event.get('error', 'Unknown')}")
                     yield emitter.emit_error(
