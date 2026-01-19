@@ -49,6 +49,16 @@ from src.agents.tools.finance_guru.models.technical_enhanced import (
 logger = logging.getLogger(__name__)
 
 
+def get_enum_value(enum_or_str) -> str:
+    """Safely get string value from Enum or string.
+
+    Handles both cases where Pydantic may return an Enum or a string.
+    """
+    if hasattr(enum_or_str, 'value'):
+        return enum_or_str.value
+    return str(enum_or_str)
+
+
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
@@ -313,7 +323,7 @@ class GetIchimokuCloudTool(BaseTool):
 - Price Position: {result.signals.price_vs_cloud.upper()} cloud
 - TK Cross: {result.signals.tk_cross}
 - Trend Strength: {result.signals.trend_strength.upper()}
-- Signal: {result.signals.signal.value.upper()}
+- Signal: {get_enum_value(result.signals.signal).upper()}
 - Interpretation: {result.interpretation}
 """
 
@@ -440,7 +450,7 @@ class GetFibonacciLevelsTool(BaseTool):
 **Fibonacci Analysis for {symbol}**
 - Swing High: ${result.swing_high:.2f} ({result.swing_high_date})
 - Swing Low: ${result.swing_low:.2f} ({result.swing_low_date})
-- Trend: {result.trend_direction.value.upper()}
+- Trend: {get_enum_value(result.trend_direction).upper()}
 - Current Price: ${result.current_price:.2f}
 - Current Zone: {result.current_fib_zone}
 - Retracement: {result.retracement_percent:.1f}% of move
@@ -559,7 +569,7 @@ class GetWilliamsRTool(BaseTool):
 **Williams %R for {symbol}**
 - %R Value: {result.williams_r:.1f}
 - Zone: {result.zone.upper()}
-- Signal: {result.signal.value.upper()}
+- Signal: {get_enum_value(result.signal).upper()}
 - Momentum: {result.momentum.upper()}
 - Divergence: {result.divergence.upper() if result.divergence else 'None'}
 - Price Range: ${result.lowest_low:.2f} - ${result.highest_high:.2f}
@@ -677,7 +687,7 @@ class GetCCITool(BaseTool):
 **CCI Analysis for {symbol}**
 - CCI Value: {result.cci:.1f}
 - Zone: {result.zone.upper()}
-- Signal: {result.signal.value.upper()}
+- Signal: {get_enum_value(result.signal).upper()}
 - Trend Strength: {result.trend_strength.upper()}
 - Zero Cross: {result.zero_cross.upper() if result.zero_cross else 'None'}
 - Divergence: {result.divergence.upper() if result.divergence else 'None'}
@@ -809,14 +819,14 @@ class GetParabolicSARTool(BaseTool):
             formatted = f"""
 **Parabolic SAR for {symbol}**
 - SAR Value: ${result.sar:.2f}
-- Trend: {result.trend.value.upper()}TREND
+- Trend: {get_enum_value(result.trend).upper()}
 - Current Price: ${result.current_price:.2f}
 - SAR Position: {result.sar_position.upper()} price
 - Distance to SAR: ${result.distance_to_sar:.2f} ({result.distance_to_sar_percent:.1f}%)
 - Recommended Stop: ${result.stop_loss_price:.2f}
 - Reversal Signal: {result.reversal.upper() if result.reversal else 'None'}
 - Bars Since Flip: {result.bars_since_flip}
-- Signal: {result.signal.value.upper()}
+- Signal: {get_enum_value(result.signal).upper()}
 """
 
             execution_time = int((time.time() - start_time) * 1000)
@@ -962,7 +972,7 @@ class GetEnhancedTechnicalsTool(BaseTool):
             formatted = f"""
 **Enhanced Technical Analysis for {symbol}**
 
-CONSENSUS: {result.consensus_signal.value.upper()} ({result.signal_agreement_percent:.0f}% agreement)
+CONSENSUS: {get_enum_value(result.consensus_signal).upper()} ({result.signal_agreement_percent:.0f}% agreement)
 
 {result.summary}
 """

@@ -1112,7 +1112,9 @@ class EnhancedTechnicalCalculator:
         parts = []
 
         # Overall consensus
-        parts.append(f"Consensus: {consensus.value.upper()} ({agreement:.0f}% agreement)")
+        # Safely get enum value (handles both Enum and string)
+        consensus_str = consensus.value if hasattr(consensus, 'value') else str(consensus)
+        parts.append(f"Consensus: {consensus_str.upper()} ({agreement:.0f}% agreement)")
 
         # Key insights from each indicator
         if results.get("ichimoku"):

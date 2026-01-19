@@ -41,6 +41,16 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 
+def get_enum_value(enum_or_str) -> str:
+    """Safely get string value from Enum or string.
+
+    Handles both cases where Pydantic may return an Enum or a string.
+    """
+    if hasattr(enum_or_str, 'value'):
+        return enum_or_str.value
+    return str(enum_or_str)
+
+
 def create_success_output(
     tool_name: str,
     data: Dict[str, Any],
@@ -330,7 +340,7 @@ class RunBacktestTool(BaseTool):
                 )
 
             formatted += (
-                f"\nVerdict: {result.recommendation.value.upper()}\n"
+                f"\nVerdict: {get_enum_value(result.recommendation).upper()}\n"
                 f"Reasoning: {result.reasoning}"
             )
 
@@ -362,7 +372,7 @@ class RunBacktestTool(BaseTool):
                         "alpha": benchmark.alpha,
                         "outperformed": benchmark.outperformed,
                     } if benchmark else None,
-                    "recommendation": result.recommendation.value,
+                    "recommendation": get_enum_value(result.recommendation),
                     "reasoning": result.reasoning,
                 },
                 formatted_context=formatted,
