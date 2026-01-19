@@ -307,6 +307,7 @@ class BaseCalculator(ABC, Generic[InputT, OutputT, ConfigT]):
             method_name="calculate",
             input_summary=self._summarize_input(data),
         )
+        self._context.start()  # Start timing
 
         try:
             # Log start
@@ -328,10 +329,10 @@ class BaseCalculator(ABC, Generic[InputT, OutputT, ConfigT]):
             # Complete context
             self._context.complete()
 
-            # Log success
+            # Log success (use elapsed_ms which has None-safe fallback to 0)
             self.logger.info(
                 f"[{self.name}] ✅ Calculation complete | "
-                f"Duration: {self._context.duration_ms:.1f}ms | "
+                f"Duration: {self._context.elapsed_ms}ms | "
                 f"Warnings: {len(self._context.warnings)}"
             )
 
