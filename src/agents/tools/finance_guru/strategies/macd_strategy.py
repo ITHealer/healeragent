@@ -69,10 +69,10 @@ class MACDSignalStrategy(BaseStrategy):
         """
         self.validate_context(context)
 
-        # Get parameters
-        fast_period = context.parameters.get("fast_period", 12)
-        slow_period = context.parameters.get("slow_period", 26)
-        signal_period = context.parameters.get("signal_period", 9)
+        # Get parameters (ensure periods are integers)
+        fast_period = int(context.parameters.get("fast_period", 12))
+        slow_period = int(context.parameters.get("slow_period", 26))
+        signal_period = int(context.parameters.get("signal_period", 9))
 
         # Calculate MACD
         macd_line, signal_line, histogram = self.calculate_macd(

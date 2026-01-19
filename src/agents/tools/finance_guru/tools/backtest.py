@@ -62,11 +62,14 @@ def create_error_output(
     error: str,
     execution_time_ms: int = 0,
 ) -> ToolOutput:
-    """Create an error ToolOutput."""
+    """Create an error ToolOutput with formatted_context for LLM."""
+    # Always provide formatted_context for errors so LLM can respond properly
+    formatted_context = f"Error in {tool_name}: {error}"
     return ToolOutput(
         tool_name=tool_name,
         status="error",
         error=error,
+        formatted_context=formatted_context,
         execution_time_ms=execution_time_ms,
     )
 
@@ -237,8 +240,9 @@ class RunBacktestTool(BaseTool):
         try:
             symbol = kwargs.get("symbol", "").upper()
             strategy_str = kwargs.get("strategy", "sma_crossover")
-            days = min(max(kwargs.get("days", 365), 60), 1000)
-            initial_capital = kwargs.get("initial_capital", 100000)
+            # Ensure numeric parameters are proper types (LLM may pass floats)
+            days = int(min(max(kwargs.get("days", 365), 60), 1000))
+            initial_capital = float(kwargs.get("initial_capital", 100000))
             parameters = kwargs.get("parameters", {})
 
             if not symbol:
@@ -432,8 +436,9 @@ class CompareStrategiesTool(BaseTool):
             strategies = kwargs.get("strategies", [
                 "sma_crossover", "rsi_mean_reversion", "macd_signal", "buy_and_hold"
             ])
-            days = min(max(kwargs.get("days", 365), 60), 1000)
-            initial_capital = kwargs.get("initial_capital", 100000)
+            # Ensure numeric parameters are proper types (LLM may pass floats)
+            days = int(min(max(kwargs.get("days", 365), 60), 1000))
+            initial_capital = float(kwargs.get("initial_capital", 100000))
 
             if not symbol:
                 return create_error_output(self.schema.name, "Symbol is required")

@@ -64,9 +64,9 @@ class SMAcrossoverStrategy(BaseStrategy):
         """
         self.validate_context(context)
 
-        # Get parameters
-        fast_period = context.parameters.get("fast_period", 20)
-        slow_period = context.parameters.get("slow_period", 50)
+        # Get parameters (ensure integers for period values)
+        fast_period = int(context.parameters.get("fast_period", 20))
+        slow_period = int(context.parameters.get("slow_period", 50))
 
         # Calculate SMAs
         fast_sma = self.calculate_sma(context.closes, fast_period)

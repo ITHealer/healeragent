@@ -65,10 +65,10 @@ class RSIMeanReversionStrategy(BaseStrategy):
         """
         self.validate_context(context)
 
-        # Get parameters
-        period = context.parameters.get("period", 14)
-        oversold = context.parameters.get("oversold_threshold", 30.0)
-        overbought = context.parameters.get("overbought_threshold", 70.0)
+        # Get parameters (ensure period is integer, thresholds are floats)
+        period = int(context.parameters.get("period", 14))
+        oversold = float(context.parameters.get("oversold_threshold", 30.0))
+        overbought = float(context.parameters.get("overbought_threshold", 70.0))
 
         # Calculate RSI
         rsi = self.calculate_rsi(context.closes, period)

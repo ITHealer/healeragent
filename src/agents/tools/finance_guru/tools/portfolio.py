@@ -75,11 +75,13 @@ def create_error_output(
     error: str,
     execution_time_ms: int = 0,
 ) -> ToolOutput:
-    """Create an error ToolOutput."""
+    """Create an error ToolOutput with formatted_context for LLM."""
+    formatted_context = f"Error in {tool_name}: {error}"
     return ToolOutput(
         tool_name=tool_name,
         status="error",
         error=error,
+        formatted_context=formatted_context,
         execution_time_ms=execution_time_ms,
     )
 

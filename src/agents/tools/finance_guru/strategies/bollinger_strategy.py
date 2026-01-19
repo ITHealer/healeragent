@@ -68,9 +68,9 @@ class BollingerBandsStrategy(BaseStrategy):
         """
         self.validate_context(context)
 
-        # Get parameters
-        period = context.parameters.get("period", 20)
-        num_std = context.parameters.get("num_std", 2.0)
+        # Get parameters (ensure period is integer)
+        period = int(context.parameters.get("period", 20))
+        num_std = float(context.parameters.get("num_std", 2.0))
 
         # Calculate Bollinger Bands
         upper, middle, lower = self.calculate_bollinger_bands(
