@@ -84,6 +84,12 @@ RUN set -eux; \
     rm -rf /tmp/chromedriver*; \
     chromedriver --version
 
+# Install Deno JS runtime (required for yt-dlp YouTube JS challenge solving)
+# See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#po-token-guide
+RUN curl -fsSL https://deno.land/install.sh | sh
+ENV DENO_INSTALL="/root/.deno"
+ENV PATH="${DENO_INSTALL}/bin:${PATH}"
+
 COPY requirements.txt .
 
 # Install Python packages
@@ -91,7 +97,9 @@ RUN python3 -m pip install --upgrade pip && \
     python3 -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 && \
     python3 -m pip install --no-cache-dir -r requirements.txt && \
     python3 -m pip install -U langchain-huggingface && \
-    python3 -m pip install selenium==4.15.2 webdriver-manager
+    python3 -m pip install selenium==4.15.2 webdriver-manager && \
+    # Install yt-dlp nightly for best YouTube compatibility (SABR/JS challenges)
+    python3 -m pip install -U --pre "yt-dlp[default]"
 
 # Clean up NVIDIA/CUDA repos to avoid GPG errors (keep your existing approach)
 RUN set -eux; \
