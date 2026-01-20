@@ -37,19 +37,22 @@ class VideoProcessor:
             'outtmpl': '%(title).100s.%(ext)s',  # Limit title length
             'no_warnings': True,
             'noplaylist': True,  # Force downloading single video only, not playlists
+            'ignore_no_formats_error': True,  # Don't error if no formats found initially
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-us,en;q=0.5',
                 'Sec-Fetch-Mode': 'navigate',
             },
-            # Use multiple YouTube player clients for better format availability
-            'extractor_args': {
-                'youtube': {
-                    'player_client': ['ios', 'web'],  # iOS client often has more formats available
-                }
-            },
         }
+
+        # Player client fallback list for YouTube
+        self.youtube_player_clients = [
+            ['android', 'web'],  # Android client usually has more formats
+            ['ios', 'web'],     # iOS client as fallback
+            ['tv_embedded'],    # TV embedded doesn't need PO token
+            ['mweb'],           # Mobile web as last resort
+        ]
 
         logger.info("VideoProcessor initialized with cookie support")
         if self.cookie_manager.is_enabled():
@@ -342,11 +345,7 @@ class VideoProcessor:
                 if short_output_dir != str(output_dir):
                     output_template = f"{short_output_dir}\\{temp_filename}.%(ext)s"
             
-            # Get yt-dlp options with cookies
-            ydl_opts = self._get_ydl_opts({'outtmpl': output_template})
-            
             logger.info(f"Starting video download: {url}")
-            logger.info(f"Using player clients: ios, web (flexible format selection)")
 
             if self.cookie_manager.is_enabled():
                 logger.info("✅ Using cookies for authentication")
@@ -360,6 +359,7 @@ class VideoProcessor:
                 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio[ext=mp4]/bestaudio/best[acodec!=none]/best',
                 'bestaudio/best',  # Simpler fallback
                 'best',  # Last resort - any available format
+                None,  # No format filter - let yt-dlp choose
             ]
 
             info = None
@@ -369,43 +369,82 @@ class VideoProcessor:
             last_error = None
             clean_title = 'unknown'
 
-            for format_idx, format_str in enumerate(format_fallbacks):
-                try:
-                    # Update format in options
-                    ydl_opts['format'] = format_str
+            # Check if URL is YouTube
+            is_youtube = 'youtube.com' in url or 'youtu.be' in url
 
-                    if format_idx > 0:
-                        logger.info(f"Retrying with fallback format: {format_str}")
+            # Try different player clients for YouTube
+            player_client_list = self.youtube_player_clients if is_youtube else [[]]
 
-                    # Download with yt-dlp
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        # Get video info
-                        info = await asyncio.to_thread(ydl.extract_info, url, False)
-                        video_title = info.get('title', 'unknown')
-                        expected_duration = info.get('duration') or 0
+            for player_clients in player_client_list:
+                if download_success:
+                    break
 
-                        clean_title = self.sanitize_filename(video_title)
-                        logger.info(f"Video title: {clean_title}")
+                for format_str in format_fallbacks:
+                    if download_success:
+                        break
 
-                        # Download video
-                        await asyncio.to_thread(ydl.download, [url])
-                        download_success = True
-                        break  # Success, exit loop
+                    try:
+                        # Get fresh options for each attempt
+                        ydl_opts = self._get_ydl_opts({'outtmpl': output_template})
 
-                except Exception as e:
-                    last_error = e
-                    error_str = str(e)
-                    if "Requested format is not available" in error_str or "format" in error_str.lower():
-                        logger.warning(f"Format '{format_str}' not available, trying next fallback...")
-                        continue
-                    else:
-                        # Non-format related error, don't retry
-                        raise
+                        # Set format (None means no format filter)
+                        if format_str:
+                            ydl_opts['format'] = format_str
+                        else:
+                            ydl_opts.pop('format', None)
+
+                        # Set player clients for YouTube
+                        if player_clients:
+                            ydl_opts['extractor_args'] = {
+                                'youtube': {
+                                    'player_client': player_clients,
+                                }
+                            }
+                            logger.info(f"Trying player clients: {player_clients}, format: {format_str or 'auto'}")
+                        else:
+                            logger.info(f"Trying format: {format_str or 'auto'}")
+
+                        # Download with yt-dlp
+                        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                            # Get video info
+                            info = await asyncio.to_thread(ydl.extract_info, url, False)
+
+                            # Check if formats are available
+                            formats = info.get('formats', [])
+                            if not formats:
+                                logger.warning(f"No formats available with player clients: {player_clients}")
+                                continue
+
+                            video_title = info.get('title', 'unknown')
+                            expected_duration = info.get('duration') or 0
+
+                            clean_title = self.sanitize_filename(video_title)
+                            logger.info(f"Video title: {clean_title}, formats available: {len(formats)}")
+
+                            # Download video
+                            await asyncio.to_thread(ydl.download, [url])
+                            download_success = True
+                            logger.info(f"Download successful with player clients: {player_clients}")
+                            break  # Success, exit format loop
+
+                    except Exception as e:
+                        last_error = e
+                        error_str = str(e)
+                        if "Requested format is not available" in error_str or "format" in error_str.lower():
+                            logger.warning(f"Format/client combination failed: {error_str[:100]}...")
+                            continue
+                        elif "Sign in" in error_str or "bot" in error_str.lower() or "confirm" in error_str.lower():
+                            logger.warning(f"Authentication issue, trying different player client...")
+                            break  # Try next player client
+                        else:
+                            # Non-recoverable error
+                            logger.error(f"Non-recoverable error: {error_str}")
+                            raise
 
             if not download_success:
                 if last_error:
                     raise last_error
-                raise Exception("All format options failed")
+                raise Exception("All format and player client combinations failed")
             
             # Find downloaded file
             audio_file = None
