@@ -3206,12 +3206,17 @@ You have access to various data tools. Use them to gather real data before respo
         if enable_think_tool:
             system_prompt += """
 
-**Thinking Process (RECOMMENDED):**
-Use the `think` tool to organize your reasoning. This helps you:
-- Plan which data to gather before calling tools
-- Analyze and synthesize results after receiving tool data
-- Catch potential errors or contradictions in your analysis
-Pattern: think(plan) → call tools → think(analyze) → respond"""
+**Thinking Process (MANDATORY - ALWAYS USE):**
+You MUST use the `think` tool for EVERY response. This is NOT optional.
+
+REQUIRED Pattern for EVERY question:
+1. think(planning) → Plan your approach and what data you need
+2. Call data tools → Gather information
+3. think(analyzing) → Analyze results, synthesize insights
+4. Respond → Give your final answer
+
+Even for simple questions, ALWAYS call think() at least once before responding.
+The user has explicitly enabled thinking mode to see your reasoning process."""
 
         # Add web search instruction based on mode
         if enable_web_search:
