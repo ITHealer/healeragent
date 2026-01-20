@@ -2951,27 +2951,62 @@ IMPORTANT:
 
 You have access to various data tools. Use them to gather real data before responding.
 
-**Key principles:**
+**Key Principles:**
 1. **Call tools first** - Get actual data before making claims
-2. **Use the `think` tool** - Plan your approach and analyze results
-3. **Cite data sources** - Reference where numbers come from
-4. **Be accurate** - Never fabricate numbers, only use tool results
-5. **Respond naturally** - Match the user's language, be conversational"""
+2. **Think before responding** - Analyze data thoroughly before writing your response
+3. **Be accurate** - Never fabricate numbers, only use tool results
+4. **Respond naturally** - Match the user's language, be conversational
 
-        # Add think tool instruction if enabled
+**CRITICAL - Response Style:**
+- **NEVER mention internal tool names** in your response (e.g., DON'T say "getStockPrice returned..." or "Using getTechnicalIndicators...")
+- Present data naturally as if you already know it (e.g., "AAPL is currently trading at $259.96" NOT "getStockPrice shows AAPL at $259.96")
+- Reference data sources generically: "Real-time data shows..." or "Market data indicates..."
+- The user should NOT know which specific tools you used - just deliver the insights
+
+**Language (IMPORTANT):**
+- **Match the user's language** - If they write in Vietnamese, respond in Vietnamese. If English, respond in English.
+- **Never switch languages mid-conversation** unless the user does first
+- Be consistent throughout your entire response"""
+
+        # Add think tool instruction if enabled (works for both GPT and Gemini)
         if enable_think_tool:
             system_prompt += """
 
-**Think Tool (RECOMMENDED):**
-Use the `think` tool to plan your approach and analyze data before responding.
+**Thinking Process (RECOMMENDED):**
+Use the `think` tool to organize your reasoning. This helps you:
+- Plan which data to gather before calling tools
+- Analyze and synthesize results after receiving tool data
+- Catch potential errors or contradictions in your analysis
 Pattern: think(plan) → call tools → think(analyze) → respond"""
 
-        # Add web search instruction if enabled
+        # Add web search instruction based on mode
         if enable_web_search:
+            # FORCED mode: always use web search
             system_prompt += """
 
-**Web Search (RECOMMENDED):**
-Use `webSearch` for latest news and market context. Include source citations."""
+**Web Search (REQUIRED - ENABLED):**
+You MUST use `webSearch` to get latest news and real-time information.
+When presenting web search results:
+- Integrate findings naturally into your response
+- Include relevant source URLs inline or in a "Sources:" section at the end
+- Format: "According to [Source Name](URL), ..." or list sources at the end
+- Example Sources section:
+  **Sources:**
+  - [Bloomberg: AAPL hits new high](https://bloomberg.com/...)
+  - [Reuters: Fed rate decision](https://reuters.com/...)"""
+        else:
+            # AUTO mode: LLM decides when internal tools are insufficient
+            system_prompt += """
+
+**Web Search (AVAILABLE - USE WHEN NEEDED):**
+Use `webSearch` when your internal data tools don't have sufficient information to answer accurately:
+- Latest breaking news or recent events (last 24-48 hours)
+- Information not covered by financial data APIs
+- User asks about topics beyond market data
+When presenting web search results:
+- Integrate findings naturally into your response
+- Include relevant source URLs in a "Sources:" section
+- Format sources as: [Title](URL)"""
 
         messages = [{"role": "system", "content": system_prompt}]
 
