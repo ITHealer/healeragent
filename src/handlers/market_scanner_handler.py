@@ -442,6 +442,17 @@ State what would change the classification:
 - Risk: Short-term bounce could fade if 63d stays negative
 
 **Would upgrade to LEADER if:** 63d excess becomes positive (>1pp) and 126d improves"
+
+## IMPORTANT REMINDER
+Always end with this note:
+
+"⚠️ **LƯU Ý QUAN TRỌNG**: Đây chỉ là phân tích dựa trên **SỨC MẠNH TƯƠNG ĐỐI (Relative Strength)**. Để đưa ra quyết định đầu tư hoàn chỉnh, bạn nên xem xét thêm:
+- **Phân tích Kỹ thuật**: Xu hướng giá, hỗ trợ/kháng cự, các chỉ báo momentum
+- **Phân tích Rủi ro**: Mức dừng lỗ, quy mô vị thế, biến động
+- **Tin tức & Tâm lý Thị trường**: Các tin tức gần đây và tâm lý của nhà đầu tư
+- **Phân tích Cơ bản**: Sức khỏe tài chính, báo cáo lợi nhuận, và định giá của công ty
+
+RS analysis cho biết cổ phiếu đang mạnh hay yếu SO VỚI THỊ TRƯỜNG, nhưng không cho biết giá có hợp lý hay không."
 """
 
 RISK_ANALYSIS_SYSTEM_PROMPT = """You are a professional risk manager providing clear risk analysis.
@@ -455,7 +466,17 @@ RISK_ANALYSIS_SYSTEM_PROMPT = """You are a professional risk manager providing c
 1. **Volatility Assessment**: Current ATR%, volatility regime
 2. **Stop Loss Levels**: ATR-based, Support-based, Percentage-based
 3. **Position Sizing Guidance**: Based on risk tolerance
-4. **Risk/Reward**: If entry price provided"""
+4. **Risk/Reward**: If entry price provided
+
+## IMPORTANT REMINDER
+Always end with this note:
+
+"⚠️ **LƯU Ý QUAN TRỌNG**: Đây chỉ là phân tích **RỦI RO & QUẢN LÝ VỊ THẾ**. Để đưa ra quyết định đầu tư hoàn chỉnh, bạn nên xem xét thêm:
+- **Phân tích Kỹ thuật**: Xu hướng giá, điểm vào lệnh tối ưu
+- **Vị thế Thị trường**: Sức mạnh tương đối của cổ phiếu so với thị trường
+- **Tin tức & Tâm lý Thị trường**: Các tin tức gần đây có thể ảnh hưởng đến rủi ro
+- **Phân tích Cơ bản**: Rủi ro tài chính của công ty (nợ, dòng tiền)"
+"""
 
 SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in sentiment and news analysis.
 
@@ -468,7 +489,17 @@ SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in se
 1. **Sentiment Overview**: Bullish/Bearish/Neutral with score
 2. **Key News Themes**: Important recent developments
 3. **Market Impact**: How might this affect the stock?
-4. **Trading Implications**: What should traders watch for?"""
+4. **Trading Implications**: What should traders watch for?
+
+## IMPORTANT REMINDER
+Always end with this note:
+
+"⚠️ **LƯU Ý QUAN TRỌNG**: Đây chỉ là phân tích **TIN TỨC & TÂM LÝ THỊ TRƯỜNG**. Để đưa ra quyết định đầu tư hoàn chỉnh, bạn nên xem xét thêm:
+- **Phân tích Kỹ thuật**: Xu hướng giá đang xác nhận hay mâu thuẫn với tin tức?
+- **Vị thế Thị trường**: Cổ phiếu có đang mạnh hơn thị trường chung?
+- **Phân tích Rủi ro**: Mức dừng lỗ phù hợp nếu tin tức thay đổi
+- **Phân tích Cơ bản**: Tin tức có ảnh hưởng đến fundamentals dài hạn?"
+"""
 
 
 class MarketScannerHandler(LoggerMixin):
