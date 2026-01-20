@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from datetime import datetime
 
 from src.agents.tools.base import (
@@ -227,72 +227,298 @@ class GetRelativeStrengthTool(BaseTool):
         benchmark: str,
         timeframe: str
     ) -> Dict[str, Any]:
-        """Format raw handler output"""
-        relative_perf = raw_data.get("relative_performance", {})
-        recent_performance = relative_perf.get("1M", {}).get("relative_strength", 0)
-        
+        """
+        Format raw handler output for LLM consumption.
+
+        Handler returns:
+        {
+            "symbol": ...,
+            "benchmark": ...,
+            "relative_strength": {RS_21d, Return_21d, Benchmark_21d, Excess_21d, ...},
+            "relative_strength_summary": "text"
+        }
+        """
+        # Get RS metrics from handler (flat format with RS_21d, Excess_21d, etc.)
+        rs_metrics = raw_data.get("relative_strength", {})
+
+        # Get the 21d excess return for recent performance
+        recent_excess = rs_metrics.get("Excess_21d", 0) or 0
+        rs_score_21d = rs_metrics.get("RS_21d", 50) or 50
+
+        # Calculate trend based on 21d vs 63d
+        trend = self._calculate_trend(rs_metrics)
+
+        # Calculate percentile (RS score is already on 1-99 scale)
+        percentile = rs_score_21d  # RS_21d is the percentile-like score
+
         return {
             "symbol": symbol,
             "benchmark": benchmark,
-            "timeframe": timeframe,  # ✅ ADDED
-            "relative_performance": relative_perf,
-            "is_outperforming": recent_performance > 0,
-            "trend": self._calculate_trend(relative_perf),
-            "percentile_rank": raw_data.get("percentile_rank", 50),
-            "strength_score": recent_performance,
+            "timeframe": timeframe,
+            "relative_performance": rs_metrics,  # Pass the full metrics dict
+            "is_outperforming": recent_excess > 1,  # >1% excess = outperforming
+            "trend": trend,
+            "percentile_rank": percentile,
+            "strength_score": recent_excess,  # Excess return as strength score
             "summary": raw_data.get("relative_strength_summary", "Analysis completed"),
             "timestamp": datetime.now().isoformat()
         }
-    
-    def _calculate_trend(self, relative_perf: Dict) -> str:
-        """Calculate trend"""
-        try:
-            one_m = relative_perf.get("1M", {}).get("relative_strength", 0)
-            three_m = relative_perf.get("3M", {}).get("relative_strength", 0)
 
-            if one_m > three_m + 2:
+    def _calculate_trend(self, rs_metrics: Dict) -> str:
+        """
+        Calculate RS trend based on multi-timeframe data.
+
+        Uses 21d vs 63d excess return comparison.
+        """
+        try:
+            excess_21d = rs_metrics.get("Excess_21d", 0) or 0
+            excess_63d = rs_metrics.get("Excess_63d", 0) or 0
+
+            diff = excess_21d - excess_63d
+
+            if diff > 3:
                 return "improving"
-            elif one_m < three_m - 2:
+            elif diff < -3:
                 return "declining"
             return "stable"
         except:
             return "unknown"
 
     def _generate_llm_summary(self, data: Dict[str, Any]) -> str:
-        """Generate LLM-friendly summary for relative strength data."""
+        """
+        Generate LLM-friendly summary for relative strength data.
+
+        Includes:
+        - Methodology explanation for transparency
+        - Multi-timeframe breakdown with actual returns
+        - Rule-based classification (leader/laggard/neutral)
+        - Actionable interpretation guidelines
+        """
         symbol = data.get("symbol", "N/A")
         benchmark = data.get("benchmark", "SPY")
-        timeframe = data.get("timeframe", "3M")
-        is_outperforming = data.get("is_outperforming", False)
-        trend = data.get("trend", "unknown")
-        percentile = data.get("percentile_rank", 50)
-        strength_score = data.get("strength_score", 0)
-        summary = data.get("summary", "")
         relative_perf = data.get("relative_performance", {})
+        summary_text = data.get("summary", "")
+
+        # Extract raw metrics from relative_performance
+        # Format: {RS_21d, Return_21d, Benchmark_21d, Excess_21d, ...}
+        metrics = self._extract_metrics(relative_perf)
+
+        # Calculate multi-timeframe analysis
+        multi_tf_analysis = self._analyze_multi_timeframe(metrics)
 
         lines = [
-            f"=== RELATIVE STRENGTH: {symbol} vs {benchmark} ===",
-            f"Timeframe: {timeframe}",
+            f"=== RELATIVE STRENGTH ANALYSIS: {symbol} vs {benchmark} ===",
             "",
-            f"OUTPERFORMING: {'YES ✅' if is_outperforming else 'NO ❌'}",
-            f"Trend: {trend.upper()}",
-            f"Percentile Rank: {percentile}",
-            f"Strength Score: {strength_score:+.2f}%",
+            "## METHODOLOGY",
+            f"- Benchmark: {benchmark} (S&P 500 ETF - represents overall US market)",
+            "- RS Score = 50 + Excess Return (capped 1-99)",
+            "- Excess Return = Stock Return - Benchmark Return",
+            "- Timeframes: 21d (1M), 63d (3M), 126d (6M), 252d (1Y) trading days",
             "",
-            "PERFORMANCE BY PERIOD:",
+            "## MULTI-TIMEFRAME RETURNS",
         ]
 
-        # Add relative performance by period
-        for period, perf_data in relative_perf.items():
-            if isinstance(perf_data, dict):
-                rs = perf_data.get("relative_strength", 0)
-                sign = "+" if rs >= 0 else ""
-                lines.append(f"- {period}: {sign}{rs:.2f}%")
+        # Add detailed returns for each timeframe
+        for period in ["21d", "63d", "126d", "252d"]:
+            stock_ret = metrics.get(f"Return_{period}")
+            bench_ret = metrics.get(f"Benchmark_{period}")
+            excess = metrics.get(f"Excess_{period}")
+            rs_score = metrics.get(f"RS_{period}")
 
-        if summary:
-            lines.extend(["", f"Summary: {summary}"])
+            if stock_ret is not None and bench_ret is not None:
+                status = "OUTPERFORM" if excess > 0 else "UNDERPERFORM" if excess < 0 else "IN-LINE"
+                lines.append(f"- {period}: {symbol} {stock_ret:+.2f}% vs {benchmark} {bench_ret:+.2f}% = {excess:+.2f}% ({status})")
+                if rs_score is not None:
+                    lines.append(f"  └─ RS Score: {rs_score:.0f}/100")
+
+        lines.extend([
+            "",
+            "## CLASSIFICATION (Rule-based)",
+            f"- Short-term (21d): {multi_tf_analysis['short_term_status']}",
+            f"- Medium-term (63d): {multi_tf_analysis['medium_term_status']}",
+            f"- Long-term (126d+): {multi_tf_analysis['long_term_status']}",
+            "",
+            f"### OVERALL CLASSIFICATION: {multi_tf_analysis['classification']}",
+            f"### RS TREND: {multi_tf_analysis['trend']}",
+            "",
+            "## INTERPRETATION RULES",
+        ])
+
+        # Add rule-based interpretation
+        lines.extend(self._get_interpretation_rules(multi_tf_analysis))
+
+        if summary_text:
+            lines.extend(["", f"## RAW SUMMARY", summary_text])
 
         return "\n".join(lines)
+
+    def _extract_metrics(self, relative_perf: Dict) -> Dict[str, float]:
+        """Extract metrics from relative_performance dict."""
+        metrics = {}
+
+        # Handle both nested format and flat format
+        if isinstance(relative_perf, dict):
+            for key, value in relative_perf.items():
+                if isinstance(value, dict):
+                    # Nested format: {"1M": {"relative_strength": X}}
+                    rs = value.get("relative_strength", 0)
+                    metrics[f"Excess_{key}"] = rs
+                else:
+                    # Flat format: {"RS_21d": X, "Return_21d": Y, ...}
+                    metrics[key] = value
+
+        return metrics
+
+    def _analyze_multi_timeframe(self, metrics: Dict[str, float]) -> Dict[str, str]:
+        """
+        Analyze multi-timeframe RS data to classify stock.
+
+        Classification rules:
+        - LEADER: Outperform in 3+ timeframes OR strong outperform (>5%) in all
+        - EMERGING LEADER: Short-term outperform + improving trend
+        - NEUTRAL: Mixed signals, near market performance
+        - LAGGARD: Underperform in 3+ timeframes
+        - EMERGING LAGGARD: Short-term underperform + declining trend
+        """
+        excess_21d = metrics.get("Excess_21d", 0) or 0
+        excess_63d = metrics.get("Excess_63d", 0) or 0
+        excess_126d = metrics.get("Excess_126d", 0) or 0
+        excess_252d = metrics.get("Excess_252d", 0) or 0
+
+        # Count outperform/underperform
+        outperform_count = sum([
+            1 if excess_21d > 1 else 0,
+            1 if excess_63d > 1 else 0,
+            1 if excess_126d > 1 else 0,
+            1 if excess_252d > 1 else 0
+        ])
+        underperform_count = sum([
+            1 if excess_21d < -1 else 0,
+            1 if excess_63d < -1 else 0,
+            1 if excess_126d < -1 else 0,
+            1 if excess_252d < -1 else 0
+        ])
+
+        # Short-term status
+        if excess_21d > 5:
+            short_term = "STRONG OUTPERFORM ⭐⭐⭐"
+        elif excess_21d > 1:
+            short_term = "OUTPERFORM ⭐"
+        elif excess_21d < -5:
+            short_term = "STRONG UNDERPERFORM ⚠️⚠️⚠️"
+        elif excess_21d < -1:
+            short_term = "UNDERPERFORM ⚠️"
+        else:
+            short_term = "NEUTRAL"
+
+        # Medium-term status
+        if excess_63d > 5:
+            medium_term = "STRONG OUTPERFORM ⭐⭐⭐"
+        elif excess_63d > 1:
+            medium_term = "OUTPERFORM ⭐"
+        elif excess_63d < -5:
+            medium_term = "STRONG UNDERPERFORM ⚠️⚠️⚠️"
+        elif excess_63d < -1:
+            medium_term = "UNDERPERFORM ⚠️"
+        else:
+            medium_term = "NEUTRAL"
+
+        # Long-term status (average of 126d and 252d)
+        long_term_excess = (excess_126d + excess_252d) / 2
+        if long_term_excess > 5:
+            long_term = "STRONG OUTPERFORM ⭐⭐⭐"
+        elif long_term_excess > 1:
+            long_term = "OUTPERFORM ⭐"
+        elif long_term_excess < -5:
+            long_term = "STRONG UNDERPERFORM ⚠️⚠️⚠️"
+        elif long_term_excess < -1:
+            long_term = "UNDERPERFORM ⚠️"
+        else:
+            long_term = "NEUTRAL"
+
+        # RS Trend (short vs medium term)
+        trend_diff = excess_21d - excess_63d
+        if trend_diff > 3:
+            trend = "IMPROVING (short-term gaining vs medium-term)"
+        elif trend_diff < -3:
+            trend = "DECLINING (short-term weakening vs medium-term)"
+        else:
+            trend = "STABLE (no significant change)"
+
+        # Overall classification
+        if outperform_count >= 3:
+            classification = "LEADER ⭐ (outperforming in 3+ timeframes)"
+        elif outperform_count >= 2 and excess_21d > 1:
+            classification = "EMERGING LEADER (short-term strong, building momentum)"
+        elif underperform_count >= 3:
+            classification = "LAGGARD ⚠️ (underperforming in 3+ timeframes)"
+        elif underperform_count >= 2 and excess_21d < -1:
+            classification = "EMERGING LAGGARD (short-term weak, losing momentum)"
+        elif excess_21d > 1 and (excess_63d < 0 or excess_126d < 0):
+            classification = "ROTATION CANDIDATE (short-term improving, longer-term mixed)"
+        else:
+            classification = "NEUTRAL (near market performance)"
+
+        return {
+            "short_term_status": short_term,
+            "medium_term_status": medium_term,
+            "long_term_status": long_term,
+            "trend": trend,
+            "classification": classification,
+            "outperform_count": outperform_count,
+            "underperform_count": underperform_count
+        }
+
+    def _get_interpretation_rules(self, analysis: Dict) -> List[str]:
+        """Get rule-based interpretation guidelines."""
+        rules = []
+        classification = analysis.get("classification", "")
+
+        if "LEADER" in classification and "EMERGING" not in classification:
+            rules.extend([
+                "✅ LEADER STATUS: Confirmed relative strength leader",
+                "   - Good for momentum/trend-following strategies",
+                "   - Consider on pullbacks to support with volume confirmation",
+                "   - Watch for: RS breakdown (losing outperformance in 2+ timeframes)"
+            ])
+        elif "EMERGING LEADER" in classification:
+            rules.extend([
+                "⚡ EMERGING LEADER: Short-term improving but not confirmed",
+                "   - Add to watchlist, NOT confirmed for position yet",
+                "   - Needs: 63d & 126d to also show outperformance for confirmation",
+                "   - Watch for: Continued 21d outperformance + volume increase"
+            ])
+        elif "LAGGARD" in classification and "EMERGING" not in classification:
+            rules.extend([
+                "⚠️ LAGGARD STATUS: Confirmed relative strength laggard",
+                "   - Avoid for new long positions",
+                "   - If holding: Consider reducing on rallies",
+                "   - Watch for: RS improvement in 21d first (early reversal signal)"
+            ])
+        elif "EMERGING LAGGARD" in classification:
+            rules.extend([
+                "⚠️ EMERGING LAGGARD: Short-term weakening, caution",
+                "   - Tighten stops if holding",
+                "   - Avoid adding to position",
+                "   - Watch for: 21d RS recovery or 63d confirmation of weakness"
+            ])
+        elif "ROTATION" in classification:
+            rules.extend([
+                "🔄 ROTATION CANDIDATE: Mixed timeframe signals",
+                "   - Short-term improving but longer-term not confirmed",
+                "   - Watchlist candidate, not a buy signal yet",
+                "   - Confirmation needed: 63d must also turn positive",
+                "   - Risk: Could be a dead cat bounce if 63d stays negative"
+            ])
+        else:
+            rules.extend([
+                "📊 NEUTRAL: Near market performance",
+                "   - No strong RS edge in either direction",
+                "   - Use other factors (fundamentals, technicals) for decision",
+                "   - Watch for: RS breakout (21d + 63d outperform) or breakdown"
+            ])
+
+        return rules
 
 
 # ============================================================================
