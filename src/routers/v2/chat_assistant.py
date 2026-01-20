@@ -1453,17 +1453,37 @@ async def stream_chat_v2(
                     tools = event.get("tools", [])
                     stats["total_tool_calls"] += len(tools)
 
-                    # Timeline: Add step for each tool call
-                    for tool in tools:
+                    # Timeline: Consolidate tool calls into ONE step (avoid UI noise)
+                    if len(tools) == 1:
+                        # Single tool: show name and symbol
+                        tool = tools[0]
                         tool_name = tool.get("name", "unknown")
                         tool_args = tool.get("arguments", {})
                         symbol = tool_args.get("symbol", "")
                         thinking_timeline.add_step(
                             phase=ThinkingPhase.TOOL_EXECUTION.value,
-                            action=f"Tool: {tool_name}",
+                            action=f"Calling {tool_name}",
                             is_tool_call=True,
                             details=f"({symbol})" if symbol else None,
                         )
+                    elif len(tools) <= 3:
+                        # 2-3 tools: show names
+                        tool_names = [t.get("name", "?") for t in tools]
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.TOOL_EXECUTION.value,
+                            action=f"Calling {len(tools)} tools",
+                            is_tool_call=True,
+                            details=", ".join(tool_names),
+                        )
+                    else:
+                        # Many tools: just show count
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.TOOL_EXECUTION.value,
+                            action=f"Calling {len(tools)} tools in parallel",
+                            is_tool_call=True,
+                            details=None,
+                        )
+
                     for timeline_event in thinking_timeline.get_pending_events():
                         yield timeline_event.to_sse()
 
@@ -1473,19 +1493,25 @@ async def stream_chat_v2(
                     results = event.get("results", [])
                     stats["tool_results"].extend(results)
 
-                    # Timeline: Update tool results with success/failure
-                    for result in results:
-                        tool_name = result.get("tool", "unknown")
-                        success = result.get("success", False)
-                        thinking_timeline.add_step(
-                            phase=ThinkingPhase.DATA_GATHERING.value,
-                            action=f"Result: {tool_name}",
-                            is_tool_call=True,
-                            details="success" if success else "failed",
-                            success=success,
-                        )
-                    for timeline_event in thinking_timeline.get_pending_events():
-                        yield timeline_event.to_sse()
+                    # Timeline: Consolidate tool results into ONE step (avoid UI noise)
+                    # Only emit if multiple results or if there's a failure
+                    success_count = sum(1 for r in results if r.get("success", False))
+                    fail_count = len(results) - success_count
+
+                    if len(results) > 0:
+                        if fail_count > 0:
+                            # Show failures explicitly
+                            thinking_timeline.add_step(
+                                phase=ThinkingPhase.DATA_GATHERING.value,
+                                action=f"Tool Results: {success_count} OK, {fail_count} failed",
+                                is_tool_call=True,
+                                details=None,
+                                success=fail_count == 0,
+                            )
+                            for timeline_event in thinking_timeline.get_pending_events():
+                                yield timeline_event.to_sse()
+                        # Skip emitting individual success results to reduce noise
+                        # The tool_results event below provides the detailed info
 
                     yield emitter.emit_tool_results(results)
 
@@ -1499,26 +1525,20 @@ async def stream_chat_v2(
                         yield emitter.emit_content(content)
 
                 elif event_type == "thinking":
-                    # Handle think tool calls - emit as thinking step for frontend
+                    # Handle think tool calls - emit to thinking_timeline ONLY
+                    # (No separate thinking_step to avoid UI duplication)
                     phase = event.get("phase", "analyzing")
                     thought_content = event.get("content", "")
 
                     if thought_content:
-                        # Add to thinking timeline
+                        # Add to thinking timeline with full content in details
                         thinking_timeline.add_step(
                             phase=ThinkingPhase.DATA_GATHERING.value,
                             action=f"💭 Think: {phase.title()}",
-                            details=thought_content[:100] + "..." if len(thought_content) > 100 else thought_content,
+                            details=thought_content,  # Full content - UI can truncate if needed
                         )
                         for timeline_event in thinking_timeline.get_pending_events():
                             yield timeline_event.to_sse()
-
-                        # Emit as separate thinking_step event for detailed display
-                        yield emitter.emit_thinking_step(
-                            title=f"Thinking ({phase})",
-                            content=thought_content,
-                            phase=phase,
-                        )
 
                         _logger.info(f"[CHAT] 💭 Think [{phase}]: {thought_content[:80]}...")
 
