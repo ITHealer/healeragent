@@ -187,9 +187,13 @@ class GetTechnicalIndicatorsTool(BaseTool):
         start_time = datetime.now()
         symbol = symbol.upper()
 
-        # Map timeframe to lookback days
+        # Map timeframe to lookback days (for display/analysis period)
         timeframe_map = {"1M": 30, "3M": 90, "6M": 180, "1Y": 252}
         lookback_days = timeframe_map.get(timeframe, 90)
+
+        # FIX: Always fetch at least 60 days for technical indicators calculation
+        # Some indicators (SMA50, etc.) need 50+ data points to work properly
+        fetch_days = max(lookback_days, 60)
 
         try:
             # Always calculate ALL indicators for comprehensive analysis
@@ -197,11 +201,11 @@ class GetTechnicalIndicatorsTool(BaseTool):
             indicators = self._normalize_indicators(indicators)
 
             self.logger.info(
-                f"[getTechnicalIndicators] {symbol} | timeframe={timeframe} ({lookback_days} days)"
+                f"[getTechnicalIndicators] {symbol} | timeframe={timeframe} ({lookback_days} days, fetching {fetch_days})"
             )
 
-            # Fetch historical data
-            historical_data = await self._fetch_historical_data(symbol, lookback_days)
+            # Fetch historical data (at least 60 days for indicators)
+            historical_data = await self._fetch_historical_data(symbol, fetch_days)
 
             if not historical_data or len(historical_data) < 50:
                 return create_error_output(
