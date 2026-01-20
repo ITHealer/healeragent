@@ -154,14 +154,16 @@ class ToolRegistry:
     ) -> ToolOutput:
         """Execute a tool by name with circuit breaker protection"""
         tool = self.get_tool(tool_name)
-        
+
         if not tool:
+            error_msg = f"Tool '{tool_name}' not found"
             return ToolOutput(
                 tool_name=tool_name,
                 status="error",
-                error=f"Tool '{tool_name}' not found"
+                error=error_msg,
+                formatted_context=f"Error: {error_msg}. This tool does not exist in the system."
             )
-        
+
         # Check circuit breaker
         if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
             if not self._circuit_breaker.allow_request(tool_name):
@@ -170,11 +172,15 @@ class ToolRegistry:
                     f"[CIRCUIT_BREAKER] Tool '{tool_name}' is unavailable. "
                     f"Circuit open, retry after {retry_after:.1f}s"
                 )
+                error_msg = (
+                    f"Tool '{tool_name}' temporarily unavailable (circuit breaker open). "
+                    f"Retry after {retry_after:.1f} seconds."
+                )
                 return ToolOutput(
                     tool_name=tool_name,
                     status="error",
-                    error=f"Tool '{tool_name}' temporarily unavailable (circuit breaker open). "
-                          f"Retry after {retry_after:.1f} seconds.",
+                    error=error_msg,
+                    formatted_context=f"Error: {error_msg}",
                     metadata={
                         "circuit_breaker": True,
                         "retry_after_seconds": retry_after,
@@ -204,10 +210,12 @@ class ToolRegistry:
             if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
                 self._circuit_breaker.record_failure(tool_name, e)
             self.logger.error(f"[TOOL_EXECUTION] Unexpected error in {tool_name}: {e}")
+            error_msg = str(e)
             return ToolOutput(
                 tool_name=tool_name,
                 status="error",
-                error=str(e),
+                error=error_msg,
+                formatted_context=f"Error executing {tool_name}: {error_msg}",
                 metadata={"exception_type": type(e).__name__}
             )
 

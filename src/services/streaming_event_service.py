@@ -78,6 +78,7 @@ class StreamEventType(str, Enum):
     TOOL_RESULTS = "tool_results"
     THINKING = "thinking"
     CONTENT = "content"
+    SOURCES = "sources"  # Web search citations (ChatGPT-style sources widget)
 
     # Deep Research Mode
     PROGRESS = "progress"
@@ -700,6 +701,43 @@ class StreamEventEmitter(LoggerMixin):
             StreamEventType.LLM_ACTION, data,
             f"type={action_type} name={action_name}"
         )
+
+    def emit_sources(
+        self,
+        citations: List[Dict[str, str]],
+        count: Optional[int] = None,
+    ) -> str:
+        """
+        Emit web search sources/citations for FE widget rendering (ChatGPT-style).
+
+        Args:
+            citations: List of {"title": str, "url": str} dicts
+            count: Total citation count (defaults to len(citations))
+
+        Returns:
+            SSE formatted string
+        """
+        return self._emit(
+            StreamEventType.SOURCES,
+            {
+                "citations": citations,
+                "count": count or len(citations),
+            },
+            f"sources={len(citations)}"
+        )
+
+    def emit_raw_event(
+        self,
+        event_type: str,
+        data: Dict[str, Any],
+    ) -> str:
+        """
+        Emit a raw event with custom type and data.
+
+        Use for custom event types not defined in StreamEventType.
+        """
+        event = StreamEvent(type=event_type, data=data)
+        return event.to_sse()
 
 
 # ============================================================================

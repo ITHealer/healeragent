@@ -489,6 +489,63 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         return tc.get("function", {}).get("name", "unknown")
         return "unknown"
 
+    def _convert_args_to_dict(self, args) -> Dict[str, Any]:
+        """
+        Convert Gemini MapComposite/protobuf args to a plain Python dict.
+
+        MapComposite is a Gemini SDK wrapper around protobuf Struct.
+        It doesn't have DESCRIPTOR attribute, so json_format.MessageToDict fails.
+        We need to recursively convert it to a plain dict.
+
+        Args:
+            args: MapComposite, protobuf Struct, or dict-like object
+
+        Returns:
+            Plain Python dict that can be JSON serialized
+        """
+        if args is None:
+            return {}
+
+        # Method 1: Try to get underlying protobuf and use MessageToDict
+        if hasattr(args, '_pb'):
+            try:
+                return json_format.MessageToDict(args._pb)
+            except Exception:
+                pass
+
+        # Method 2: Try MessageToDict directly (for real protobuf messages)
+        if hasattr(args, 'DESCRIPTOR'):
+            try:
+                return json_format.MessageToDict(args)
+            except Exception:
+                pass
+
+        # Method 3: Recursively convert MapComposite/dict-like objects
+        def recursive_convert(obj):
+            """Recursively convert nested structures to plain Python types."""
+            if obj is None:
+                return None
+            elif isinstance(obj, (str, int, float, bool)):
+                return obj
+            elif isinstance(obj, bytes):
+                return obj.decode('utf-8', errors='replace')
+            elif hasattr(obj, 'items'):  # Dict-like (including MapComposite)
+                return {str(k): recursive_convert(v) for k, v in obj.items()}
+            elif hasattr(obj, '__iter__'):  # List-like
+                return [recursive_convert(item) for item in obj]
+            else:
+                # Try to convert to string as last resort
+                try:
+                    return str(obj)
+                except Exception:
+                    return None
+
+        try:
+            return recursive_convert(args)
+        except Exception as e:
+            self.logger.warning(f"[GEMINI] Failed to convert args to dict: {e}")
+            return {}
+
     def _convert_params(self, openai_params: Dict[str, Any]) -> Dict[str, Any]:
         """Convert OpenAI parameters to Gemini parameters"""
         gemini_params = {}
@@ -522,6 +579,13 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             if hasattr(response, 'candidates') and response.candidates:
                 candidate = response.candidates[0]
 
+                # Debug: Log candidate structure
+                self.logger.debug(
+                    f"[GEMINI] Candidate: finish_reason={getattr(candidate, 'finish_reason', None)}, "
+                    f"has_content={hasattr(candidate, 'content')}, "
+                    f"content_is_none={getattr(candidate, 'content', None) is None}"
+                )
+
                 # Extract finish_reason
                 if hasattr(candidate, 'finish_reason'):
                     gemini_reason = str(candidate.finish_reason)
@@ -537,8 +601,23 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         finish_reason = gemini_reason.lower()
 
                 # Extract content, thinking, and function calls from parts
-                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                    for idx, part in enumerate(candidate.content.parts):
+                # Fix: Properly check if content and parts exist
+                candidate_content = getattr(candidate, 'content', None)
+                if candidate_content is not None and hasattr(candidate_content, 'parts') and candidate_content.parts:
+                    num_parts = len(candidate_content.parts)
+                    self.logger.debug(f"[GEMINI] Processing {num_parts} parts from response")
+
+                    for idx, part in enumerate(candidate_content.parts):
+                        # Debug: Log part type
+                        part_type = "unknown"
+                        if hasattr(part, 'text') and part.text:
+                            part_type = "text"
+                        elif hasattr(part, 'function_call') and part.function_call:
+                            part_type = "function_call"
+                        elif hasattr(part, 'thought') and part.thought:
+                            part_type = "thought"
+                        self.logger.debug(f"[GEMINI] Part {idx}: type={part_type}")
+
                         # Text content
                         if hasattr(part, 'text') and part.text:
                             content += part.text
@@ -552,12 +631,17 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         # Function call with thought_signature
                         if hasattr(part, 'function_call') and part.function_call:
                             fc = part.function_call
+
+                            # Convert MapComposite/protobuf Struct to dict properly
+                            # fc.args is a MapComposite (Gemini SDK wrapper), not a standard protobuf
+                            args_dict = self._convert_args_to_dict(fc.args)
+
                             tool_call = {
                                 "id": f"call_{fc.name}_{len(tool_calls)}",
                                 "type": "function",
                                 "function": {
                                     "name": fc.name,
-                                    "arguments": json.dumps(dict(fc.args)) if fc.args else "{}",
+                                    "arguments": json.dumps(args_dict),
                                 }
                             }
 
@@ -616,13 +700,58 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                             finish_reason = "tool_calls"
                             self.logger.info(f"[GEMINI] Function call: {fc.name}")
 
+                else:
+                    # Log when content or parts are missing/empty
+                    # Note: hasattr returns True even for empty parts list
+                    parts_count = 0
+                    parts_info = []
+                    if candidate_content and hasattr(candidate_content, 'parts'):
+                        parts_count = len(candidate_content.parts) if candidate_content.parts else 0
+                        # Log what types of parts exist (even if they don't have content)
+                        for i, part in enumerate(candidate_content.parts or []):
+                            part_attrs = []
+                            for attr in ['text', 'thought', 'function_call', 'function_response', 'inline_data', 'file_data']:
+                                if hasattr(part, attr) and getattr(part, attr):
+                                    part_attrs.append(attr)
+                            parts_info.append(f"part[{i}]={','.join(part_attrs) or 'empty'}")
+
+                    self.logger.warning(
+                        f"[GEMINI] Empty/unhandled parts in response. "
+                        f"candidate_content_exists={candidate_content is not None}, "
+                        f"parts_count={parts_count}, "
+                        f"parts_info={parts_info}, "
+                        f"finish_reason={finish_reason}"
+                    )
+
+                    # Fallback: Try response.text if parts is empty but response exists
+                    # This handles edge cases where SDK wraps content differently
+                    try:
+                        if hasattr(response, 'text') and response.text:
+                            content = response.text
+                            self.logger.info(f"[GEMINI] Recovered content via response.text fallback (len={len(content)})")
+                    except (ValueError, AttributeError) as e:
+                        self.logger.debug(f"[GEMINI] response.text fallback failed: {e}")
+            else:
+                # No candidates in response
+                self.logger.warning(
+                    f"[GEMINI] No candidates in response. "
+                    f"has_candidates={hasattr(response, 'candidates')}, "
+                    f"candidates_empty={not response.candidates if hasattr(response, 'candidates') else 'N/A'}"
+                )
+
         except Exception as e:
-            self.logger.debug(f"[GEMINI] Could not extract response details: {e}")
+            self.logger.error(f"[GEMINI] Error extracting response details: {e}", exc_info=True)
             # Fallback to basic text extraction
             try:
                 content = response.text
             except:
                 content = ""
+
+        # Log final result summary
+        self.logger.info(
+            f"[GEMINI] Response parsed: content_len={len(content)}, "
+            f"tool_calls={len(tool_calls)}, finish_reason={finish_reason}"
+        )
 
         result = {
             "content": content,

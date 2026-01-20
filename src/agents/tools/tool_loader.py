@@ -113,13 +113,52 @@ TOOL_DEFINITIONS = {
     ],
 
     # ========================================================================
-    # WEB TOOLS (2) - Web Search
+    # WEB TOOLS (1) - Web Search
     # - WebSearchTool: PRIMARY OpenAI + FALLBACK Tavily (merged)
-    # - SerpSearchTool: Alternative (SerpAPI/Google)
     # ========================================================================
     "web": [
         ("src.agents.tools.web", "WebSearchTool", "tavily_api_key"),  # OpenAI primary, Tavily fallback
-        ("src.agents.tools.web", "SerpSearchTool", "serpapi_api_key"),
+    ],
+
+    # ========================================================================
+    # FINANCE GURU TOOLS - Quantitative Analysis
+    # These are COMPUTATION tools that work with data from existing tools.
+    # See: docs/ARCHITECTURE_CHAT_V2.md for integration details.
+    #
+    # Phase 1: Valuation (calculateDCF, calculateGraham, calculateDDM) ✅ IMPLEMENTED
+    # Phase 2: Enhanced Technical (Ichimoku, Fibonacci, etc.) ✅ IMPLEMENTED
+    # Phase 3: Enhanced Risk (VaR, Sharpe, Sortino, etc.) ✅ IMPLEMENTED
+    # Phase 4: Portfolio (analyzePortfolio, calculateCorrelation) ✅ IMPLEMENTED
+    # Phase 5: Backtest (runBacktest, compareStrategies) ✅ IMPLEMENTED
+    # ========================================================================
+    "finance_guru": [
+        # Phase 1: Valuation Tools
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateDCFTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateGrahamTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateDDMTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "GetValuationSummaryTool", None),
+        # Phase 2: Enhanced Technical Indicators
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetIchimokuCloudTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetFibonacciLevelsTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetWilliamsRTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetCCITool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetParabolicSARTool", None),
+        ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetEnhancedTechnicalsTool", None),
+        # Phase 3: Enhanced Risk Metrics
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetRiskMetricsTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetVaRTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetSharpeRatioTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetMaxDrawdownTool", None),
+        ("src.agents.tools.finance_guru.tools.risk_metrics", "GetBetaAlphaTool", None),
+        # Phase 4: Portfolio Analysis
+        ("src.agents.tools.finance_guru.tools.portfolio", "OptimizePortfolioTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "GetCorrelationMatrixTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "GetEfficientFrontierTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "AnalyzePortfolioDiversificationTool", None),
+        ("src.agents.tools.finance_guru.tools.portfolio", "SuggestRebalancingTool", None),
+        # Phase 5: Backtest Engine
+        ("src.agents.tools.finance_guru.tools.backtest", "RunBacktestTool", None),
+        ("src.agents.tools.finance_guru.tools.backtest", "CompareStrategiesTool", None),
     ],
 
 }
@@ -139,7 +178,6 @@ def _create_tool_instance(
     init_arg: Optional[str],
     api_key: Optional[str],
     tavily_api_key: Optional[str] = None,
-    serpapi_api_key: Optional[str] = None,
     openai_api_key: Optional[str] = None,
 ):
     """Create tool instance with optional init argument"""
@@ -149,8 +187,6 @@ def _create_tool_instance(
         return tool_class(api_key=api_key)
     elif init_arg == "tavily_api_key":
         return tool_class(api_key=tavily_api_key)
-    elif init_arg == "serpapi_api_key":
-        return tool_class(api_key=serpapi_api_key)
     elif init_arg == "openai_api_key":
         return tool_class(api_key=openai_api_key)
     else:
@@ -174,7 +210,6 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
     # Get API keys
     fmp_api_key = os.environ.get("FMP_API_KEY")
     tavily_api_key = os.environ.get("TAVILY_API_KEY")
-    serpapi_api_key = os.environ.get("SERPAPI_KEY")
     openai_api_key = os.environ.get("OPENAI_API_KEY")
 
     if not fmp_api_key:
@@ -182,9 +217,6 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
 
     if not openai_api_key and not tavily_api_key:
         logger.warning("Neither OPENAI_API_KEY nor TAVILY_API_KEY set - web search disabled")
-
-    if not serpapi_api_key:
-        logger.info("SERPAPI_KEY not set - SerpAPI search disabled")
 
     # Register tools by category
     for category, tools in TOOL_DEFINITIONS.items():
@@ -198,7 +230,6 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                     init_arg=init_arg,
                     api_key=fmp_api_key,
                     tavily_api_key=tavily_api_key,
-                    serpapi_api_key=serpapi_api_key,
                     openai_api_key=openai_api_key,
                 )
                 
@@ -212,9 +243,11 @@ def load_all_tools() -> Tuple["ToolRegistry", List[str]]:
                 logger.warning(f"Could not import {class_name}: {e}")
                 
             except Exception as e:
+                import traceback
                 error_msg = f"{class_name}: {e}"
                 failed_imports.append(error_msg)
                 logger.error(f"Error creating {class_name}: {e}")
+                logger.error(f"Full traceback:\n{traceback.format_exc()}")
         
         # if category_count > 0:
         #     logger.info(f"{category}: {category_count} tools registered")

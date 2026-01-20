@@ -1,6 +1,18 @@
 """
 Unified Classifier
 
+================================================================================
+LEGACY NOTICE: This module is ONLY used by the legacy /chat endpoint.
+               The new /chat/v2 endpoint uses IntentClassifier instead.
+
+For /chat/v2:
+- Use IntentClassifier from src/agents/classification/intent_classifier.py
+- IntentClassifier returns IntentResult (not UnifiedClassificationResult)
+- Symbol normalization is included in IntentClassifier
+
+See: docs/ARCHITECTURE_CHAT_V2.md for the new architecture.
+================================================================================
+
 Merges query classification and tool necessity validation into a single LLM call.
 Follows Anthropic's structured output pattern with <reasoning> + <classification> tags.
 

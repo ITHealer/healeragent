@@ -1,6 +1,18 @@
 """
 LLM Tool Router - ChatGPT-Style 2-Phase Tool Selection
 
+================================================================================
+LEGACY NOTICE: This module is ONLY used by the legacy /chat endpoint.
+               The new /chat/v2 endpoint does NOT use LLMToolRouter.
+
+For /chat/v2:
+- Agent sees ALL tools directly (no pre-selection by Router)
+- Uses IntentClassifier instead of UnifiedClassifier
+- Uses run_stream_with_all_tools() instead of run_stream()
+
+See: docs/ARCHITECTURE_CHAT_V2.md for the new architecture.
+================================================================================
+
 The Router receives a query and ALL tool summaries, then outputs:
 - selected_tools: Which tools are needed
 - complexity: simple/medium/complex
@@ -9,7 +21,7 @@ The Router receives a query and ALL tool summaries, then outputs:
 This eliminates "category blindness" by letting the LLM see all tools
 before making selection decisions.
 
-Usage:
+Usage (LEGACY /chat endpoint only):
     router = LLMToolRouter()
     decision = await router.route(
         query="What is NVDA's RSI?",

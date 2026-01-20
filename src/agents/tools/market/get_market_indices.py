@@ -250,9 +250,10 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
         # Add major indices
         for symbol, idx_data in major_indices.items():
             name = index_names.get(symbol, idx_data.get("name", symbol))
-            price = idx_data.get("price", 0)
-            change = idx_data.get("change", 0)
-            change_pct = idx_data.get("changes_percentage", 0)
+            # Use 'or 0' to handle both missing keys AND None values
+            price = idx_data.get("price") or 0
+            change = idx_data.get("change") or 0
+            change_pct = idx_data.get("changes_percentage") or 0
 
             sign = "+" if change >= 0 else ""
             emoji = "🟢" if change >= 0 else "🔴"
@@ -269,9 +270,10 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
                 break
 
         if vix_data:
-            vix_price = vix_data.get("price", 0)
-            vix_change = vix_data.get("change", 0)
-            vix_pct = vix_data.get("changesPercentage", 0)
+            # Use 'or 0' to handle both missing keys AND None values
+            vix_price = vix_data.get("price") or 0
+            vix_change = vix_data.get("change") or 0
+            vix_pct = vix_data.get("changesPercentage") or 0
             sign = "+" if vix_change >= 0 else ""
 
             # VIX interpretation
@@ -294,11 +296,11 @@ class GetMarketIndicesTool(BaseTool, LoggerMixin):
         # Calculate overall market direction
         bullish_count = sum(
             1 for idx in indices
-            if idx.get("changesPercentage", 0) > 0
+            if (idx.get("changesPercentage") or 0) > 0
         )
         bearish_count = sum(
             1 for idx in indices
-            if idx.get("changesPercentage", 0) < 0
+            if (idx.get("changesPercentage") or 0) < 0
         )
 
         if bullish_count > bearish_count * 1.5:
