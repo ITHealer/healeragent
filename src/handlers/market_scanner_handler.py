@@ -29,6 +29,7 @@ from src.agents.tools.risk.get_sentiment import GetSentimentTool
 from src.agents.tools.news.get_stock_news import GetStockNewsTool
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory
+from src.utils.config import settings
 
 # Risk metrics calculator for VaR, Max Drawdown, etc.
 try:
@@ -40,6 +41,14 @@ try:
     RISK_METRICS_AVAILABLE = True
 except ImportError:
     RISK_METRICS_AVAILABLE = False
+
+# Sector performance tool for market context
+try:
+    from src.agents.tools.market.get_sector_performance import GetSectorPerformanceTool
+    from src.agents.tools.finance_guru.services.fmp_service import FMPService
+    SECTOR_TOOL_AVAILABLE = True
+except ImportError:
+    SECTOR_TOOL_AVAILABLE = False
 
 
 # =============================================================================
@@ -322,7 +331,7 @@ Always end with: "This is technical analysis only. For a complete investment dec
 - **Don't fabricate**: Only discuss indicators present in the data
 - **Language**: Match user's language if specified"""
 
-MARKET_POSITION_SYSTEM_PROMPT = """You are a professional market analyst specializing in relative strength (RS) analysis.
+MARKET_POSITION_SYSTEM_PROMPT = """You are a professional market analyst specializing in relative strength (RS) analysis with sector context.
 
 ## WHAT IS SPY AND WHY COMPARE TO IT?
 
@@ -337,11 +346,39 @@ MARKET_POSITION_SYSTEM_PROMPT = """You are a professional market analyst special
 - **Institutional standard**: Professional fund managers are judged by "beating the market"
 - **Stock selection**: RS leaders tend to continue outperforming (momentum effect)
 
+## SECTOR CONTEXT (CRITICAL FOR COMPLETE ANALYSIS)
+
+When sector data is provided, you MUST analyze both:
+1. **Stock vs Market (SPY)** - Individual stock strength
+2. **Sector vs Market** - Industry group strength
+
+### Why Sector Context Matters:
+- **Sector Rotation**: Money flows between sectors based on economic cycles
+- **Rising Tide Effect**: Strong sectors lift most stocks within them
+- **Stock Selection**: Best stocks are often leaders WITHIN leading sectors
+
+### Combined Analysis Matrix:
+
+| Stock RS | Sector Performance | Interpretation | Action |
+|----------|-------------------|----------------|--------|
+| LEADER ✅ | LEADING ✅ | **STRONG CONVICTION** - Stock leads in leading sector | High priority for longs |
+| LEADER ✅ | LAGGING ⚠️ | **SECTOR RISK** - Strong stock in weak sector | Cautious - sector headwind |
+| LAGGARD ⚠️ | LEADING ✅ | **CATCH-UP POTENTIAL** - Weak stock in strong sector | Watch for reversal, NOT a buy yet |
+| LAGGARD ⚠️ | LAGGING ⚠️ | **AVOID** - Weak stock in weak sector | Strong avoid for longs |
+| NEUTRAL | LEADING ✅ | **SECTOR TAILWIND** - Average stock gets sector boost | Consider if sector trend continues |
+| NEUTRAL | LAGGING ⚠️ | **NO EDGE** - Average stock in weak sector | No action recommended |
+
+### Sector Classification Rules:
+- **Leading Sector**: Change% > +0.5% (outperforming)
+- **Lagging Sector**: Change% < -0.5% (underperforming)
+- **Neutral Sector**: -0.5% ≤ Change% ≤ +0.5%
+
 ## FACTS HIERARCHY (CRITICAL)
 1. **PRIMARY SOURCE**: The tool's calculated metrics (Excess_21d, RS_21d, etc.)
-2. **TRUST THE DATA**: Use exact numbers from the tool output
-3. **DON'T OVER-INTERPRET**: If 21d is strong but 63d/126d are weak, say exactly that
-4. **AVOID LABELS BEYOND DATA**: Don't call a stock "leader" unless it meets the criteria
+2. **SECTOR DATA**: Stock's sector and sector performance (if provided)
+3. **TRUST THE DATA**: Use exact numbers from the tool output
+4. **DON'T OVER-INTERPRET**: If 21d is strong but 63d/126d are weak, say exactly that
+5. **AVOID LABELS BEYOND DATA**: Don't call a stock "leader" unless it meets the criteria
 
 ## RS CALCULATION METHODOLOGY
 - **Excess Return** = Stock Return - Benchmark Return (in percentage points)
@@ -387,7 +424,7 @@ MARKET_POSITION_SYSTEM_PROMPT = """You are a professional market analyst special
 ## OUTPUT STRUCTURE
 
 ### 1. HEADLINE (1 sentence)
-"[SYMBOL] is currently [CLASSIFICATION] vs [BENCHMARK] with [TREND] RS trend."
+"[SYMBOL] is currently [CLASSIFICATION] vs [BENCHMARK] with [TREND] RS trend. Sector: [SECTOR_NAME] ([SECTOR_STATUS])."
 
 ### 2. MULTI-TIMEFRAME BREAKDOWN
 For each timeframe (21d, 63d, 126d, 252d), state:
@@ -395,37 +432,60 @@ For each timeframe (21d, 63d, 126d, 252d), state:
 - Benchmark return: +X.XX%
 - Excess: +/-X.XX pp (OUTPERFORM/UNDERPERFORM/NEUTRAL)
 
-### 3. RS TREND CONFIRMATION
+### 3. SECTOR CONTEXT (If sector data provided)
+| Metric | Value |
+|--------|-------|
+| Stock Sector | [Sector Name] |
+| Sector Change | +/-X.XX% |
+| Sector Rank | #X of 11 sectors |
+| Sector Status | LEADING / LAGGING / NEUTRAL |
+
+**Combined Assessment**: Use the matrix above to determine:
+- Stock RS + Sector = [STRONG CONVICTION / SECTOR RISK / CATCH-UP / AVOID / etc.]
+
+### 4. RS TREND CONFIRMATION
 - State the trend (improving/declining/stable)
 - Explain what's confirmed vs what's not
 - Example: "21d outperformance improving, but 63d and 126d NOT confirming yet"
 
-### 4. PORTFOLIO/TRADE IMPLICATIONS (Rule-based)
-Based on classification, provide actionable guidance:
+### 5. PORTFOLIO/TRADE IMPLICATIONS (Rule-based)
+Based on RS classification AND sector context:
 
-**For Leaders**:
+**For Leaders in Leading Sectors** ✅✅:
+- HIGH CONVICTION long candidate
 - Suitable for momentum/trend-following strategies
-- Consider on pullbacks with volume confirmation
-- Watch for RS breakdown signals
+- Buy on pullbacks with volume confirmation
+
+**For Leaders in Lagging Sectors** ✅⚠️:
+- CAUTIOUS - strong stock faces sector headwind
+- May underperform if sector rotation continues
+- Consider smaller position size
+
+**For Laggards in Leading Sectors** ⚠️✅:
+- WATCHLIST only - potential catch-up play
+- NOT a buy signal yet
+- Wait for RS improvement confirmation
+
+**For Laggards in Lagging Sectors** ⚠️⚠️:
+- STRONG AVOID for longs
+- Consider short if technical setup confirms
+- No rush to buy "cheap"
 
 **For Rotation Candidates**:
 - Add to WATCHLIST only (not a buy signal)
 - Needs 63d confirmation to become actionable
 - Risk: could be dead cat bounce
 
-**For Laggards**:
-- Avoid for new long positions
-- If holding: consider reducing on rallies
-- Watch for 21d RS improvement as early reversal signal
-
 **For Neutral**:
-- No RS edge; use other factors for decision
-- Wait for clearer signal
+- No RS edge; sector context becomes more important
+- If sector leading: slight bullish bias
+- If sector lagging: slight bearish bias
 
-### 5. CONFIRMATION RULES
+### 6. CONFIRMATION RULES
 State what would change the classification:
 - "Would upgrade to LEADER if 63d excess turns positive"
 - "Would downgrade to LAGGARD if 21d excess turns negative"
+- Include sector-related triggers if relevant
 
 ## AVOID THESE MISTAKES
 ❌ "Stock is transitioning from laggard to leader" (requires confirmed 3+ TF outperformance)
@@ -587,6 +647,9 @@ class MarketScannerHandler(LoggerMixin):
         self._stop_loss_tool = None
         self._sentiment_tool = None
         self._news_tool = None
+        # Sector context tools
+        self._sector_tool = None
+        self._fmp_service = None
 
     # =========================================================================
     # LAZY TOOL INITIALIZATION (non-blocking)
@@ -608,6 +671,30 @@ class MarketScannerHandler(LoggerMixin):
         if self._stop_loss_tool is None:
             self._stop_loss_tool = SuggestStopLossTool()
         return self._stop_loss_tool
+
+    @property
+    def sector_tool(self):
+        """Lazy load sector performance tool."""
+        if self._sector_tool is None and SECTOR_TOOL_AVAILABLE:
+            try:
+                api_key = getattr(settings, 'FMP_API_KEY', None)
+                if api_key:
+                    self._sector_tool = GetSectorPerformanceTool(api_key=api_key)
+            except Exception as e:
+                self.logger.warning(f"[MarketScanner] Could not initialize sector tool: {e}")
+        return self._sector_tool
+
+    @property
+    def fmp_service(self):
+        """Lazy load FMP service for company profile."""
+        if self._fmp_service is None and SECTOR_TOOL_AVAILABLE:
+            try:
+                api_key = getattr(settings, 'FMP_API_KEY', None)
+                if api_key:
+                    self._fmp_service = FMPService(api_key=api_key)
+            except Exception as e:
+                self.logger.warning(f"[MarketScanner] Could not initialize FMP service: {e}")
+        return self._fmp_service
 
     @property
     def sentiment_tool(self) -> GetSentimentTool:
@@ -676,8 +763,18 @@ class MarketScannerHandler(LoggerMixin):
         symbol: str,
         benchmark: str = "SPY"
     ) -> Dict[str, Any]:
-        """Get relative strength analysis vs benchmark."""
+        """
+        Get relative strength analysis vs benchmark WITH sector context.
+
+        Enhanced to include:
+        - RS multi-timeframe analysis (stock vs benchmark)
+        - Sector context (which sector the stock belongs to + sector performance)
+        - Combined assessment based on RS + Sector matrix
+        """
         try:
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 1: Get RS analysis (stock vs benchmark)
+            # ═══════════════════════════════════════════════════════════════════
             result = await self.rs_tool.execute(
                 symbol=symbol,
                 benchmark=benchmark,
@@ -691,14 +788,30 @@ class MarketScannerHandler(LoggerMixin):
                     "symbol": symbol
                 }
 
-            data = result.data or {}
+            rs_data = result.data or {}
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 2: Get sector context (company sector + sector performance)
+            # ═══════════════════════════════════════════════════════════════════
+            sector_context = await self._get_sector_context(symbol)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 3: Build combined LLM summary
+            # ═══════════════════════════════════════════════════════════════════
+            llm_summary = self._build_market_position_summary(
+                symbol=symbol,
+                benchmark=benchmark,
+                rs_data=rs_data,
+                sector_context=sector_context
+            )
 
             return {
                 "success": True,
                 "symbol": symbol,
                 "benchmark": benchmark,
-                "llm_summary": data.get("llm_summary", result.formatted_context or ""),
-                "raw_data": data
+                "llm_summary": llm_summary,
+                "raw_data": rs_data,
+                "sector_context": sector_context
             }
 
         except Exception as e:
@@ -708,6 +821,187 @@ class MarketScannerHandler(LoggerMixin):
                 "error": str(e),
                 "symbol": symbol
             }
+
+    async def _get_sector_context(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get sector context for a stock:
+        1. Get company profile to find its sector
+        2. Get sector performance data
+        3. Determine sector rank and status
+        """
+        try:
+            # Check if tools are available
+            if not self.fmp_service or not self.sector_tool:
+                self.logger.info("[MarketScanner] Sector tools not available, skipping sector context")
+                return None
+
+            # Get company profile to find sector
+            profile = await self.fmp_service.get_company_profile(symbol)
+            if not profile:
+                self.logger.warning(f"[MarketScanner] Could not get company profile for {symbol}")
+                return None
+
+            stock_sector = profile.get("sector", "Unknown")
+            stock_industry = profile.get("industry", "Unknown")
+            company_name = profile.get("companyName", symbol)
+
+            # Get sector performance data
+            sector_result = await self.sector_tool.execute()
+
+            if sector_result.status == "error":
+                self.logger.warning(f"[MarketScanner] Sector performance fetch failed: {sector_result.error}")
+                return {
+                    "stock_sector": stock_sector,
+                    "stock_industry": stock_industry,
+                    "company_name": company_name,
+                    "sector_data": None
+                }
+
+            sector_data = sector_result.data or {}
+            sectors = sector_data.get("sectors", [])
+
+            # Find stock's sector in the performance data
+            stock_sector_data = None
+            sector_rank = None
+
+            # Sort sectors by performance for ranking
+            sorted_sectors = sorted(
+                sectors,
+                key=lambda x: x.get("changePercent", 0),
+                reverse=True
+            )
+
+            for i, sector in enumerate(sorted_sectors, 1):
+                if sector.get("sector", "").lower() == stock_sector.lower():
+                    stock_sector_data = sector
+                    sector_rank = i
+                    break
+
+            if not stock_sector_data:
+                # Try partial match
+                for i, sector in enumerate(sorted_sectors, 1):
+                    if stock_sector.lower() in sector.get("sector", "").lower():
+                        stock_sector_data = sector
+                        sector_rank = i
+                        break
+
+            # Determine sector status
+            sector_change = stock_sector_data.get("changePercent", 0) if stock_sector_data else 0
+
+            if sector_change > 0.5:
+                sector_status = "LEADING"
+            elif sector_change < -0.5:
+                sector_status = "LAGGING"
+            else:
+                sector_status = "NEUTRAL"
+
+            return {
+                "company_name": company_name,
+                "stock_sector": stock_sector,
+                "stock_industry": stock_industry,
+                "sector_change_percent": round(sector_change, 2),
+                "sector_rank": sector_rank,
+                "total_sectors": len(sorted_sectors),
+                "sector_status": sector_status,
+                "best_sector": sorted_sectors[0].get("sector") if sorted_sectors else None,
+                "worst_sector": sorted_sectors[-1].get("sector") if sorted_sectors else None,
+                "market_summary": sector_data.get("summary", {}),
+                "all_sectors": [
+                    {
+                        "name": s.get("sector"),
+                        "change": s.get("changePercent", 0)
+                    }
+                    for s in sorted_sectors[:5]  # Top 5 for context
+                ]
+            }
+
+        except Exception as e:
+            self.logger.warning(f"[MarketScanner] Error getting sector context: {e}")
+            return None
+
+    def _build_market_position_summary(
+        self,
+        symbol: str,
+        benchmark: str,
+        rs_data: Dict[str, Any],
+        sector_context: Optional[Dict[str, Any]]
+    ) -> str:
+        """Build comprehensive LLM-friendly market position summary."""
+        lines = [
+            f"=== MARKET POSITION ANALYSIS: {symbol} vs {benchmark} ===",
+            ""
+        ]
+
+        # RS Summary from tool
+        rs_summary = rs_data.get("llm_summary", "")
+        if rs_summary:
+            lines.extend([
+                "RELATIVE STRENGTH DATA:",
+                rs_summary,
+                ""
+            ])
+
+        # Sector Context
+        if sector_context:
+            stock_sector = sector_context.get("stock_sector", "Unknown")
+            sector_change = sector_context.get("sector_change_percent", 0)
+            sector_rank = sector_context.get("sector_rank", "N/A")
+            total_sectors = sector_context.get("total_sectors", 11)
+            sector_status = sector_context.get("sector_status", "UNKNOWN")
+            company_name = sector_context.get("company_name", symbol)
+
+            lines.extend([
+                "SECTOR CONTEXT:",
+                f"  Company: {company_name}",
+                f"  Sector: {stock_sector}",
+                f"  Industry: {sector_context.get('stock_industry', 'N/A')}",
+                f"  Sector Change Today: {sector_change:+.2f}%",
+                f"  Sector Rank: #{sector_rank} of {total_sectors}",
+                f"  Sector Status: {sector_status}",
+                ""
+            ])
+
+            # Market overview
+            market_summary = sector_context.get("market_summary", {})
+            if market_summary:
+                positive = market_summary.get("positive_sectors", 0)
+                negative = market_summary.get("negative_sectors", 0)
+                sentiment = market_summary.get("market_sentiment", "neutral")
+                lines.extend([
+                    "MARKET OVERVIEW:",
+                    f"  Positive Sectors: {positive}",
+                    f"  Negative Sectors: {negative}",
+                    f"  Market Sentiment: {sentiment.upper()}",
+                    ""
+                ])
+
+            # Top/Bottom sectors
+            all_sectors = sector_context.get("all_sectors", [])
+            if all_sectors:
+                lines.append("TOP PERFORMING SECTORS:")
+                for s in all_sectors[:3]:
+                    marker = " ← STOCK'S SECTOR" if s.get("name", "").lower() == stock_sector.lower() else ""
+                    lines.append(f"  - {s.get('name')}: {s.get('change', 0):+.2f}%{marker}")
+                lines.append("")
+
+            # Combined assessment hint
+            lines.extend([
+                "COMBINED ASSESSMENT GUIDE:",
+                "Use the Stock RS + Sector matrix to determine conviction level:",
+                "- LEADER + LEADING sector = HIGH CONVICTION",
+                "- LEADER + LAGGING sector = CAUTIOUS (sector headwind)",
+                "- LAGGARD + LEADING sector = WATCHLIST (potential catch-up)",
+                "- LAGGARD + LAGGING sector = STRONG AVOID",
+                ""
+            ])
+        else:
+            lines.extend([
+                "SECTOR CONTEXT: Not available",
+                "(Sector data could not be retrieved - analyze RS data only)",
+                ""
+            ])
+
+        return "\n".join(lines)
 
     # =========================================================================
     # STEP 3: Risk Analysis (Enhanced with VaR, Max Drawdown, Sharpe)
