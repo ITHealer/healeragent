@@ -30,6 +30,17 @@ from src.agents.tools.news.get_stock_news import GetStockNewsTool
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory
 
+# Risk metrics calculator for VaR, Max Drawdown, etc.
+try:
+    from src.agents.tools.finance_guru.calculators.risk_metrics import (
+        RiskMetricsCalculator,
+        RiskCalculationConfig,
+    )
+    from src.agents.tools.finance_guru.models.risk_metrics import RiskDataInput
+    RISK_METRICS_AVAILABLE = True
+except ImportError:
+    RISK_METRICS_AVAILABLE = False
+
 
 # =============================================================================
 # SYSTEM PROMPTS WITH FACTS HIERARCHY
@@ -455,18 +466,68 @@ Always end with this note:
 RS analysis shows whether the stock is strong or weak RELATIVE TO THE MARKET, but does not indicate whether the price is reasonable."
 """
 
-RISK_ANALYSIS_SYSTEM_PROMPT = """You are a professional risk manager providing clear risk analysis.
+RISK_ANALYSIS_SYSTEM_PROMPT = """You are a professional risk manager providing clear, actionable risk analysis for both beginners and experienced traders.
+
+## IMPORTANT CONTEXT
+When entry_price equals current_price (indicated in the data), frame your analysis as:
+**"What are the risks if I buy this stock RIGHT NOW?"**
+
+This helps new investors understand:
+- How much they could lose if the stock drops
+- Where to place stop-loss orders
+- How to size their position appropriately
 
 ## FACTS HIERARCHY
-1. **PRIMARY SOURCE**: Stop loss levels and volatility data from the tool
-2. **POSITION SIZING**: Base on ATR% and volatility regime
-3. **BE SPECIFIC**: Use exact price levels for stops
+1. **PRIMARY SOURCE**: Stop loss levels, VaR, and volatility data from the tool
+2. **ADVANCED METRICS**: If VaR/CVaR/Sharpe/MaxDrawdown available, use them for deeper insights
+3. **POSITION SIZING**: Base on ATR% and volatility regime
+4. **BE SPECIFIC**: Use exact price levels and dollar amounts
 
 ## OUTPUT STRUCTURE
-1. **Volatility Assessment**: Current ATR%, volatility regime
-2. **Stop Loss Levels**: ATR-based, Support-based, Percentage-based
-3. **Position Sizing Guidance**: Based on risk tolerance
-4. **Risk/Reward**: If entry price provided
+
+### 1. **SNAPSHOT** (Always include)
+- Symbol and current price
+- Entry price (note if using current price: "Analyzing risk if buying NOW at $XXX")
+- Data freshness
+
+### 2. **RISK OVERVIEW** (Beginner-friendly explanation)
+- **Volatility Regime**: Low/Normal/High/Extreme and what it means
+- **Risk Score**: X/100 with interpretation
+- **In Simple Terms**: "This stock typically moves X% per day"
+
+### 3. **STOP LOSS LEVELS** (Most important for new traders)
+Present 3 options clearly:
+| Method | Price | Risk % | Risk $ (per share) |
+|--------|-------|--------|-------------------|
+| Conservative (ATR 2x) | $XXX | X.X% | $X.XX |
+| Moderate (5% rule) | $XXX | 5.0% | $X.XX |
+| Aggressive (7% rule) | $XXX | 7.0% | $X.XX |
+
+**Recommendation**: Based on volatility, suggest ONE method
+
+### 4. **ADVANCED RISK METRICS** (If available)
+- **VaR (95%)**: There's a 5% chance of losing more than X% in a day
+- **CVaR/Expected Shortfall**: In worst-case scenarios, expect to lose ~X%
+- **Max Drawdown**: Historically, the stock dropped as much as X% from peak
+- **Sharpe Ratio**: Risk-adjusted return quality (poor/acceptable/good/excellent)
+
+### 5. **POSITION SIZING CALCULATOR**
+Example for $10,000 account with 2% risk tolerance ($200 max loss):
+- Stop distance: $X.XX per share
+- Maximum shares: XXX shares
+- Position value: $X,XXX
+
+### 6. **RISK SCENARIOS** (What could happen)
+| Scenario | Trigger | Action |
+|----------|---------|--------|
+| Stop Hit | Price drops to $XXX | Exit position, accept X% loss |
+| Target 1 | Price rises to $XXX | Consider taking partial profit |
+| Worst Case | Based on MaxDD | Could lose up to X% if held through |
+
+### 7. **KEY WARNINGS**
+- List specific risk factors for this stock
+- Gap risk warning if high volatility
+- Any concerning metrics from VaR/Drawdown
 
 ## IMPORTANT REMINDER
 Always end with this note:
@@ -476,6 +537,12 @@ Always end with this note:
 - **Market Position**: Stock's relative strength compared to the market
 - **Sentiment & News**: Recent news that may impact risk
 - **Fundamental Analysis**: Company's financial risks (debt, cash flow)"
+
+## RULES
+- **Use tables** for stop loss levels and scenarios
+- **Show calculations** so users can verify
+- **Beginner-friendly** language with explanations
+- **Language**: Match user's language if specified
 """
 
 SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in sentiment and news analysis.
@@ -643,15 +710,23 @@ class MarketScannerHandler(LoggerMixin):
             }
 
     # =========================================================================
-    # STEP 3: Risk Analysis
+    # STEP 3: Risk Analysis (Enhanced with VaR, Max Drawdown, Sharpe)
     # =========================================================================
     async def get_risk_analysis(
         self,
         symbol: str,
         entry_price: Optional[float] = None
     ) -> Dict[str, Any]:
-        """Get risk analysis with stop loss suggestions."""
+        """
+        Get enhanced risk analysis with:
+        - Stop loss suggestions (ATR, Support, Percentage-based)
+        - Advanced risk metrics (VaR, CVaR, Max Drawdown, Sharpe) from risk_metrics.py
+        - Current price as default entry_price for "buy now" analysis
+        """
         try:
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 1: Get stop loss analysis (includes current_price)
+            # ═══════════════════════════════════════════════════════════════════
             result = await self.stop_loss_tool.execute(
                 symbol=symbol,
                 entry_price=entry_price,
@@ -667,12 +742,41 @@ class MarketScannerHandler(LoggerMixin):
 
             data = result.data or {}
 
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 2: Default entry_price to current_price if not provided
+            # Meaning: "What's the risk if I buy RIGHT NOW?"
+            # ═══════════════════════════════════════════════════════════════════
+            current_price = data.get("current_price", 0)
+            actual_entry = entry_price if entry_price is not None else current_price
+            using_current_as_entry = entry_price is None and current_price > 0
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 3: Calculate advanced risk metrics (VaR, MaxDD, Sharpe)
+            # ═══════════════════════════════════════════════════════════════════
+            advanced_metrics = None
+            if RISK_METRICS_AVAILABLE:
+                advanced_metrics = await self._calculate_advanced_risk_metrics(symbol)
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 4: Build enhanced LLM summary
+            # ═══════════════════════════════════════════════════════════════════
+            llm_summary = self._build_risk_analysis_summary(
+                symbol=symbol,
+                stop_loss_data=data,
+                actual_entry=actual_entry,
+                using_current_as_entry=using_current_as_entry,
+                advanced_metrics=advanced_metrics
+            )
+
             return {
                 "success": True,
                 "symbol": symbol,
-                "entry_price": entry_price,
-                "llm_summary": data.get("llm_summary", result.formatted_context or ""),
-                "raw_data": data
+                "entry_price": actual_entry,
+                "current_price": current_price,
+                "using_current_as_entry": using_current_as_entry,
+                "llm_summary": llm_summary,
+                "raw_data": data,
+                "advanced_metrics": advanced_metrics
             }
 
         except Exception as e:
@@ -682,6 +786,258 @@ class MarketScannerHandler(LoggerMixin):
                 "error": str(e),
                 "symbol": symbol
             }
+
+    async def _calculate_advanced_risk_metrics(
+        self,
+        symbol: str,
+        lookback_days: int = 252
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Calculate advanced risk metrics using RiskMetricsCalculator.
+
+        Returns VaR, CVaR, Max Drawdown, Sharpe, Sortino, Volatility, etc.
+        """
+        try:
+            # Get historical price data from technical tool
+            tech_result = await self.technical_tool.execute(
+                symbol=symbol,
+                timeframe="1Y"  # Use 1 year for meaningful risk metrics
+            )
+
+            if tech_result.status == "error":
+                self.logger.warning(f"[MarketScanner] Could not get price data for risk metrics: {tech_result.error}")
+                return None
+
+            raw_data = tech_result.data or {}
+
+            # Extract price series from technical data
+            # The technical tool stores OHLCV data that we can use
+            prices = raw_data.get("price_series", [])
+            dates = raw_data.get("dates", [])
+
+            # If price_series not directly available, try to extract from indicators
+            if not prices:
+                # Get current_price and estimate from price_context
+                current_price = raw_data.get("current_price", 0)
+                price_context = raw_data.get("price_context", {})
+
+                if not current_price:
+                    self.logger.warning("[MarketScanner] No price data available for risk metrics")
+                    return None
+
+                # Build simplified risk metrics from available data
+                return self._build_simplified_risk_metrics(raw_data)
+
+            # If we have full price series, use RiskMetricsCalculator
+            from datetime import date as date_type
+
+            # Validate minimum data points
+            if len(prices) < 30:
+                self.logger.warning(f"[MarketScanner] Insufficient data points for risk metrics: {len(prices)}")
+                return self._build_simplified_risk_metrics(raw_data)
+
+            # Create input for calculator
+            risk_input = RiskDataInput(
+                ticker=symbol.upper(),
+                dates=[d if isinstance(d, date_type) else date_type.fromisoformat(str(d)[:10]) for d in dates],
+                prices=prices
+            )
+
+            # Calculate risk metrics
+            calculator = RiskMetricsCalculator(RiskCalculationConfig())
+            metrics = calculator.calculate(risk_input)
+
+            return {
+                "var": {
+                    "var_percent": metrics.var.var_percent,
+                    "confidence_level": metrics.var.confidence_level,
+                    "method": metrics.var.method
+                },
+                "cvar": {
+                    "cvar_percent": metrics.cvar.cvar_percent if metrics.cvar else None
+                },
+                "max_drawdown": {
+                    "max_drawdown": metrics.max_drawdown.max_drawdown,
+                    "current_drawdown": metrics.max_drawdown.current_drawdown,
+                    "peak_date": str(metrics.max_drawdown.peak_date) if metrics.max_drawdown.peak_date else None,
+                    "trough_date": str(metrics.max_drawdown.trough_date) if metrics.max_drawdown.trough_date else None
+                },
+                "volatility": {
+                    "annual": metrics.volatility.annual_volatility,
+                    "daily": metrics.volatility.daily_volatility,
+                    "regime": metrics.volatility.volatility_regime,
+                    "percentile": metrics.volatility.volatility_percentile
+                },
+                "sharpe_ratio": {
+                    "value": metrics.sharpe_ratio.sharpe_ratio,
+                    "quality": metrics.sharpe_ratio.quality
+                },
+                "sortino_ratio": {
+                    "value": metrics.sortino_ratio.sortino_ratio if metrics.sortino_ratio else None,
+                    "quality": metrics.sortino_ratio.quality if metrics.sortino_ratio else None
+                },
+                "risk_score": metrics.risk_score,
+                "risk_level": metrics.risk_level,
+                "summary": metrics.summary
+            }
+
+        except Exception as e:
+            self.logger.warning(f"[MarketScanner] Error calculating advanced risk metrics: {e}")
+            return None
+
+    def _build_simplified_risk_metrics(self, raw_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Build simplified risk metrics from available technical data."""
+        try:
+            current_price = raw_data.get("current_price", 0)
+            indicators = raw_data.get("indicators", {})
+            atr_data = indicators.get("atr", {})
+
+            atr_percent = atr_data.get("atr_percent", 0)
+            atr_value = atr_data.get("value", 0)
+
+            if not atr_percent:
+                return None
+
+            # Estimate volatility from ATR
+            # ATR% roughly correlates with daily volatility
+            daily_vol = atr_percent / 100
+            annual_vol = daily_vol * (252 ** 0.5)  # Annualize
+
+            # Estimate VaR from volatility (parametric method)
+            # VaR 95% ≈ mean - 1.645 * std (assuming ~0 daily mean)
+            var_95 = -1.645 * daily_vol * 100
+
+            # Classify volatility regime
+            if annual_vol < 0.15:
+                vol_regime = "low"
+            elif annual_vol < 0.30:
+                vol_regime = "normal"
+            elif annual_vol < 0.50:
+                vol_regime = "high"
+            else:
+                vol_regime = "extreme"
+
+            return {
+                "var": {
+                    "var_percent": round(var_95, 2),
+                    "confidence_level": 0.95,
+                    "method": "parametric (estimated from ATR)"
+                },
+                "volatility": {
+                    "annual": round(annual_vol, 4),
+                    "daily": round(daily_vol, 4),
+                    "regime": vol_regime,
+                    "atr_percent": atr_percent
+                },
+                "source": "Simplified estimation from ATR"
+            }
+
+        except Exception as e:
+            self.logger.warning(f"[MarketScanner] Error building simplified risk metrics: {e}")
+            return None
+
+    def _build_risk_analysis_summary(
+        self,
+        symbol: str,
+        stop_loss_data: Dict[str, Any],
+        actual_entry: float,
+        using_current_as_entry: bool,
+        advanced_metrics: Optional[Dict[str, Any]]
+    ) -> str:
+        """Build comprehensive LLM-friendly risk analysis summary."""
+        lines = [
+            f"=== RISK ANALYSIS: {symbol} ===",
+            ""
+        ]
+
+        # Entry context
+        if using_current_as_entry:
+            lines.extend([
+                "📍 ANALYSIS CONTEXT: Analyzing risk if buying NOW",
+                f"Entry Price: ${actual_entry:.2f} (current market price)",
+                "This shows: 'What are the risks if I buy this stock right now?'",
+                ""
+            ])
+        else:
+            lines.extend([
+                f"Entry Price: ${actual_entry:.2f}",
+                ""
+            ])
+
+        # Stop loss levels
+        stop_levels = stop_loss_data.get("stop_loss_levels", {})
+        atr_based = stop_levels.get("atr_based", {})
+        pct_based = stop_levels.get("percentage_based", {})
+
+        lines.extend([
+            "STOP LOSS LEVELS:",
+            f"  - ATR 2x (Conservative): ${atr_based.get('atr_2x', 0):.2f}",
+            f"  - ATR 3x: ${atr_based.get('atr_3x', 0):.2f}",
+            f"  - 3% below entry: ${pct_based.get('percent_3', 0):.2f}",
+            f"  - 5% below entry (Moderate): ${pct_based.get('percent_5', 0):.2f}",
+            f"  - 7% below entry (Aggressive): ${pct_based.get('percent_7', 0):.2f}",
+            f"  - Recommended: ${stop_levels.get('recommended', 0):.2f}",
+            ""
+        ])
+
+        # Risk amount
+        risk_amount = stop_loss_data.get("risk_amount", 0)
+        risk_pct = stop_loss_data.get("risk_percentage", 0)
+        lines.extend([
+            "RISK PER SHARE:",
+            f"  - Amount: ${risk_amount:.2f}",
+            f"  - Percentage: {risk_pct:.1f}%",
+            ""
+        ])
+
+        # Advanced metrics if available
+        if advanced_metrics:
+            lines.append("ADVANCED RISK METRICS:")
+
+            var_data = advanced_metrics.get("var", {})
+            if var_data:
+                lines.append(f"  - VaR (95%): {var_data.get('var_percent', 0):.2f}% daily loss potential")
+
+            cvar_data = advanced_metrics.get("cvar", {})
+            if cvar_data and cvar_data.get("cvar_percent"):
+                lines.append(f"  - CVaR/Expected Shortfall: {cvar_data.get('cvar_percent', 0):.2f}%")
+
+            vol_data = advanced_metrics.get("volatility", {})
+            if vol_data:
+                lines.append(f"  - Annual Volatility: {vol_data.get('annual', 0)*100:.1f}%")
+                lines.append(f"  - Volatility Regime: {vol_data.get('regime', 'unknown').upper()}")
+
+            mdd_data = advanced_metrics.get("max_drawdown", {})
+            if mdd_data:
+                max_dd = mdd_data.get("max_drawdown", 0)
+                current_dd = mdd_data.get("current_drawdown", 0)
+                lines.append(f"  - Max Historical Drawdown: {abs(max_dd)*100:.1f}%")
+                if current_dd and current_dd < -0.05:
+                    lines.append(f"  - ⚠️ Currently in {abs(current_dd)*100:.1f}% drawdown")
+
+            sharpe_data = advanced_metrics.get("sharpe_ratio", {})
+            if sharpe_data:
+                lines.append(f"  - Sharpe Ratio: {sharpe_data.get('value', 0):.2f} ({sharpe_data.get('quality', 'N/A')})")
+
+            risk_score = advanced_metrics.get("risk_score")
+            risk_level = advanced_metrics.get("risk_level")
+            if risk_score:
+                lines.append(f"  - Risk Score: {risk_score}/100 ({risk_level.upper() if risk_level else 'N/A'})")
+
+            lines.append("")
+
+        # Target and R:R
+        target = stop_loss_data.get("target_price", 0)
+        rr = stop_loss_data.get("risk_reward_ratio", 0)
+        if target and rr:
+            lines.extend([
+                "RISK/REWARD:",
+                f"  - Target Price (2:1 R:R): ${target:.2f}",
+                f"  - Risk:Reward Ratio: 1:{rr:.1f}",
+                ""
+            ])
+
+        return "\n".join(lines)
 
     # =========================================================================
     # STEP 4: Sentiment & News
@@ -912,7 +1268,14 @@ class MarketScannerHandler(LoggerMixin):
         target_language: Optional[str] = None,
         chat_history: str = ""
     ):
-        """Stream risk analysis from LLM."""
+        """
+        Stream risk analysis from LLM.
+
+        Enhanced features:
+        - Default entry_price = current_price (for "buy now" analysis)
+        - Advanced risk metrics (VaR, Max Drawdown, Sharpe) if available
+        - Beginner-friendly explanations
+        """
         analysis_result = await self.get_risk_analysis(symbol, entry_price)
 
         if not analysis_result.get("success"):
@@ -920,21 +1283,31 @@ class MarketScannerHandler(LoggerMixin):
             return
 
         llm_summary = analysis_result.get("llm_summary", "")
+        using_current_as_entry = analysis_result.get("using_current_as_entry", False)
+        actual_entry = analysis_result.get("entry_price", entry_price)
+        advanced_metrics = analysis_result.get("advanced_metrics")
 
-        prompt_parts = [
-            f"=== RISK ANALYSIS: {symbol} ===",
-            ""
-        ]
+        prompt_parts = []
 
-        if entry_price:
-            prompt_parts.append(f"Entry Price: ${entry_price:.2f}")
-            prompt_parts.append("")
+        # Add context about "buying now" if entry_price wasn't specified
+        if using_current_as_entry:
+            prompt_parts.extend([
+                "=== IMPORTANT CONTEXT ===",
+                "User did NOT specify an entry price. Using CURRENT MARKET PRICE as entry.",
+                "This means: Analyze 'What are the risks if I BUY THIS STOCK RIGHT NOW?'",
+                f"Current Price / Entry: ${actual_entry:.2f}",
+                "",
+                "Frame your analysis for a beginner investor who is considering buying NOW.",
+                ""
+            ])
 
         prompt_parts.extend([
             llm_summary if llm_summary else "No risk data available",
             "",
             "=== YOUR TASK ===",
-            "Provide risk analysis following your output structure."
+            "Provide comprehensive risk analysis following your output structure.",
+            "Be specific with price levels and dollar amounts.",
+            "Include position sizing examples for a $10,000 account."
         ])
 
         if user_question:
