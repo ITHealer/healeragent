@@ -35,6 +35,53 @@ class ProviderType(str, Enum):
 class ModelProviderFactory(LoggerMixin):
     """Factory for creating LLM model providers."""
 
+    # Common typos -> correct provider name
+    PROVIDER_TYPO_CORRECTIONS = {
+        # Gemini variations
+        "geminni": "gemini",
+        "gemni": "gemini",
+        "gemnii": "gemini",
+        "gemenii": "gemini",
+        "googel": "gemini",
+        "google": "gemini",
+        # OpenAI variations
+        "openia": "openai",
+        "openaii": "openai",
+        "opena": "openai",
+        "chatgpt": "openai",
+        "gpt": "openai",
+        # OpenRouter variations
+        "openruter": "openrouter",
+        "openroutr": "openrouter",
+        "openrounter": "openrouter",
+        # Ollama variations
+        "olama": "ollama",
+        "ollam": "ollama",
+        "olamma": "ollama",
+    }
+
+    @staticmethod
+    def _normalize_provider_type(provider_type: str) -> str:
+        """
+        Normalize provider type by correcting common typos.
+
+        Args:
+            provider_type: Raw provider type string
+
+        Returns:
+            Corrected provider type string
+        """
+        ptype = provider_type.lower().strip() if isinstance(provider_type, str) else str(provider_type).lower()
+
+        # Check if it's a typo and correct it
+        if ptype in ModelProviderFactory.PROVIDER_TYPO_CORRECTIONS:
+            corrected = ModelProviderFactory.PROVIDER_TYPO_CORRECTIONS[ptype]
+            logger = LoggerMixin().logger
+            logger.info(f"[FACTORY] Auto-corrected provider type: '{provider_type}' -> '{corrected}'")
+            return corrected
+
+        return ptype
+
     @staticmethod
     def create_provider(
         provider_type: str,
@@ -58,7 +105,8 @@ class ModelProviderFactory(LoggerMixin):
             ValueError: If provider type is unsupported or API key is missing
         """
         logger = LoggerMixin().logger
-        ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
+        # Normalize and auto-correct typos
+        ptype = ModelProviderFactory._normalize_provider_type(provider_type)
 
         if ptype == ProviderType.OLLAMA or ptype == "ollama":
             logger.debug(f"[FACTORY] Creating Ollama provider | model={model_name}")
@@ -92,7 +140,8 @@ class ModelProviderFactory(LoggerMixin):
     @staticmethod
     def _get_api_key(provider_type: str) -> Optional[str]:
         """Get API key from environment for the specified provider."""
-        ptype = provider_type.lower() if isinstance(provider_type, str) else provider_type
+        # Normalize provider type (handles typos)
+        ptype = ModelProviderFactory._normalize_provider_type(provider_type)
 
         # Use string keys to match with ptype (which is always a string)
         key_map = {
