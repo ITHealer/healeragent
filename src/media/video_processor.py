@@ -47,11 +47,14 @@ class VideoProcessor:
         }
 
         # Player client fallback list for YouTube
+        # IMPORTANT: 'tv' and 'ios' are NOT affected by SABR streaming limitation
+        # See: https://github.com/yt-dlp/yt-dlp/issues/12482
         self.youtube_player_clients = [
-            ['android', 'web'],  # Android client usually has more formats
-            ['ios', 'web'],     # iOS client as fallback
-            ['tv_embedded'],    # TV embedded doesn't need PO token
-            ['mweb'],           # Mobile web as last resort
+            ['tv', 'ios'],           # Best: tv and ios are NOT affected by SABR
+            ['tv'],                  # TV client alone is most reliable
+            ['ios'],                 # iOS client as fallback
+            ['android'],             # Android may work for some videos
+            ['tv_embedded'],         # TV embedded doesn't need PO token
         ]
 
         logger.info("VideoProcessor initialized with cookie support")
