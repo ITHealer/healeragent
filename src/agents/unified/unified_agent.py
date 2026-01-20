@@ -53,6 +53,9 @@ from src.agents.classification.models import UnifiedClassificationResult
 from src.agents.skills.skill_registry import SkillRegistry, get_skill_registry
 from src.agents.skills.skill_base import SkillContext
 
+# Multi-Model Prompt System
+from src.agents.prompts import PromptManager, PromptContext
+
 # Tool Search Service for semantic tool discovery
 from src.services.tool_search_service import (
     get_tool_search_service,
@@ -233,6 +236,9 @@ class UnifiedAgent(LoggerMixin):
 
         # Skill registry for domain-specific prompts
         self.skill_registry = get_skill_registry()
+
+        # Multi-model prompt manager for provider-specific optimizations
+        self.prompt_manager = PromptManager()
 
         # LLM provider
         self.llm_provider = LLMGeneratorProvider()
@@ -2029,6 +2035,93 @@ IMPORTANT:
 
         return tool_call_dict
 
+    # =========================================================================
+    # PROVIDER-SPECIFIC PROMPT BUILDING
+    # =========================================================================
+
+    def _build_provider_system_prompt(
+        self,
+        provider_type: str,
+        model_name: str,
+        market_type: str = "stock",
+        analysis_type: str = "general",
+        system_language: str = "vi",
+        validated_symbols: List[str] = None,
+        core_memory: Optional[str] = None,
+        conversation_summary: Optional[str] = None,
+        enable_tool_search: bool = False,
+        enable_think_tool: bool = False,
+        enable_web_search: bool = False,
+        response_style: str = "detailed",
+        min_words: int = 500,
+        max_words: int = 1500,
+    ) -> str:
+        """
+        Build provider-optimized system prompt using PromptManager.
+
+        This method generates prompts optimized for specific LLM providers:
+        - OpenAI: Direct style, no sycophancy, parallel tool patterns
+        - Gemini: Structured blocks, formatting toolkit, next-step suggestions
+
+        Args:
+            provider_type: LLM provider (openai, gemini)
+            model_name: Model name
+            market_type: Market type (stock, crypto, mixed)
+            analysis_type: Analysis type (basic, technical, fundamental, etc.)
+            system_language: Response language (vi, en, zh)
+            validated_symbols: List of symbols being analyzed
+            core_memory: User profile string
+            conversation_summary: Conversation summary string
+            enable_tool_search: Whether tool search mode is enabled
+            enable_think_tool: Whether think tool is enabled
+            enable_web_search: Whether web search is enabled
+            response_style: Response style (concise, detailed, narrative, technical)
+            min_words: Minimum response length
+            max_words: Maximum response length
+
+        Returns:
+            Complete system prompt string optimized for the provider
+        """
+        # Create prompt context
+        context = self.prompt_manager.create_context(
+            language=system_language,
+            symbols=validated_symbols or [],
+            market_type=market_type,
+            analysis_type=analysis_type,
+            enable_web_search=enable_web_search,
+            enable_tool_search=enable_tool_search,
+            enable_think_tool=enable_think_tool,
+            response_style=response_style,
+            min_words=min_words,
+            max_words=max_words,
+            user_profile=core_memory,
+            conversation_summary=conversation_summary,
+        )
+
+        # Get domain-specific prompt from prompt manager
+        domain_prompt = self.prompt_manager.get_domain_prompt(provider_type, market_type)
+
+        # Get analysis framework from skill registry (existing logic)
+        skill = self.skill_registry.select_skill(market_type)
+        analysis_framework = skill.get_analysis_framework()
+
+        # Generate provider-optimized system prompt
+        system_prompt = self.prompt_manager.get_system_prompt(
+            provider=provider_type,
+            model=model_name,
+            context=context,
+            domain_prompt=domain_prompt,
+            analysis_framework=analysis_framework,
+        )
+
+        self.logger.debug(
+            f"[PROMPT_MANAGER] Generated {provider_type}/{model_name} prompt "
+            f"(len={len(system_prompt)}, market={market_type}, "
+            f"web_search={enable_web_search}, tool_search={enable_tool_search})"
+        )
+
+        return system_prompt
+
     def _build_agent_messages(
         self,
         query: str,
@@ -2578,6 +2671,7 @@ Respond naturally and helpfully while staying in character."""
                     self.logger.info(f"[{flow_id}] 🧠 THINK TOOL ENABLED: Strong instruction added to system prompt")
 
             # Build messages with all tools
+            # NEW: Pass provider/model for provider-optimized prompts
             messages = self._build_agent_messages_all_tools(
                 query=query,
                 intent_result=intent_result,
@@ -2593,6 +2687,9 @@ Respond naturally and helpfully while staying in character."""
                 enable_web_search=enable_web_search,
                 system_prompt_override=system_prompt_override,  # Character persona override
                 enable_tool_search_mode=enable_tool_search_mode,  # Pass tool search mode flag
+                use_provider_prompts=True,  # Use provider-optimized prompts (OpenAI/Gemini)
+                provider_type=effective_provider,
+                model_name=effective_model,
             )
 
             total_tool_calls = 0
@@ -3132,11 +3229,20 @@ IMPORTANT:
         enable_web_search: bool = False,
         system_prompt_override: Optional[str] = None,
         enable_tool_search_mode: bool = False,
+        use_provider_prompts: bool = True,  # NEW: Use provider-optimized prompts
+        provider_type: Optional[str] = None,  # NEW: Provider for prompt optimization
+        model_name: Optional[str] = None,  # NEW: Model for prompt optimization
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
 
         Uses skill-based prompts for natural, conversational responses.
+
+        Args:
+            use_provider_prompts: If True, uses PromptManager for provider-specific
+                prompts (OpenAI vs Gemini optimizations). Default: True
+            provider_type: LLM provider (openai, gemini). Uses self.provider_type if not set.
+            model_name: Model name. Uses self.model_name if not set.
         """
         current_date = datetime.now().strftime("%Y-%m-%d %H:%M UTC")
 
@@ -3145,9 +3251,72 @@ IMPORTANT:
         if hasattr(market_type, 'value'):
             market_type = market_type.value
 
+        # Get analysis type if available
+        analysis_type = getattr(intent_result, 'analysis_type', 'general')
+        if hasattr(analysis_type, 'value'):
+            analysis_type = analysis_type.value
+
         # Use merged_symbols if provided, else fallback to intent_result
         validated_symbols = merged_symbols if merged_symbols is not None else getattr(intent_result, 'validated_symbols', [])
         intent_summary = getattr(intent_result, 'intent_summary', '')
+
+        # Resolve provider and model
+        effective_provider = provider_type or str(self.provider_type)
+        effective_model = model_name or self.model_name
+
+        # Auto-detect provider from model name if needed
+        if not effective_provider or effective_provider == "ProviderType.OPENAI":
+            effective_provider = self.prompt_manager.detect_provider(effective_model)
+
+        # =====================================================================
+        # NEW: Provider-Optimized Prompt Generation
+        # =====================================================================
+        if use_provider_prompts and not system_prompt_override:
+            # Use new PromptManager for provider-specific optimization
+            system_prompt = self._build_provider_system_prompt(
+                provider_type=effective_provider,
+                model_name=effective_model,
+                market_type=market_type,
+                analysis_type=analysis_type,
+                system_language=system_language,
+                validated_symbols=validated_symbols,
+                core_memory=core_memory,
+                conversation_summary=conversation_summary,
+                enable_tool_search=enable_tool_search_mode,
+                enable_think_tool=enable_think_tool,
+                enable_web_search=enable_web_search,
+                response_style="detailed",
+                min_words=500,
+                max_words=1500,
+            )
+
+            self.logger.info(
+                f"[UNIFIED_AGENT] Using provider-optimized prompt: {effective_provider}/{effective_model}"
+            )
+
+            messages = [{"role": "system", "content": system_prompt}]
+
+            # Add conversation history
+            if conversation_history:
+                for msg in conversation_history[-5:]:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if content:
+                        messages.append({"role": role, "content": content})
+
+            # Add current query (with images if present)
+            if images:
+                user_message = self._format_user_message_with_images(query, images)
+                messages.append(user_message)
+            else:
+                messages.append({"role": "user", "content": query})
+
+            return messages
+
+        # =====================================================================
+        # LEGACY: Original prompt generation (when system_prompt_override is set
+        # or use_provider_prompts=False)
+        # =====================================================================
 
         # Select base prompt: use override for character agents, otherwise skill-based
         if system_prompt_override:
