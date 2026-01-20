@@ -991,7 +991,7 @@ class MarketScannerHandler(LoggerMixin):
                 self.logger.info(
                     f"[MarketScanner] Sector match ({match_method}): "
                     f"'{stock_sector}' -> '{matched_name}' "
-                    f"(change={matched_change:+.2f}%, rank=#{sector_rank}/{len(sorted_sectors)})"
+                    f"(change={matched_change:+.4f}%, rank=#{sector_rank}/{len(sorted_sectors)})"
                 )
             else:
                 self.logger.warning(
@@ -1029,7 +1029,7 @@ class MarketScannerHandler(LoggerMixin):
             # DEBUG: Log classification
             self.logger.info(
                 f"[MarketScanner] Sector classification: "
-                f"rank=#{sector_rank}/{total_sectors}, change={sector_change:+.2f}%, "
+                f"rank=#{sector_rank}/{total_sectors}, change={sector_change:+.4f}%, "
                 f"relative_position={relative_position:.0f}%, status={sector_status}"
             )
 
@@ -1040,8 +1040,8 @@ class MarketScannerHandler(LoggerMixin):
                 "company_name": company_name,
                 "stock_sector": stock_sector,
                 "stock_industry": stock_industry,
-                # Sector performance (1-day)
-                "sector_change_percent": round(sector_change, 2),
+                # Sector performance (1-day) - use 4 decimals for precision
+                "sector_change_percent": round(sector_change, 4),
                 "sector_change_timeframe": "1-day",  # IMPORTANT: explicit timeframe
                 "sector_rank": sector_rank,
                 "total_sectors": total_sectors,
@@ -1056,11 +1056,11 @@ class MarketScannerHandler(LoggerMixin):
                 "worst_sector": sorted_sectors[-1].get("sector") if sorted_sectors else None,
                 "worst_sector_change": sorted_sectors[-1].get("changePercent", 0) if sorted_sectors else 0,
                 "market_summary": sector_data.get("summary", {}),
-                # Top sectors for context
+                # Top sectors for context - use 4 decimals for precision
                 "all_sectors": [
                     {
                         "name": s.get("sector"),
-                        "change": round(s.get("changePercent", 0), 2),
+                        "change": round(s.get("changePercent", 0), 4),
                         "rank": i + 1
                     }
                     for i, s in enumerate(sorted_sectors)
@@ -1139,7 +1139,7 @@ class MarketScannerHandler(LoggerMixin):
                     f"  Industry: {sector_context.get('stock_industry', 'N/A')}",
                     "",
                     "  SECTOR PERFORMANCE (1-DAY):",
-                    f"    Change: {sector_change:+.2f}%",
+                    f"    Change: {sector_change:+.4f}%",
                     f"    Rank: #{sector_rank} of {total_sectors} sectors",
                     f"    Relative Position: {relative_position:.0f}th percentile",
                     f"    Status: {sector_status}",
@@ -1156,7 +1156,7 @@ class MarketScannerHandler(LoggerMixin):
                 elif sector_rank and sector_rank >= total_sectors - 2:
                     lines.append("      → Bottom 3 = LAGGING")
                 else:
-                    lines.append(f"      → Middle (change {sector_change:+.2f}% determines status)")
+                    lines.append(f"      → Middle (change {sector_change:+.4f}% determines status)")
                 lines.append("")
 
             # Market overview
@@ -1173,7 +1173,7 @@ class MarketScannerHandler(LoggerMixin):
                     ""
                 ])
 
-            # ALL sectors for verification
+            # ALL sectors for verification - show 4 decimal places for precision
             all_sectors = sector_context.get("all_sectors", [])
             if all_sectors:
                 lines.append("ALL SECTORS RANKED (1-DAY CHANGE):")
@@ -1182,7 +1182,7 @@ class MarketScannerHandler(LoggerMixin):
                     name = s.get("name", "Unknown")
                     change = s.get("change", 0)
                     marker = " ← STOCK'S SECTOR" if name and api_sector_name and name.lower() == api_sector_name.lower() else ""
-                    lines.append(f"  #{rank}: {name}: {change:+.2f}%{marker}")
+                    lines.append(f"  #{rank}: {name}: {change:+.4f}%{marker}")
                 lines.append("")
 
             # IMPORTANT LIMITATION
