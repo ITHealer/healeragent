@@ -172,14 +172,14 @@ class MarketScannerHandler(LoggerMixin):
                 timeframe=timeframe
             )
 
-            if result.get("status") == "error":
+            if result.status == "error":
                 return {
                     "success": False,
-                    "error": result.get("error", "Technical analysis failed"),
+                    "error": result.error or "Technical analysis failed",
                     "symbol": symbol
                 }
 
-            data = result.get("data", {})
+            data = result.data or {}
 
             # Return tool's output directly - llm_summary is already optimized
             return {
@@ -215,20 +215,20 @@ class MarketScannerHandler(LoggerMixin):
                 lookback_periods=[21, 63, 126, 252]
             )
 
-            if result.get("status") == "error":
+            if result.status == "error":
                 return {
                     "success": False,
-                    "error": result.get("error", "RS analysis failed"),
+                    "error": result.error or "RS analysis failed",
                     "symbol": symbol
                 }
 
-            data = result.get("data", {})
+            data = result.data or {}
 
             return {
                 "success": True,
                 "symbol": symbol,
                 "benchmark": benchmark,
-                "llm_summary": data.get("llm_summary", result.get("formatted_context", "")),
+                "llm_summary": data.get("llm_summary", result.formatted_context or ""),
                 "raw_data": data
             }
 
@@ -256,20 +256,20 @@ class MarketScannerHandler(LoggerMixin):
                 lookback_days=60
             )
 
-            if result.get("status") == "error":
+            if result.status == "error":
                 return {
                     "success": False,
-                    "error": result.get("error", "Risk analysis failed"),
+                    "error": result.error or "Risk analysis failed",
                     "symbol": symbol
                 }
 
-            data = result.get("data", {})
+            data = result.data or {}
 
             return {
                 "success": True,
                 "symbol": symbol,
                 "entry_price": entry_price,
-                "llm_summary": data.get("llm_summary", result.get("formatted_context", "")),
+                "llm_summary": data.get("llm_summary", result.formatted_context or ""),
                 "raw_data": data
             }
 
@@ -300,8 +300,8 @@ class MarketScannerHandler(LoggerMixin):
                 limit=news_limit
             )
 
-            sentiment_data = sentiment_result.get("data", {}) if sentiment_result.get("status") != "error" else {}
-            news_data = news_result.get("data", {}) if news_result.get("status") != "error" else {}
+            sentiment_data = (sentiment_result.data or {}) if sentiment_result.status != "error" else {}
+            news_data = (news_result.data or {}) if news_result.status != "error" else {}
 
             # Combine summaries from both tools
             llm_summary = self._build_sentiment_news_summary(symbol, sentiment_data, news_data)
