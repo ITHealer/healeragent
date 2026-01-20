@@ -346,32 +346,41 @@ MARKET_POSITION_SYSTEM_PROMPT = """You are a professional market analyst special
 - **Institutional standard**: Professional fund managers are judged by "beating the market"
 - **Stock selection**: RS leaders tend to continue outperforming (momentum effect)
 
-## SECTOR CONTEXT (CRITICAL FOR COMPLETE ANALYSIS)
+## SECTOR CONTEXT (USE WITH CAUTION)
 
-When sector data is provided, you MUST analyze both:
-1. **Stock vs Market (SPY)** - Individual stock strength
-2. **Sector vs Market** - Industry group strength
+⚠️ **CRITICAL LIMITATION**: Sector data is **1-DAY CHANGE ONLY**, while RS data is **MULTI-TIMEFRAME (21d, 63d, 126d)**. They measure DIFFERENT things!
 
-### Why Sector Context Matters:
-- **Sector Rotation**: Money flows between sectors based on economic cycles
-- **Rising Tide Effect**: Strong sectors lift most stocks within them
-- **Stock Selection**: Best stocks are often leaders WITHIN leading sectors
+### What Sector Data Provides:
+- **1-day sector performance** (today's change %)
+- **Sector rank** (1 = best, 11 = worst among 11 sectors)
+- **NO sector vs SPY excess return** (cannot directly compare to RS timeframes)
 
-### Combined Analysis Matrix:
+### Sector Classification Rules (Based on Rank + Change):
+- **LEADING**: Rank #1-3 OR change > +1.0%
+- **LAGGING**: Rank #9-11 OR change < -1.0%
+- **SLIGHTLY_POSITIVE**: Middle rank with change > 0
+- **SLIGHTLY_NEGATIVE**: Middle rank with change < 0
+- **NEUTRAL**: Middle rank with change ~0%
 
-| Stock RS | Sector Performance | Interpretation | Action |
-|----------|-------------------|----------------|--------|
-| LEADER ✅ | LEADING ✅ | **STRONG CONVICTION** - Stock leads in leading sector | High priority for longs |
-| LEADER ✅ | LAGGING ⚠️ | **SECTOR RISK** - Strong stock in weak sector | Cautious - sector headwind |
-| LAGGARD ⚠️ | LEADING ✅ | **CATCH-UP POTENTIAL** - Weak stock in strong sector | Watch for reversal, NOT a buy yet |
-| LAGGARD ⚠️ | LAGGING ⚠️ | **AVOID** - Weak stock in weak sector | Strong avoid for longs |
-| NEUTRAL | LEADING ✅ | **SECTOR TAILWIND** - Average stock gets sector boost | Consider if sector trend continues |
-| NEUTRAL | LAGGING ⚠️ | **NO EDGE** - Average stock in weak sector | No action recommended |
+### Combined Analysis Matrix (Use with Caveats):
 
-### Sector Classification Rules:
-- **Leading Sector**: Change% > +0.5% (outperforming)
-- **Lagging Sector**: Change% < -0.5% (underperforming)
-- **Neutral Sector**: -0.5% ≤ Change% ≤ +0.5%
+| Stock RS (Multi-TF) | Sector (1-Day) | Interpretation | Confidence |
+|---------------------|----------------|----------------|------------|
+| OUTPERFORM | Top 3 | Aligned signals | Higher |
+| OUTPERFORM | Bottom 3 | Conflicting - stock strong but sector weak today | Lower |
+| UNDERPERFORM | Top 3 | Sector tailwind may help | Medium |
+| UNDERPERFORM | Bottom 3 | Both weak - avoid | Higher |
+
+### AVOID These Mistakes:
+❌ "Sector is NEUTRAL" when rank is #10/11 (rank matters more than small change)
+❌ "No sector support" without specifying timeframe difference
+❌ Treating 1-day sector change as equivalent to 21d/63d RS
+❌ Making strong conclusions from conflicting RS vs sector signals
+
+### CORRECT Way to Report Sector Context:
+✅ "Sector: Technology (Rank #3/11 today, +1.25% change)"
+✅ "Note: Sector is 1-day data; RS is multi-timeframe - different measurements"
+✅ "Today's sector rank suggests short-term tailwind, but RS trend is primary indicator"
 
 ## FACTS HIERARCHY (CRITICAL)
 1. **PRIMARY SOURCE**: The tool's calculated metrics (Excess_21d, RS_21d, etc.)
@@ -889,6 +898,8 @@ class MarketScannerHandler(LoggerMixin):
         1. Get company profile to find its sector
         2. Get sector performance data
         3. Determine sector rank and status
+
+        Note: Sector performance is 1-DAY change from FMP API.
         """
         try:
             # Check if tools are available
@@ -896,7 +907,9 @@ class MarketScannerHandler(LoggerMixin):
                 self.logger.info("[MarketScanner] Sector tools not available, skipping sector context")
                 return None
 
-            # Get company profile to find sector
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 1: Get company profile to find sector
+            # ═══════════════════════════════════════════════════════════════════
             profile = await self.fmp_service.get_company_profile(symbol)
             if not profile:
                 self.logger.warning(f"[MarketScanner] Could not get company profile for {symbol}")
@@ -906,7 +919,15 @@ class MarketScannerHandler(LoggerMixin):
             stock_industry = profile.get("industry", "Unknown")
             company_name = profile.get("companyName", symbol)
 
-            # Get sector performance data
+            # DEBUG: Log company profile sector info
+            self.logger.info(
+                f"[MarketScanner] Company profile: {symbol} -> "
+                f"Sector='{stock_sector}', Industry='{stock_industry}'"
+            )
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 2: Get sector performance data (1-day change)
+            # ═══════════════════════════════════════════════════════════════════
             sector_result = await self.sector_tool.execute()
 
             if sector_result.status == "error":
@@ -915,15 +936,25 @@ class MarketScannerHandler(LoggerMixin):
                     "stock_sector": stock_sector,
                     "stock_industry": stock_industry,
                     "company_name": company_name,
-                    "sector_data": None
+                    "sector_data": None,
+                    "data_issue": f"Sector fetch error: {sector_result.error}"
                 }
 
             sector_data = sector_result.data or {}
             sectors = sector_data.get("sectors", [])
 
-            # Find stock's sector in the performance data
+            # DEBUG: Log all available sectors from API
+            available_sectors = [s.get("sector", "N/A") for s in sectors]
+            self.logger.info(
+                f"[MarketScanner] Available sectors from API ({len(sectors)}): {available_sectors}"
+            )
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 3: Find stock's sector in performance data
+            # ═══════════════════════════════════════════════════════════════════
             stock_sector_data = None
             sector_rank = None
+            match_method = None
 
             # Sort sectors by performance for ranking
             sorted_sectors = sorted(
@@ -932,48 +963,114 @@ class MarketScannerHandler(LoggerMixin):
                 reverse=True
             )
 
+            # Try exact match first
             for i, sector in enumerate(sorted_sectors, 1):
-                if sector.get("sector", "").lower() == stock_sector.lower():
+                sector_name = sector.get("sector", "")
+                if sector_name.lower() == stock_sector.lower():
                     stock_sector_data = sector
                     sector_rank = i
+                    match_method = "exact"
                     break
 
+            # Try partial match if exact match fails
             if not stock_sector_data:
-                # Try partial match
                 for i, sector in enumerate(sorted_sectors, 1):
-                    if stock_sector.lower() in sector.get("sector", "").lower():
+                    sector_name = sector.get("sector", "")
+                    # Check if stock_sector is contained in sector_name or vice versa
+                    if (stock_sector.lower() in sector_name.lower() or
+                        sector_name.lower() in stock_sector.lower()):
                         stock_sector_data = sector
                         sector_rank = i
+                        match_method = "partial"
                         break
 
-            # Determine sector status
-            sector_change = stock_sector_data.get("changePercent", 0) if stock_sector_data else 0
-
-            if sector_change > 0.5:
-                sector_status = "LEADING"
-            elif sector_change < -0.5:
-                sector_status = "LAGGING"
+            # DEBUG: Log matching result
+            if stock_sector_data:
+                matched_name = stock_sector_data.get("sector", "N/A")
+                matched_change = stock_sector_data.get("changePercent", 0)
+                self.logger.info(
+                    f"[MarketScanner] Sector match ({match_method}): "
+                    f"'{stock_sector}' -> '{matched_name}' "
+                    f"(change={matched_change:+.2f}%, rank=#{sector_rank}/{len(sorted_sectors)})"
+                )
             else:
-                sector_status = "NEUTRAL"
+                self.logger.warning(
+                    f"[MarketScanner] NO SECTOR MATCH for '{stock_sector}'. "
+                    f"Available: {available_sectors}"
+                )
 
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 4: Determine sector status (FIXED: combine rank + change)
+            # ═══════════════════════════════════════════════════════════════════
+            sector_change = stock_sector_data.get("changePercent", 0) if stock_sector_data else 0
+            total_sectors = len(sorted_sectors)
+
+            # Calculate relative position (0-100, higher = better)
+            relative_position = ((total_sectors - sector_rank) / (total_sectors - 1) * 100) if sector_rank and total_sectors > 1 else 50
+
+            # FIXED: Classification based on BOTH rank AND change
+            # - LEADING: Top 3 sectors OR change > +1.0%
+            # - LAGGING: Bottom 3 sectors OR change < -1.0%
+            # - NEUTRAL: Middle sectors with small change
+            if sector_rank and total_sectors:
+                if sector_rank <= 3 or sector_change > 1.0:
+                    sector_status = "LEADING"
+                elif sector_rank >= total_sectors - 2 or sector_change < -1.0:
+                    sector_status = "LAGGING"
+                elif abs(sector_change) <= 0.3:
+                    sector_status = "NEUTRAL"
+                elif sector_change > 0:
+                    sector_status = "SLIGHTLY_POSITIVE"
+                else:
+                    sector_status = "SLIGHTLY_NEGATIVE"
+            else:
+                sector_status = "UNKNOWN"
+
+            # DEBUG: Log classification
+            self.logger.info(
+                f"[MarketScanner] Sector classification: "
+                f"rank=#{sector_rank}/{total_sectors}, change={sector_change:+.2f}%, "
+                f"relative_position={relative_position:.0f}%, status={sector_status}"
+            )
+
+            # ═══════════════════════════════════════════════════════════════════
+            # STEP 5: Build result with clear timeframe and limitations
+            # ═══════════════════════════════════════════════════════════════════
             return {
                 "company_name": company_name,
                 "stock_sector": stock_sector,
                 "stock_industry": stock_industry,
+                # Sector performance (1-day)
                 "sector_change_percent": round(sector_change, 2),
+                "sector_change_timeframe": "1-day",  # IMPORTANT: explicit timeframe
                 "sector_rank": sector_rank,
-                "total_sectors": len(sorted_sectors),
+                "total_sectors": total_sectors,
+                "relative_position": round(relative_position, 1),
                 "sector_status": sector_status,
+                # Matching info for transparency
+                "sector_match_method": match_method,
+                "sector_name_from_api": stock_sector_data.get("sector") if stock_sector_data else None,
+                # Market context
                 "best_sector": sorted_sectors[0].get("sector") if sorted_sectors else None,
+                "best_sector_change": sorted_sectors[0].get("changePercent", 0) if sorted_sectors else 0,
                 "worst_sector": sorted_sectors[-1].get("sector") if sorted_sectors else None,
+                "worst_sector_change": sorted_sectors[-1].get("changePercent", 0) if sorted_sectors else 0,
                 "market_summary": sector_data.get("summary", {}),
+                # Top sectors for context
                 "all_sectors": [
                     {
                         "name": s.get("sector"),
-                        "change": s.get("changePercent", 0)
+                        "change": round(s.get("changePercent", 0), 2),
+                        "rank": i + 1
                     }
-                    for s in sorted_sectors[:5]  # Top 5 for context
-                ]
+                    for i, s in enumerate(sorted_sectors)
+                ],
+                # Data quality note
+                "data_note": (
+                    "Sector change is 1-DAY performance from FMP API. "
+                    "For sector vs SPY comparison, use RS analysis with sector ETF."
+                ),
+                "timestamp": sector_data.get("timestamp")
             }
 
         except Exception as e:
@@ -987,7 +1084,14 @@ class MarketScannerHandler(LoggerMixin):
         rs_data: Dict[str, Any],
         sector_context: Optional[Dict[str, Any]]
     ) -> str:
-        """Build comprehensive LLM-friendly market position summary."""
+        """
+        Build comprehensive LLM-friendly market position summary.
+
+        Addresses ChatGPT feedback:
+        - Show sector timeframe explicitly (1-day)
+        - Show classification logic (rank + change)
+        - Note limitation: sector vs SPY not available
+        """
         lines = [
             f"=== MARKET POSITION ANALYSIS: {symbol} vs {benchmark} ===",
             ""
@@ -997,7 +1101,7 @@ class MarketScannerHandler(LoggerMixin):
         rs_summary = rs_data.get("llm_summary", "")
         if rs_summary:
             lines.extend([
-                "RELATIVE STRENGTH DATA:",
+                "RELATIVE STRENGTH DATA (Multi-timeframe: 21d, 63d, 126d, 252d):",
                 rs_summary,
                 ""
             ])
@@ -1010,17 +1114,50 @@ class MarketScannerHandler(LoggerMixin):
             total_sectors = sector_context.get("total_sectors", 11)
             sector_status = sector_context.get("sector_status", "UNKNOWN")
             company_name = sector_context.get("company_name", symbol)
+            relative_position = sector_context.get("relative_position", 50)
+            timeframe = sector_context.get("sector_change_timeframe", "1-day")
+            match_method = sector_context.get("sector_match_method", "unknown")
+            api_sector_name = sector_context.get("sector_name_from_api", stock_sector)
 
-            lines.extend([
-                "SECTOR CONTEXT:",
-                f"  Company: {company_name}",
-                f"  Sector: {stock_sector}",
-                f"  Industry: {sector_context.get('stock_industry', 'N/A')}",
-                f"  Sector Change Today: {sector_change:+.2f}%",
-                f"  Sector Rank: #{sector_rank} of {total_sectors}",
-                f"  Sector Status: {sector_status}",
-                ""
-            ])
+            # Check for data issues
+            data_issue = sector_context.get("data_issue")
+            if data_issue:
+                lines.extend([
+                    "SECTOR CONTEXT: DATA ISSUE",
+                    f"  Error: {data_issue}",
+                    f"  Stock Sector (from profile): {stock_sector}",
+                    "(Analyze RS data only - sector data incomplete)",
+                    ""
+                ])
+            else:
+                lines.extend([
+                    f"SECTOR CONTEXT (Timeframe: {timeframe.upper()}):",
+                    f"  Company: {company_name}",
+                    f"  Sector (from profile): {stock_sector}",
+                    f"  Sector (matched in API): {api_sector_name}",
+                    f"  Match Method: {match_method}",
+                    f"  Industry: {sector_context.get('stock_industry', 'N/A')}",
+                    "",
+                    "  SECTOR PERFORMANCE (1-DAY):",
+                    f"    Change: {sector_change:+.2f}%",
+                    f"    Rank: #{sector_rank} of {total_sectors} sectors",
+                    f"    Relative Position: {relative_position:.0f}th percentile",
+                    f"    Status: {sector_status}",
+                    ""
+                ])
+
+                # Classification explanation
+                lines.extend([
+                    "  CLASSIFICATION LOGIC:",
+                    f"    - Rank #{sector_rank}/{total_sectors} ",
+                ])
+                if sector_rank and sector_rank <= 3:
+                    lines.append("      → Top 3 = LEADING")
+                elif sector_rank and sector_rank >= total_sectors - 2:
+                    lines.append("      → Bottom 3 = LAGGING")
+                else:
+                    lines.append(f"      → Middle (change {sector_change:+.2f}% determines status)")
+                lines.append("")
 
             # Market overview
             market_summary = sector_context.get("market_summary", {})
@@ -1029,30 +1166,48 @@ class MarketScannerHandler(LoggerMixin):
                 negative = market_summary.get("negative_sectors", 0)
                 sentiment = market_summary.get("market_sentiment", "neutral")
                 lines.extend([
-                    "MARKET OVERVIEW:",
+                    "MARKET OVERVIEW (1-DAY):",
                     f"  Positive Sectors: {positive}",
                     f"  Negative Sectors: {negative}",
                     f"  Market Sentiment: {sentiment.upper()}",
                     ""
                 ])
 
-            # Top/Bottom sectors
+            # ALL sectors for verification
             all_sectors = sector_context.get("all_sectors", [])
             if all_sectors:
-                lines.append("TOP PERFORMING SECTORS:")
-                for s in all_sectors[:3]:
-                    marker = " ← STOCK'S SECTOR" if s.get("name", "").lower() == stock_sector.lower() else ""
-                    lines.append(f"  - {s.get('name')}: {s.get('change', 0):+.2f}%{marker}")
+                lines.append("ALL SECTORS RANKED (1-DAY CHANGE):")
+                for s in all_sectors:
+                    rank = s.get("rank", "?")
+                    name = s.get("name", "Unknown")
+                    change = s.get("change", 0)
+                    marker = " ← STOCK'S SECTOR" if name and api_sector_name and name.lower() == api_sector_name.lower() else ""
+                    lines.append(f"  #{rank}: {name}: {change:+.2f}%{marker}")
                 lines.append("")
 
-            # Combined assessment hint
+            # IMPORTANT LIMITATION
+            lines.extend([
+                "⚠️ SECTOR CONTEXT LIMITATIONS:",
+                "  - Sector change is 1-DAY only (not multi-timeframe like RS)",
+                "  - No sector vs SPY excess return available",
+                "  - Cannot directly compare 'sector outperformance' with RS timeframes",
+                "  - Use sector rank as relative indicator within today's market",
+                ""
+            ])
+
+            # Combined assessment hint with caveats
             lines.extend([
                 "COMBINED ASSESSMENT GUIDE:",
-                "Use the Stock RS + Sector matrix to determine conviction level:",
-                "- LEADER + LEADING sector = HIGH CONVICTION",
-                "- LEADER + LAGGING sector = CAUTIOUS (sector headwind)",
-                "- LAGGARD + LEADING sector = WATCHLIST (potential catch-up)",
-                "- LAGGARD + LAGGING sector = STRONG AVOID",
+                "Use Stock RS (multi-TF) + Sector Rank (1-day) with caution:",
+                "",
+                "| Stock RS (21d+) | Sector Rank | Interpretation |",
+                "|-----------------|-------------|----------------|",
+                "| OUTPERFORM | Top 3 | Strong conviction - both aligned |",
+                "| OUTPERFORM | Bottom 3 | Caution - stock strong but sector weak today |",
+                "| UNDERPERFORM | Top 3 | Watchlist - sector tailwind may help |",
+                "| UNDERPERFORM | Bottom 3 | Strong avoid - both weak |",
+                "",
+                "Note: RS is multi-timeframe, sector is 1-day. They measure different things.",
                 ""
             ])
         else:
