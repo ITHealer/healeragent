@@ -463,7 +463,7 @@ class MarketScannerHandler(LoggerMixin):
             result = await self.rs_tool.execute(
                 symbol=symbol,
                 benchmark=benchmark,
-                lookback_periods=[21, 63, 126, 252]
+                timeframe="3M"  # RS tool uses timeframe, not lookback_periods
             )
 
             if result.status == "error":
