@@ -128,34 +128,59 @@ class GetRelativeStrengthTool(BaseTool):
             requires_symbol=True
         )
     
+    # Standard lookback periods for multi-timeframe RS analysis
+    # 21d (~1 month), 63d (~3 months), 126d (~6 months), 252d (~1 year)
+    DEFAULT_LOOKBACK_PERIODS = [21, 63, 126, 252]
+
     async def execute(
-        self, 
-        symbol: str, 
+        self,
+        symbol: str,
         benchmark: str = "SPY",
-        timeframe: str = "3M" 
+        timeframe: str = "multi"  # "multi" = all 4 timeframes, or specific like "3M"
     ) -> ToolOutput:
         """
-        Execute relative strength analysis
-        
-        ✅ FIX: Added timeframe parameter
-        
+        Execute relative strength analysis with multi-timeframe support.
+
         Args:
             symbol: Stock symbol
-            benchmark: Benchmark symbol
-            timeframe: Analysis timeframe (logged, handler may not use yet)
+            benchmark: Benchmark symbol (default: SPY for S&P 500)
+            timeframe: "multi" for all timeframes [21d, 63d, 126d, 252d],
+                      or specific like "1M", "3M", "6M", "1Y"
+
+        Returns:
+            ToolOutput with RS metrics for multiple timeframes:
+            - 21d RS: Short-term momentum (swing traders)
+            - 63d RS: Medium-term trend (position traders)
+            - 126d RS: Long-term trend (investors)
+            - 252d RS: Very long-term (long-term investors)
         """
         symbol_upper = symbol.upper()
         benchmark_upper = benchmark.upper()
-        
+
+        # Determine lookback periods based on timeframe
+        if timeframe == "multi" or timeframe is None:
+            lookback_periods = self.DEFAULT_LOOKBACK_PERIODS
+        else:
+            # Map single timeframe to lookback days
+            timeframe_map = {
+                "1M": [21],
+                "3M": [63],
+                "6M": [126],
+                "1Y": [252],
+            }
+            lookback_periods = timeframe_map.get(timeframe.upper(), self.DEFAULT_LOOKBACK_PERIODS)
+
         self.logger.info(
             f"[getRelativeStrength] symbol={symbol_upper}, "
-            f"benchmark={benchmark_upper}, timeframe={timeframe}"
+            f"benchmark={benchmark_upper}, timeframe={timeframe}, "
+            f"lookback_periods={lookback_periods}"
         )
-        
+
         try:
             rs_results = await self.rs_handler.get_relative_strength(
                 symbol=symbol_upper,
-                benchmark=benchmark_upper
+                benchmark=benchmark_upper,
+                lookback_periods=lookback_periods
             )
             
             if not rs_results or "error" in rs_results:
