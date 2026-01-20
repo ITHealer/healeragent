@@ -183,6 +183,21 @@ When explaining indicators, include: what it is, how it's calculated (simplified
   - Falling OBV: Distribution (selling pressure)
   - OBV divergence from price: Potential reversal
 
+**VWAP / AVWAP (Volume Weighted Average Price)**
+- What: Average price weighted by volume - shows "fair value" based on actual trading
+- AVWAP (Anchored VWAP): Cumulative VWAP from a specific anchor date
+- Calculation: Sum(Price × Volume) ÷ Sum(Volume)
+- Interpretation:
+  - Price > VWAP: Buyers in profit on average - BULLISH bias
+  - Price < VWAP: Buyers underwater on average - BEARISH bias
+  - Price at VWAP: Fair value zone
+- Trading Applications:
+  - Institutional traders often use VWAP as benchmark
+  - VWAP acts as dynamic support/resistance
+  - Good for entry: Buy near VWAP in uptrend, sell near VWAP in downtrend
+- NOTE: Daily data AVWAP has LOWER timing confidence than intraday VWAP
+  - Use for general context, not precise entry/exit timing
+
 ### KEY LEVELS
 
 **Support/Resistance**
@@ -227,6 +242,9 @@ Provide analysis in this order:
 - **ATR%**: Value and volatility regime
 - **Bollinger Bands**: Width%, squeeze status
 - **RVOL**: Value and interpretation using consistent thresholds
+- **OBV**: Signal (accumulation/distribution) and any divergences
+- **AVWAP**: Price vs AVWAP %, signal (BULLISH/BEARISH/NEUTRAL), anchor date
+  - Note: AVWAP from daily data has lower timing confidence
 
 ### 5. **Key Levels**
 - Support levels with exact prices and distance %
@@ -610,6 +628,10 @@ class MarketScannerHandler(LoggerMixin):
         # Build prompt using tool's llm_summary (primary source)
         llm_summary = analysis_result.get("llm_summary", "")
 
+        # DEBUG: Log the llm_summary being sent to LLM
+        self.logger.info(f"[MarketScanner] LLM Summary length: {len(llm_summary)} chars")
+        self.logger.debug(f"[MarketScanner] LLM Summary content:\n{llm_summary[:2000]}..." if len(llm_summary) > 2000 else f"[MarketScanner] LLM Summary content:\n{llm_summary}")
+
         if not llm_summary:
             yield "Error: No analysis data available"
             return
@@ -642,6 +664,9 @@ class MarketScannerHandler(LoggerMixin):
         # Add chat history context if available
         if chat_history:
             prompt = f"[Previous conversation context]\n{chat_history}\n\n[Current analysis]\n{prompt}"
+
+        # DEBUG: Log the full prompt being sent to LLM
+        self.logger.info(f"[MarketScanner] Full prompt length: {len(prompt)} chars | System prompt length: {len(TECHNICAL_SYSTEM_PROMPT)} chars")
 
         messages = [
             {"role": "system", "content": TECHNICAL_SYSTEM_PROMPT},
