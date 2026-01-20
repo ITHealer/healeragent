@@ -89,7 +89,12 @@ class RiskAnalysis:
             df (pd.DataFrame): Historical price data with technical indicators
 
         Returns:
-            Dict[str, float]: Suggested stop levels
+            Dict[str, float]: Suggested stop levels with ATR metrics
+
+        Note:
+            ATR (Average True Range) metrics are critical for transparency:
+            - atr_value: ATR in dollar amount
+            - atr_percent: ATR as % of price (daily expected move)
         """
         try:
             if len(df) < 20:
@@ -98,17 +103,38 @@ class RiskAnalysis:
             latest = df.iloc[-1]
             close = latest["close"]
 
-            # Calculate ATR-based stops
-            atr = latest.get("atr", df["high"].iloc[-20:] - df["low"].iloc[-20:]).mean()
+            # ═══════════════════════════════════════════════════════════════════
+            # Calculate ATR (Average True Range)
+            # ═══════════════════════════════════════════════════════════════════
+            atr = latest.get("atr", None)
+            if atr is None or pd.isna(atr):
+                # Fallback: calculate ATR from high-low range
+                high_low_range = df["high"].iloc[-20:] - df["low"].iloc[-20:]
+                atr = high_low_range.mean()
+
+            # ═══════════════════════════════════════════════════════════════════
+            # Calculate ATR percentage (daily expected move)
+            # This is NOT VaR - it's the typical daily range
+            # ═══════════════════════════════════════════════════════════════════
+            atr_percent = (atr / close * 100) if close > 0 else 0
 
             # Different stop strategies
             stops = {
+                # ATR-based stops
                 "atr_1x": round(close - 1 * atr, 2),
                 "atr_2x": round(close - 2 * atr, 2),
                 "atr_3x": round(close - 3 * atr, 2),
+                # Percentage-based stops
                 "percent_2": round(close * 0.98, 2),
+                "percent_3": round(close * 0.97, 2),
                 "percent_5": round(close * 0.95, 2),
+                "percent_7": round(close * 0.93, 2),
                 "percent_8": round(close * 0.92, 2),
+                # ═══════════════════════════════════════════════════════════════════
+                # ATR METRICS (Critical for transparency - ChatGPT feedback)
+                # ═══════════════════════════════════════════════════════════════════
+                "atr_value": round(atr, 4),           # ATR in dollars
+                "atr_percent": round(atr_percent, 2),  # ATR as % of price (daily move)
             }
 
             # Add SMA-based stops if available

@@ -537,57 +537,115 @@ This helps new investors understand:
 - Where to place stop-loss orders
 - How to size their position appropriately
 
+## CRITICAL: DISTINGUISH RISK METRICS
+
+You MUST clearly distinguish these THREE different metrics:
+
+| Metric | What It Measures | Source | Usage |
+|--------|-----------------|--------|-------|
+| **ATR (Average True Range)** | Typical daily price movement | Historical high-low-close | Stop-loss sizing |
+| **VaR (Value at Risk)** | Tail risk (worst X% of days) | Statistical returns distribution | Extreme scenario planning |
+| **Annual Volatility** | Overall price fluctuation intensity | Standard deviation of returns | Risk regime classification |
+
+**DO NOT CONFUSE THEM:**
+- ATR $5.00 (2.5%) = "Stock typically moves $5/day"
+- VaR -4.5% = "5% chance of losing >4.5% in a single day"
+- Annual Vol 45% = "Overall high volatility stock"
+
 ## FACTS HIERARCHY
-1. **PRIMARY SOURCE**: Stop loss levels, VaR, and volatility data from the tool
-2. **ADVANCED METRICS**: If VaR/CVaR/Sharpe/MaxDrawdown available, use them for deeper insights
-3. **POSITION SIZING**: Base on ATR% and volatility regime
-4. **BE SPECIFIC**: Use exact price levels and dollar amounts
+1. **PRIMARY SOURCE**: Data from tool output (ATR value, current_price, stop levels)
+2. **SHOW ATR VALUE**: Always show ATR in dollars AND percentage
+3. **DISTINGUISH METRICS**: Label each metric type clearly
+4. **DATA SOURCE**: State where each number comes from
 
 ## OUTPUT STRUCTURE
 
 ### 1. **SNAPSHOT** (Always include)
-- Symbol and current price
+- Symbol and current price **(source: market close)**
 - Entry price (note if using current price: "Analyzing risk if buying NOW at $XXX")
-- Data freshness
+- Data period (e.g., "60-day lookback")
 
-### 2. **RISK OVERVIEW** (Beginner-friendly explanation)
-- **Volatility Regime**: Low/Normal/High/Extreme and what it means
-- **Risk Score**: X/100 with interpretation
-- **In Simple Terms**: "This stock typically moves X% per day"
+### 2. **ATR METRICS** (Daily Expected Move - REQUIRED)
+**ALWAYS show the ATR value explicitly:**
+- ATR Value: $X.XX
+- ATR Percent: X.XX% of price
+- Meaning: "Stock typically moves $X.XX (X.XX%) per day"
 
-### 3. **STOP LOSS LEVELS** (Most important for new traders)
-Present 3 options clearly:
-| Method | Price | Risk % | Risk $ (per share) |
-|--------|-------|--------|-------------------|
-| Conservative (ATR 2x) | $XXX | X.X% | $X.XX |
-| Moderate (5% rule) | $XXX | 5.0% | $X.XX |
-| Aggressive (7% rule) | $XXX | 7.0% | $X.XX |
+**Note**: ATR is the TYPICAL daily range, NOT worst-case (VaR is worst-case)
 
-**Recommendation**: Based on volatility, suggest ONE method
+### 3. **STOP LOSS LEVELS** (Show ATR calculation)
+| Method | Price | Risk $ | Risk % | Calculation |
+|--------|-------|--------|--------|-------------|
+| ATR 1x | $XXX | $X.XX | X.X% | Entry - 1×ATR |
+| ATR 2x (Conservative) | $XXX | $X.XX | X.X% | Entry - 2×ATR |
+| ATR 3x | $XXX | $X.XX | X.X% | Entry - 3×ATR |
+| 5% Rule (Moderate) | $XXX | $X.XX | 5.0% | Entry × 0.95 |
+| 7% Rule (Aggressive) | $XXX | $X.XX | 7.0% | Entry × 0.93 |
 
-### 4. **ADVANCED RISK METRICS** (If available)
-- **VaR (95%)**: There's a 5% chance of losing more than X% in a day
-- **CVaR/Expected Shortfall**: In worst-case scenarios, expect to lose ~X%
-- **Max Drawdown**: Historically, the stock dropped as much as X% from peak
-- **Sharpe Ratio**: Risk-adjusted return quality (poor/acceptable/good/excellent)
+**Recommendation**: Based on volatility regime, suggest ONE method
 
-### 5. **POSITION SIZING CALCULATOR**
-Example for $10,000 account with 2% risk tolerance ($200 max loss):
-- Stop distance: $X.XX per share
-- Maximum shares: XXX shares
-- Position value: $X,XXX
+### 4. **TAIL RISK METRICS** (If available - Different from ATR!)
+- **1-Day VaR (95%)**: X.X% ($X.XX/share)
+  - "There's a 5% chance of losing MORE than this in a single day"
+- **CVaR/Expected Shortfall**: X.X%
+  - "Average loss when VaR is breached"
+- **Max Historical Drawdown**: X.X%
+  - "Worst peak-to-trough decline historically"
 
-### 6. **RISK SCENARIOS** (What could happen)
+### 5. **VOLATILITY ASSESSMENT** (Different from ATR!)
+- **Annual Volatility**: X.X% (standard deviation of returns)
+- **Volatility Regime**: LOW / NORMAL / HIGH / EXTREME
+- **Sharpe Ratio**: X.XX (poor/acceptable/good/excellent)
+
+### 6. **POSITION SIZING CALCULATOR**
+For $10,000 account with 2% risk tolerance ($200 max loss):
+- Risk per share (using recommended stop): $X.XX
+- Maximum shares: 200 ÷ $X.XX = XXX shares
+- Position value: XXX × $XXX = $X,XXX
+
+### 7. **TARGETS** (Clarify they are R-multiples, NOT technical)
+| Target | Price | R:R | Note |
+|--------|-------|-----|------|
+| TP1 (2:1) | $XXX | 2:1 | Rule-based: Entry + 2×Risk |
+
+**Note**: These are R-multiple targets, NOT technical resistance levels.
+For technical targets, refer to Technical Analysis module.
+
+### 8. **RISK SCENARIOS**
 | Scenario | Trigger | Action |
 |----------|---------|--------|
-| Stop Hit | Price drops to $XXX | Exit position, accept X% loss |
-| Target 1 | Price rises to $XXX | Consider taking partial profit |
-| Worst Case | Based on MaxDD | Could lose up to X% if held through |
+| Stop Hit | Price ≤ $XXX | Exit position, accept X% loss |
+| Target 1 | Price ≥ $XXX | Consider taking partial profit |
+| Worst Case | Based on MaxDD | Could lose up to X% if held through drawdown |
 
-### 7. **KEY WARNINGS**
-- List specific risk factors for this stock
-- Gap risk warning if high volatility
-- Any concerning metrics from VaR/Drawdown
+### 9. **KEY WARNINGS**
+- Gap risk warning if volatility is HIGH/EXTREME
+- List specific risk factors from data
+- Note if stock is currently in drawdown
+
+## AVOID THESE MISTAKES
+❌ Saying "daily move is 2.6%" without specifying if it's ATR or volatility
+❌ Confusing ATR (typical range) with VaR (tail risk)
+❌ Saying "current price is $X" without noting source (market close)
+❌ Using R-multiple targets without clarifying they're NOT technical levels
+❌ Showing ATR stop without showing ATR value
+
+## GOOD EXAMPLE
+
+"**ATR Metrics (Daily Expected Move):**
+- ATR Value: $4.86
+- ATR Percent: 2.61% of price
+- Meaning: NVDA typically moves $4.86 (2.61%) per day
+
+**Stop Loss Levels (ATR = $4.86):**
+| Method | Price | Risk $ | Risk % | Calculation |
+|--------|-------|--------|--------|-------------|
+| ATR 2x (Conservative) | $176.51 | $9.72 | 5.22% | $186.23 - 2×$4.86 |
+| 5% Rule | $176.92 | $9.31 | 5.00% | $186.23 × 0.95 |
+
+**Tail Risk (VaR - Different from ATR!):**
+- 1-Day VaR (95%): 4.59% ($8.55/share)
+- Meaning: 5% chance of losing MORE than 4.59% in a single day"
 
 ## IMPORTANT REMINDER
 Always end with this note:
@@ -599,8 +657,11 @@ Always end with this note:
 - **Fundamental Analysis**: Company's financial risks (debt, cash flow)"
 
 ## RULES
+- **Show ATR value explicitly** in dollars AND percentage
 - **Use tables** for stop loss levels and scenarios
-- **Show calculations** so users can verify
+- **Show calculations** so users can verify (e.g., "Entry - 2×ATR")
+- **Label each metric type** (ATR/VaR/Volatility)
+- **Cite data sources** (market close, 60-day lookback)
 - **Beginner-friendly** language with explanations
 - **Language**: Match user's language if specified
 """
@@ -1238,96 +1299,187 @@ class MarketScannerHandler(LoggerMixin):
         using_current_as_entry: bool,
         advanced_metrics: Optional[Dict[str, Any]]
     ) -> str:
-        """Build comprehensive LLM-friendly risk analysis summary."""
+        """
+        Build comprehensive LLM-friendly risk analysis summary.
+
+        Addresses ChatGPT feedback:
+        - Show ATR value explicitly
+        - Distinguish Daily Move (ATR) from Tail Risk (VaR) from Annual Volatility
+        - Clear data sources
+        - R-multiple targets vs technical levels
+        """
+        current_price = stop_loss_data.get("current_price", actual_entry)
+
         lines = [
             f"=== RISK ANALYSIS: {symbol} ===",
             ""
         ]
 
+        # ═══════════════════════════════════════════════════════════════════
+        # DATA SOURCES (ChatGPT feedback: be explicit about sources)
+        # ═══════════════════════════════════════════════════════════════════
+        lines.extend([
+            "DATA SOURCES:",
+            f"  Current Price: ${current_price:.2f} (from market close)",
+            f"  Data Period: 60-day historical lookback",
+            f"  Timestamp: {stop_loss_data.get('timestamp', 'N/A')}",
+            ""
+        ])
+
         # Entry context
         if using_current_as_entry:
             lines.extend([
                 "📍 ANALYSIS CONTEXT: Analyzing risk if buying NOW",
-                f"Entry Price: ${actual_entry:.2f} (current market price)",
-                "This shows: 'What are the risks if I buy this stock right now?'",
+                f"Entry Price: ${actual_entry:.2f} (= current market price)",
+                "Question: 'What are the risks if I buy this stock right now?'",
                 ""
             ])
         else:
             lines.extend([
-                f"Entry Price: ${actual_entry:.2f}",
+                f"Entry Price: ${actual_entry:.2f} (user-specified)",
                 ""
             ])
 
-        # Stop loss levels
+        # ═══════════════════════════════════════════════════════════════════
+        # ATR METRICS (ChatGPT feedback: show ATR value explicitly)
+        # Daily Expected Move - different from VaR (tail risk)
+        # ═══════════════════════════════════════════════════════════════════
+        atr_metrics = stop_loss_data.get("atr_metrics", {})
+        atr_value = atr_metrics.get("atr_value", 0)
+        atr_percent = atr_metrics.get("atr_percent", 0)
+
+        # Fallback: extract from stop levels if atr_metrics not available
+        if atr_value == 0:
+            stop_levels = stop_loss_data.get("stop_loss_levels", {})
+            atr_based = stop_levels.get("atr_based", {})
+            atr_2x = atr_based.get("atr_2x", 0)
+            if atr_2x > 0 and actual_entry > 0:
+                # Reverse calculate ATR from atr_2x stop
+                atr_value = (actual_entry - atr_2x) / 2
+                atr_percent = (atr_value / actual_entry * 100) if actual_entry > 0 else 0
+
+        lines.extend([
+            "ATR METRICS (Daily Expected Move - NOT tail risk):",
+            f"  ATR Value: ${atr_value:.2f}",
+            f"  ATR Percent: {atr_percent:.2f}% of price",
+            f"  Daily Move: Stock typically moves ${atr_value:.2f} ({atr_percent:.2f}%) per day",
+            f"  Note: ATR = Average True Range (typical daily range)",
+            ""
+        ])
+
+        # ═══════════════════════════════════════════════════════════════════
+        # STOP LOSS LEVELS (with ATR value shown for verification)
+        # ═══════════════════════════════════════════════════════════════════
         stop_levels = stop_loss_data.get("stop_loss_levels", {})
         atr_based = stop_levels.get("atr_based", {})
         pct_based = stop_levels.get("percentage_based", {})
 
         lines.extend([
-            "STOP LOSS LEVELS:",
-            f"  - ATR 2x (Conservative): ${atr_based.get('atr_2x', 0):.2f}",
-            f"  - ATR 3x: ${atr_based.get('atr_3x', 0):.2f}",
-            f"  - 3% below entry: ${pct_based.get('percent_3', 0):.2f}",
-            f"  - 5% below entry (Moderate): ${pct_based.get('percent_5', 0):.2f}",
-            f"  - 7% below entry (Aggressive): ${pct_based.get('percent_7', 0):.2f}",
-            f"  - Recommended: ${stop_levels.get('recommended', 0):.2f}",
+            f"STOP LOSS LEVELS (ATR = ${atr_value:.2f}):",
+            f"  ATR 1x: ${atr_based.get('atr_1x', actual_entry - atr_value):.2f} (risk: ${atr_value:.2f}, {atr_percent:.2f}%)",
+            f"  ATR 2x (Conservative): ${atr_based.get('atr_2x', 0):.2f} (risk: ${2*atr_value:.2f}, {2*atr_percent:.2f}%)",
+            f"  ATR 3x: ${atr_based.get('atr_3x', 0):.2f} (risk: ${3*atr_value:.2f}, {3*atr_percent:.2f}%)",
+            f"  3% Rule: ${pct_based.get('percent_3', 0):.2f}",
+            f"  5% Rule (Moderate): ${pct_based.get('percent_5', 0):.2f}",
+            f"  7% Rule (Aggressive): ${pct_based.get('percent_7', 0):.2f}",
+            f"  Recommended: ${stop_levels.get('recommended', 0):.2f} ({stop_loss_data.get('recommended_method', 'N/A')})",
             ""
         ])
 
-        # Risk amount
+        # Risk per share
         risk_amount = stop_loss_data.get("risk_amount", 0)
         risk_pct = stop_loss_data.get("risk_percentage", 0)
         lines.extend([
-            "RISK PER SHARE:",
-            f"  - Amount: ${risk_amount:.2f}",
-            f"  - Percentage: {risk_pct:.1f}%",
+            "RISK PER SHARE (using recommended stop):",
+            f"  Amount: ${risk_amount:.2f}",
+            f"  Percentage: {risk_pct:.2f}%",
             ""
         ])
 
-        # Advanced metrics if available
+        # ═══════════════════════════════════════════════════════════════════
+        # ADVANCED RISK METRICS (ChatGPT feedback: distinguish metric types)
+        # ═══════════════════════════════════════════════════════════════════
         if advanced_metrics:
             lines.append("ADVANCED RISK METRICS:")
 
+            # TAIL RISK (VaR/CVaR) - different from daily move
             var_data = advanced_metrics.get("var", {})
             if var_data:
-                lines.append(f"  - VaR (95%): {var_data.get('var_percent', 0):.2f}% daily loss potential")
+                var_pct = var_data.get('var_percent', 0)
+                var_dollars = abs(var_pct / 100 * actual_entry) if actual_entry > 0 else 0
+                lines.extend([
+                    "",
+                    "  TAIL RISK (worst-case scenarios):",
+                    f"    1-Day VaR (95%): {abs(var_pct):.2f}% (${var_dollars:.2f}/share)",
+                    f"    Meaning: 5% chance of losing more than {abs(var_pct):.2f}% in a single day",
+                ])
 
             cvar_data = advanced_metrics.get("cvar", {})
             if cvar_data and cvar_data.get("cvar_percent"):
-                lines.append(f"  - CVaR/Expected Shortfall: {cvar_data.get('cvar_percent', 0):.2f}%")
+                cvar_pct = cvar_data.get('cvar_percent', 0)
+                lines.append(f"    CVaR/Expected Shortfall: {abs(cvar_pct):.2f}% (avg loss when VaR is breached)")
 
+            # VOLATILITY - different from daily move (ATR)
             vol_data = advanced_metrics.get("volatility", {})
             if vol_data:
-                lines.append(f"  - Annual Volatility: {vol_data.get('annual', 0)*100:.1f}%")
-                lines.append(f"  - Volatility Regime: {vol_data.get('regime', 'unknown').upper()}")
+                annual_vol = vol_data.get('annual', 0)
+                daily_vol = vol_data.get('daily', 0)
+                regime = vol_data.get('regime', 'unknown')
+                lines.extend([
+                    "",
+                    "  VOLATILITY (price fluctuation intensity):",
+                    f"    Annual Volatility: {annual_vol*100:.1f}%",
+                    f"    Daily Volatility (std dev): {daily_vol*100:.2f}%",
+                    f"    Regime: {regime.upper()}",
+                    f"    Note: Different from ATR - volatility is standard deviation of returns",
+                ])
 
+            # MAX DRAWDOWN
             mdd_data = advanced_metrics.get("max_drawdown", {})
             if mdd_data:
                 max_dd = mdd_data.get("max_drawdown", 0)
                 current_dd = mdd_data.get("current_drawdown", 0)
-                lines.append(f"  - Max Historical Drawdown: {abs(max_dd)*100:.1f}%")
+                lines.extend([
+                    "",
+                    "  MAX DRAWDOWN (historical worst decline):",
+                    f"    Max Historical Drawdown: {abs(max_dd)*100:.1f}%",
+                ])
                 if current_dd and current_dd < -0.05:
-                    lines.append(f"  - ⚠️ Currently in {abs(current_dd)*100:.1f}% drawdown")
+                    lines.append(f"    ⚠️ Currently in {abs(current_dd)*100:.1f}% drawdown from peak")
 
+            # RISK-ADJUSTED RETURNS
             sharpe_data = advanced_metrics.get("sharpe_ratio", {})
-            if sharpe_data:
-                lines.append(f"  - Sharpe Ratio: {sharpe_data.get('value', 0):.2f} ({sharpe_data.get('quality', 'N/A')})")
+            if sharpe_data and sharpe_data.get('value'):
+                lines.extend([
+                    "",
+                    "  RISK-ADJUSTED RETURNS:",
+                    f"    Sharpe Ratio: {sharpe_data.get('value', 0):.2f} ({sharpe_data.get('quality', 'N/A')})",
+                ])
 
+            # OVERALL RISK SCORE
             risk_score = advanced_metrics.get("risk_score")
             risk_level = advanced_metrics.get("risk_level")
             if risk_score:
-                lines.append(f"  - Risk Score: {risk_score}/100 ({risk_level.upper() if risk_level else 'N/A'})")
+                lines.extend([
+                    "",
+                    "  OVERALL RISK ASSESSMENT:",
+                    f"    Risk Score: {risk_score}/100 ({risk_level.upper() if risk_level else 'N/A'})",
+                ])
 
             lines.append("")
 
-        # Target and R:R
+        # ═══════════════════════════════════════════════════════════════════
+        # TARGETS (ChatGPT feedback: clarify R-multiple vs technical)
+        # ═══════════════════════════════════════════════════════════════════
         target = stop_loss_data.get("target_price", 0)
         rr = stop_loss_data.get("risk_reward_ratio", 0)
         if target and rr:
             lines.extend([
-                "RISK/REWARD:",
-                f"  - Target Price (2:1 R:R): ${target:.2f}",
-                f"  - Risk:Reward Ratio: 1:{rr:.1f}",
+                "TARGETS (R-Multiple Based, NOT Technical Resistance):",
+                f"  Target Price (2:1 R:R): ${target:.2f}",
+                f"  Risk:Reward Ratio: 1:{rr:.1f}",
+                f"  Note: This is a rule-based target using risk per share × 2",
+                f"  For technical targets, see Technical Analysis module",
                 ""
             ])
 
