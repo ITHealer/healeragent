@@ -663,27 +663,105 @@ Focus on the most significant trends and their implications for investors."""
 
             # Extract data
             km_data = key_metrics[0] if key_metrics else {}
-            
+
+            # =====================================================
+            # SNAPSHOT LOCKING - Use consistent data source
+            # =====================================================
+            # Price from quote (realtime/close)
+            current_price = quote.get("price") if quote else None
+            quote_market_cap = quote.get("marketCap") if quote else None
+
+            # Per-share metrics from key_metrics (FY record)
+            eps_ttm = income_stmt[0].get("eps") if income_stmt else None
+            book_value_per_share = km_data.get("bookValuePerShare")
+            revenue_per_share = km_data.get("revenuePerShare")
+
+            # =====================================================
+            # CALCULATE RATIOS FROM CURRENT PRICE (Not from key_metrics!)
+            # =====================================================
+            # key_metrics ratios use HISTORICAL price, we need CURRENT price
+            calc_pe = None
+            calc_pb = None
+            calc_ps = None
+
+            if current_price and current_price > 0:
+                if eps_ttm and eps_ttm > 0:
+                    calc_pe = round(current_price / eps_ttm, 2)
+                if book_value_per_share and book_value_per_share > 0:
+                    calc_pb = round(current_price / book_value_per_share, 2)
+                if revenue_per_share and revenue_per_share > 0:
+                    calc_ps = round(current_price / revenue_per_share, 2)
+
+            # Log calculated vs reported ratios for transparency
+            reported_pe = km_data.get("peRatio")
+            reported_pb = km_data.get("pbRatio")
+            reported_ps = km_data.get("priceToSalesRatio")
+
+            self.logger.info(f"[SANITY CHECK] Valuation Ratios:")
+            self.logger.info(f"  Price (quote): ${current_price}")
+            self.logger.info(f"  EPS (income_stmt): ${eps_ttm}")
+            self.logger.info(f"  Book Value/Share: ${book_value_per_share}")
+            self.logger.info(f"  Revenue/Share: ${revenue_per_share}")
+            self.logger.info(f"  Calculated P/E: {calc_pe} vs Reported (key_metrics): {reported_pe}")
+            self.logger.info(f"  Calculated P/B: {calc_pb} vs Reported (key_metrics): {reported_pb}")
+            self.logger.info(f"  Calculated P/S: {calc_ps} vs Reported (key_metrics): {reported_ps}")
+
+            # Warn if significant difference (>10%)
+            if calc_pe and reported_pe and abs(calc_pe - reported_pe) / reported_pe > 0.1:
+                self.logger.warning(f"  ⚠️ P/E mismatch >10%: Using calculated value {calc_pe}")
+
             # 2. Calculate all metrics
             report = {
                 "symbol": symbol.upper(),
                 "generated": datetime.now().isoformat(timespec="seconds"),
+                "data_snapshot": {
+                    "price_source": "FMP /quote",
+                    "price": current_price,
+                    "price_date": datetime.now().strftime("%Y-%m-%d"),
+                    "financial_period": income_stmt[0].get("date") if income_stmt else "N/A",
+                    "market_cap_quote": quote_market_cap,
+                    "market_cap_km": km_data.get("marketCap"),
+                    "note": "Ratios calculated from current price + TTM metrics"
+                },
                 "valuation": {},
                 "growth": {},
                 "profitability": {},
                 "leverage": {},
                 "cashflow": {},
+                "dividends": {},
                 "risk": {}
             }
-            
-            # Valuation metrics
+
+            # Valuation metrics - USE CALCULATED VALUES (from current price)
             report["valuation"] = {
-                "price": quote.get("price") if quote else None,
-                "pe": km_data.get("peRatio"),
-                "pb": km_data.get("pbRatio"),
-                "ps": km_data.get("priceToSalesRatio"),
-                "peg": km_data.get("pegRatio")
+                "price": current_price,
+                "market_cap": quote_market_cap,
+                "pe_ttm": calc_pe,  # Calculated from current price
+                "pb_ttm": calc_pb,  # Calculated from current price
+                "ps_ttm": calc_ps,  # Calculated from current price
+                "forward_pe": km_data.get("forwardPE"),  # Keep from key_metrics (analyst estimates)
+                "peg": km_data.get("pegRatio"),
+                "ev_ebitda": km_data.get("enterpriseValueOverEBITDA"),
+                # Raw inputs for transparency
+                "eps_ttm": eps_ttm,
+                "book_value_per_share": book_value_per_share,
+                "revenue_per_share": revenue_per_share,
             }
+
+            # Dividend metrics (from key_metrics)
+            dividend_yield = km_data.get("dividendYield")
+            dividend_per_share = km_data.get("dividendPerShare")
+            payout_ratio = km_data.get("payoutRatio")
+
+            report["dividends"] = {
+                "dividend_yield": dividend_yield,
+                "dividend_per_share": dividend_per_share,
+                "payout_ratio": payout_ratio,
+                "has_dividend": dividend_yield is not None and dividend_yield > 0,
+                "note": "Dividend data from FMP /key-metrics-ttm"
+            }
+
+            self.logger.info(f"[DIVIDENDS] Yield: {dividend_yield}, Per Share: {dividend_per_share}, Payout: {payout_ratio}")
             
             # Growth metrics - Calculate CAGR
             if income_stmt and len(income_stmt) >= 5:
@@ -731,16 +809,33 @@ Focus on the most significant trends and their implications for investors."""
                 latest_income = income_stmt[0]
                 revenue = latest_income.get("revenue", 0)
                 net_income = latest_income.get("netIncome", 0)
-                
+                gross_profit = latest_income.get("grossProfit", 0)
+                operating_income = latest_income.get("operatingIncome", 0)
+
                 if revenue is not None and net_income is not None and revenue > 0:
                     net_margin = (net_income / revenue * 100)
+                    gross_margin = (gross_profit / revenue * 100) if gross_profit else None
+                    operating_margin = (operating_income / revenue * 100) if operating_income else None
                 else:
                     net_margin = None
-                
+                    gross_margin = None
+                    operating_margin = None
+
                 report["profitability"] = {
+                    # Raw data for transparency
+                    "revenue": revenue,
+                    "net_income": net_income,
+                    "eps": eps_ttm,
+                    "gross_profit": gross_profit,
+                    "operating_income": operating_income,
+                    # Calculated margins
+                    "gross_margin": round(gross_margin, 2) if gross_margin else None,
+                    "operating_margin": round(operating_margin, 2) if operating_margin else None,
                     "net_margin": round(net_margin, 2) if net_margin else None,
+                    # From key_metrics
                     "roe": km_data.get("roe"),
-                    "roa": km_data.get("roa")
+                    "roa": km_data.get("roa"),
+                    "roic": km_data.get("roic"),
                 }
             
             # Leverage metrics
@@ -784,26 +879,36 @@ Focus on the most significant trends and their implications for investors."""
             if cash_flow and len(cash_flow) > 0:
                 latest_cf = cash_flow[0]
                 fcf = latest_cf.get("freeCashFlow", 0)
-                market_cap = km_data.get("marketCap", 0)
-                
-                # fcf_yield = (fcf / market_cap * 100) if market_cap > 0 else None
-                if fcf is not None and market_cap is not None and market_cap > 0:
-                    fcf_yield = (fcf / market_cap * 100)
+                operating_cf = latest_cf.get("operatingCashFlow", 0)
+                capex = latest_cf.get("capitalExpenditure", 0)
+
+                # Use QUOTE market cap for FCF yield (current valuation)
+                # Not key_metrics market cap (historical)
+                market_cap_for_yield = quote_market_cap if quote_market_cap else km_data.get("marketCap", 0)
+
+                if fcf is not None and market_cap_for_yield is not None and market_cap_for_yield > 0:
+                    fcf_yield = (fcf / market_cap_for_yield * 100)
                 else:
                     fcf_yield = None
 
-                # report["cashflow"] = {
-                #     "fcf": int(fcf) if fcf else None,
-                #     "fcf_yield": round(fcf_yield, 2) if fcf_yield else None
-                # }
+                self.logger.info(f"[FCF YIELD] FCF: {fcf}, Market Cap (quote): {quote_market_cap}, Yield: {fcf_yield}")
+
                 report["cashflow"] = {
                     "fcf": int(fcf) if fcf is not None else None,
-                    "fcf_yield": round(fcf_yield, 2) if fcf_yield is not None else None
+                    "operating_cf": int(operating_cf) if operating_cf is not None else None,
+                    "capex": int(capex) if capex is not None else None,
+                    "fcf_yield": round(fcf_yield, 2) if fcf_yield is not None else None,
+                    "market_cap_used": market_cap_for_yield,
+                    "note": "FCF yield calculated using quote marketCap (current)"
                 }
             else:
                 report["cashflow"] = {
                     "fcf": None,
-                    "fcf_yield": None
+                    "operating_cf": None,
+                    "capex": None,
+                    "fcf_yield": None,
+                    "market_cap_used": None,
+                    "note": "Cash flow data not available"
                 }
             
             # Risk metrics
@@ -1226,37 +1331,98 @@ Focus on the most significant trends and their implications for investors."""
         valuation = report.get('valuation', {})
         profitability = report.get('profitability', {})
         dividends = report.get('dividends', {})
+        cashflow = report.get('cashflow', {})
+        leverage = report.get('leverage', {})
+        growth = report.get('growth', {})
+        data_snapshot = report.get('data_snapshot', {})
 
-        # Build raw data summary
+        # Build comprehensive raw data summary for LLM
         raw_data_summary = f"""
     ═══════════════════════════════════════════════════════════════════════════════
-    📋 RAW DATA SUMMARY (for validation)
+    📋 DATA SNAPSHOT (LOCKED - All calculations use these values)
     ═══════════════════════════════════════════════════════════════════════════════
 
-    **Price & Valuation** (Source: FMP /quote, /key-metrics-ttm)
-    - Current Price: ${valuation.get('price', 'N/A')} (as of {report_date})
-    - Market Cap: ${self._format_large_number(valuation.get('market_cap', 0))}
-    - P/E [TTM]: {valuation.get('pe_ttm', 'N/A')}
-    - Forward P/E: {valuation.get('forward_pe', 'N/A')}
-    - P/S [TTM]: {valuation.get('ps_ttm', 'N/A')}
-    - P/B [TTM]: {valuation.get('pb_ttm', 'N/A')}
-    - EV/EBITDA: {valuation.get('ev_ebitda', 'N/A')}
+    **Data Sources**:
+    - Price: FMP /quote (realtime/close)
+    - Financials: FMP /income-statement, /balance-sheet, /cash-flow (TTM)
+    - Ratios: CALCULATED from current price + TTM metrics (NOT from key_metrics)
 
-    **Earnings** (Source: FMP /income-statement)
-    - EPS [TTM]: ${profitability.get('eps', 'N/A')}
-    - Revenue [TTM]: ${self._format_large_number(profitability.get('revenue', 0))}
-    - Net Income [TTM]: ${self._format_large_number(profitability.get('net_income', 0))}
-    - Net Margin [TTM]: {self._format_percentage(profitability.get('net_margin', 0))}
-    - ROE [TTM]: {self._format_percentage(profitability.get('roe', 0))}
+    **Price Snapshot**:
+    - Current Price: ${valuation.get('price', 'N/A')}
+    - Price Date: {data_snapshot.get('price_date', report_date)}
+    - Market Cap (quote): {self._format_large_number(data_snapshot.get('market_cap_quote', 0))}
 
-    **Dividends** (Source: FMP /key-metrics-ttm)
-    - Dividend Yield: {self._format_percentage(dividends.get('dividend_yield', 0))}
-    - Payout Ratio: {self._format_percentage(dividends.get('payout_ratio', 0))}
-    - Annual Dividend: ${dividends.get('dividend_per_share', 'N/A')}
+    ═══════════════════════════════════════════════════════════════════════════════
+    📊 VALUATION RATIOS (Calculated from current price)
+    ═══════════════════════════════════════════════════════════════════════════════
 
-    **Peer Comparison** (Industry benchmark - if available):
-    - Industry Avg P/E: [Compare with sector data if available]
-    - Note: For accurate peer comparison, compare with 2-3 direct competitors
+    **How P/E is calculated**: P/E = Price / EPS = {valuation.get('price', 'N/A')} / {valuation.get('eps_ttm', 'N/A')} = {valuation.get('pe_ttm', 'N/A')}
+    **How P/B is calculated**: P/B = Price / Book Value per Share = {valuation.get('price', 'N/A')} / {valuation.get('book_value_per_share', 'N/A')} = {valuation.get('pb_ttm', 'N/A')}
+    **How P/S is calculated**: P/S = Price / Revenue per Share = {valuation.get('price', 'N/A')} / {valuation.get('revenue_per_share', 'N/A')} = {valuation.get('ps_ttm', 'N/A')}
+
+    | Metric | Value | Calculation |
+    |--------|-------|-------------|
+    | P/E [TTM] | {valuation.get('pe_ttm', 'N/A')} | Price ${valuation.get('price', 'N/A')} / EPS ${valuation.get('eps_ttm', 'N/A')} |
+    | P/B [TTM] | {valuation.get('pb_ttm', 'N/A')} | Price / BVPS ${valuation.get('book_value_per_share', 'N/A')} |
+    | P/S [TTM] | {valuation.get('ps_ttm', 'N/A')} | Price / Rev/Share ${valuation.get('revenue_per_share', 'N/A')} |
+    | Forward P/E | {valuation.get('forward_pe', 'N/A')} | From analyst estimates |
+    | PEG | {valuation.get('peg', 'N/A')} | P/E / Growth rate |
+    | EV/EBITDA | {valuation.get('ev_ebitda', 'N/A')} | Enterprise value based |
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    💰 PROFITABILITY (Source: FMP /income-statement TTM)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    | Metric | Value | Raw Data |
+    |--------|-------|----------|
+    | Revenue | {self._format_large_number(profitability.get('revenue', 0))} | {profitability.get('revenue', 'N/A')} |
+    | Gross Profit | {self._format_large_number(profitability.get('gross_profit', 0))} | Margin: {profitability.get('gross_margin', 'N/A')}% |
+    | Operating Income | {self._format_large_number(profitability.get('operating_income', 0))} | Margin: {profitability.get('operating_margin', 'N/A')}% |
+    | Net Income | {self._format_large_number(profitability.get('net_income', 0))} | Margin: {profitability.get('net_margin', 'N/A')}% |
+    | EPS | ${profitability.get('eps', 'N/A')} | Used for P/E calculation |
+    | ROE | {self._format_percentage(profitability.get('roe', 0))} | Return on Equity |
+    | ROA | {self._format_percentage(profitability.get('roa', 0))} | Return on Assets |
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    📈 GROWTH (Source: FMP /income-statement 5Y CAGR)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    | Metric | Value | Note |
+    |--------|-------|------|
+    | Revenue CAGR (5Y) | {growth.get('rev_cagr_5y', 'N/A')}% | Compound annual growth |
+    | EPS CAGR (5Y) | {growth.get('eps_cagr_5y', 'N/A')}% | Used for PEG if forward not available |
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    💵 DIVIDENDS (Source: FMP /key-metrics-ttm)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    | Metric | Value | Interpretation |
+    |--------|-------|----------------|
+    | Dividend Yield | {self._format_percentage(dividends.get('dividend_yield', 0))} | {'Suitable for income' if dividends.get('dividend_yield', 0) and dividends.get('dividend_yield', 0) > 0.03 else 'NOT suitable for income focus (< 3%)'} |
+    | Dividend/Share | ${dividends.get('dividend_per_share', 'N/A')} | Annual dividend |
+    | Payout Ratio | {self._format_percentage(dividends.get('payout_ratio', 0))} | % of earnings paid as dividend |
+    | Has Dividend? | {'Yes' if dividends.get('has_dividend') else 'No/Minimal'} | {dividends.get('note', '')} |
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    💸 CASH FLOW (Source: FMP /cash-flow-statement TTM)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    | Metric | Value | Note |
+    |--------|-------|------|
+    | Free Cash Flow | {self._format_large_number(cashflow.get('fcf', 0))} | FCF = Operating CF - CapEx |
+    | Operating CF | {self._format_large_number(cashflow.get('operating_cf', 0))} | Cash from operations |
+    | CapEx | {self._format_large_number(cashflow.get('capex', 0))} | Capital expenditure |
+    | FCF Yield | {cashflow.get('fcf_yield', 'N/A')}% | FCF / Market Cap (quote) |
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    ⚖️ LEVERAGE (Source: FMP /balance-sheet-statement TTM)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    | Metric | Value | Risk Level |
+    |--------|-------|------------|
+    | D/E Ratio | {leverage.get('de_ratio', 'N/A')} | {'Low risk' if leverage.get('de_ratio', 1) and leverage.get('de_ratio', 1) < 0.5 else 'Moderate' if leverage.get('de_ratio', 1) and leverage.get('de_ratio', 1) < 1 else 'Higher risk'} |
+    | Current Ratio | {leverage.get('current_ratio', 'N/A')} | {'Strong liquidity' if leverage.get('current_ratio', 0) and leverage.get('current_ratio', 0) > 1.5 else 'Adequate' if leverage.get('current_ratio', 0) and leverage.get('current_ratio', 0) > 1 else 'Liquidity concern'} |
+    | Net Debt/EBITDA | {leverage.get('net_debt_to_ebitda', 'N/A')} | Debt coverage |
 """
 
         prompt = f"""
