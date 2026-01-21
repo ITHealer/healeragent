@@ -59,7 +59,31 @@ class Settings(BaseSettings):
 
     CACHE_TTL_DISCOVERY_HISTORICAL: int = int(os.getenv("CACHE_TTL_DISCOVERY_HISTORICAL", 60 * 60 * 24))  # 24 giờ
     CACHE_TTL_DISCOVERY_QUOTE: int = int(os.getenv("CACHE_TTL_DISCOVERY_QUOTE", 30))  # 30 giây cho real-time quote
-    
+
+    # =============================================================================
+    # FMP API CACHING TTLs (ToolCallService)
+    # =============================================================================
+    # Quote: real-time price data, needs frequent updates
+    CACHE_TTL_FMP_QUOTE: int = int(os.getenv("CACHE_TTL_FMP_QUOTE", 30))  # 30 seconds
+
+    # Key metrics: P/E, P/B, ROE - changes with price but less critical
+    CACHE_TTL_FMP_KEY_METRICS: int = int(os.getenv("CACHE_TTL_FMP_KEY_METRICS", 60 * 5))  # 5 minutes
+
+    # Key metrics TTM: rolling 12-month metrics
+    CACHE_TTL_FMP_KEY_METRICS_TTM: int = int(os.getenv("CACHE_TTL_FMP_KEY_METRICS_TTM", 60 * 5))  # 5 minutes
+
+    # Financial statements: annual data rarely changes
+    CACHE_TTL_FMP_FINANCIALS: int = int(os.getenv("CACHE_TTL_FMP_FINANCIALS", 60 * 15))  # 15 minutes
+
+    # Financial growth: historical growth data
+    CACHE_TTL_FMP_GROWTH: int = int(os.getenv("CACHE_TTL_FMP_GROWTH", 60 * 15))  # 15 minutes
+
+    # Analyst estimates: updated periodically
+    CACHE_TTL_FMP_ANALYST: int = int(os.getenv("CACHE_TTL_FMP_ANALYST", 60 * 30))  # 30 minutes
+
+    # Financial ratios: calculated from financials
+    CACHE_TTL_FMP_RATIOS: int = int(os.getenv("CACHE_TTL_FMP_RATIOS", 60 * 15))  # 15 minutes
+
     # Define global variables with the Field class
     ENV_STATE: str = Field('dev', env='ENV_STATE')
     LOG_LEVEL: str = Field('DEBUG', env='LOG_LEVEL')
