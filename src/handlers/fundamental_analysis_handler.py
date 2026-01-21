@@ -1072,23 +1072,22 @@ Focus on the most significant trends and their implications for investors."""
             # Combine all sections
             full_prompt = f"{context_section}\n{base_prompt}\n{question_section}"
             
-            detection_method = ""
-            if len(user_question.split()) < 2:
-                detection_method = DetectionMethod.LLM
-            else:
-                detection_method = DetectionMethod.LIBRARY
+            # Handle language detection - use default if no user_question
+            detected_language = target_language or "en"
 
-            # Language detection
-            language_info = await language_detector.detect(
-                text=user_question,
-                method=detection_method,
-                system_language=target_language,
-                model_name=model_name,
-                provider_type=provider_type,
-                api_key=api_key
-            )
+            if user_question:
+                detection_method = DetectionMethod.LLM if len(user_question.split()) < 2 else DetectionMethod.LIBRARY
 
-            detected_language = language_info["detected_language"]
+                # Language detection
+                language_info = await language_detector.detect(
+                    text=user_question,
+                    method=detection_method,
+                    system_language=target_language,
+                    model_name=model_name,
+                    provider_type=provider_type,
+                    api_key=api_key
+                )
+                detected_language = language_info.get("detected_language") or target_language or "en"
 
             if detected_language:
                 lang_name = {
