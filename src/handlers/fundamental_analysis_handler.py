@@ -579,10 +579,11 @@ Focus on the most significant trends and their implications for investors."""
                 tool_service.get_cash_flow_statement(symbol, limit=5),
                 tool_service.get_quote(symbol),
                 tool_service.get_financial_statement_growth(symbol, limit=5),
+                tool_service.get_key_metrics_ttm(symbol),  # Add TTM metrics for accurate TTM P/E
                 return_exceptions=True
             )
-            
-            key_metrics, income_stmt, balance_sheet, cash_flow, quote, growth_data = results
+
+            key_metrics, income_stmt, balance_sheet, cash_flow, quote, growth_data, key_metrics_ttm = results
 
             # Handle exceptions
             key_metrics = key_metrics if not isinstance(key_metrics, Exception) else None
@@ -591,6 +592,7 @@ Focus on the most significant trends and their implications for investors."""
             cash_flow = cash_flow if not isinstance(cash_flow, Exception) else None
             quote = quote if not isinstance(quote, Exception) else None
             growth_data = growth_data if not isinstance(growth_data, Exception) else None
+            key_metrics_ttm = key_metrics_ttm if not isinstance(key_metrics_ttm, Exception) else None
 
             # =====================================================
             # RAW DATA LOGGING FOR VALIDATION (CRITICAL FOR DEBUG)
@@ -657,6 +659,17 @@ Focus on the most significant trends and their implications for investors."""
                     self.logger.info(f"  EPS Growth: {latest_growth.get('epsgrowth', 'N/A')}")
             else:
                 self.logger.warning(f"[RAW] Growth Data: NONE/EMPTY")
+
+            # Log Key Metrics TTM (raw) - for accurate TTM P/E
+            if key_metrics_ttm:
+                self.logger.info(f"[RAW] Key Metrics TTM:")
+                self.logger.info(f"  P/E TTM: {getattr(key_metrics_ttm, 'peRatioTTM', 'N/A')}")
+                self.logger.info(f"  P/B TTM: {getattr(key_metrics_ttm, 'pbRatioTTM', 'N/A')}")
+                self.logger.info(f"  P/S TTM: {getattr(key_metrics_ttm, 'priceToSalesRatioTTM', 'N/A')}")
+                self.logger.info(f"  Net Income Per Share TTM (EPS TTM): {getattr(key_metrics_ttm, 'netIncomePerShareTTM', 'N/A')}")
+                self.logger.info(f"  Dividend Yield TTM: {getattr(key_metrics_ttm, 'dividendYieldTTM', 'N/A')}")
+            else:
+                self.logger.warning(f"[RAW] Key Metrics TTM: NONE/EMPTY")
 
             self.logger.info(f"=" * 60)
             # =====================================================
@@ -732,20 +745,62 @@ Focus on the most significant trends and their implications for investors."""
                 "risk": {}
             }
 
-            # Valuation metrics - USE CALCULATED VALUES (from current price)
+            # =====================================================
+            # EXTRACT TTM METRICS FROM key_metrics_ttm ENDPOINT
+            # =====================================================
+            # TTM metrics from FMP /key-metrics-ttm (uses rolling 12-month EPS)
+            ttm_pe = getattr(key_metrics_ttm, 'peRatioTTM', None) if key_metrics_ttm else None
+            ttm_pb = getattr(key_metrics_ttm, 'pbRatioTTM', None) if key_metrics_ttm else None
+            ttm_ps = getattr(key_metrics_ttm, 'priceToSalesRatioTTM', None) if key_metrics_ttm else None
+            ttm_eps = getattr(key_metrics_ttm, 'netIncomePerShareTTM', None) if key_metrics_ttm else None
+
+            # Log P/E comparison for transparency
+            self.logger.info(f"[P/E COMPARISON] FY vs TTM:")
+            self.logger.info(f"  P/E (FY): {calc_pe} - calculated from Price ${current_price} / EPS FY ${eps_ttm}")
+            self.logger.info(f"  P/E (TTM): {ttm_pe} - from FMP /key-metrics-ttm endpoint")
+            self.logger.info(f"  EPS FY (income_stmt): ${eps_ttm}")
+            self.logger.info(f"  EPS TTM (key_metrics_ttm): ${ttm_eps}")
+            if calc_pe and ttm_pe:
+                pe_diff_pct = abs(calc_pe - ttm_pe) / ttm_pe * 100
+                self.logger.info(f"  Difference: {pe_diff_pct:.1f}% - {'⚠️ Significant difference!' if pe_diff_pct > 15 else 'Within expected range'}")
+
+            # Valuation metrics - SHOW BOTH FY AND TTM VALUES
             report["valuation"] = {
                 "price": current_price,
                 "market_cap": quote_market_cap,
-                "pe_ttm": calc_pe,  # Calculated from current price
-                "pb_ttm": calc_pb,  # Calculated from current price
-                "ps_ttm": calc_ps,  # Calculated from current price
-                "forward_pe": km_data.get("forwardPE"),  # Keep from key_metrics (analyst estimates)
+                # FY-based ratios (calculated from current price + FY metrics)
+                "pe_fy": calc_pe,  # P/E using FY EPS from income statement
+                "pb_fy": calc_pb,  # P/B using FY book value
+                "ps_fy": calc_ps,  # P/S using FY revenue per share
+                "eps_fy": eps_ttm,  # EPS from latest fiscal year income statement
+                # TTM-based ratios (from FMP /key-metrics-ttm - rolling 12 months)
+                "pe_ttm": ttm_pe,  # P/E using true TTM EPS (matches Yahoo Finance)
+                "pb_ttm": ttm_pb,  # P/B using TTM book value
+                "ps_ttm": ttm_ps,  # P/S using TTM revenue
+                "eps_ttm": ttm_eps,  # True TTM EPS (rolling 12 months)
+                # Other valuation metrics
+                "forward_pe": km_data.get("forwardPE"),  # Analyst estimates
                 "peg": km_data.get("pegRatio"),
                 "ev_ebitda": km_data.get("enterpriseValueOverEBITDA"),
                 # Raw inputs for transparency
-                "eps_ttm": eps_ttm,
                 "book_value_per_share": book_value_per_share,
                 "revenue_per_share": revenue_per_share,
+            }
+
+            # Add P/E comparison section with clear explanation
+            report["pe_comparison"] = {
+                "pe_fy": calc_pe,
+                "pe_ttm": ttm_pe,
+                "eps_fy": eps_ttm,
+                "eps_ttm": ttm_eps,
+                "fy_period": income_stmt[0].get("date") if income_stmt else "N/A",
+                "explanation": {
+                    "fy_meaning": "P/E FY uses EPS from the latest fiscal year (e.g., FY ending Jan 2025). This may not include recent quarters.",
+                    "ttm_meaning": "P/E TTM uses trailing 12-month EPS (rolling sum of last 4 quarters). This is what Yahoo Finance shows.",
+                    "why_different": "If recent quarters had higher/lower earnings than the same quarters last year, TTM EPS will differ from FY EPS.",
+                    "which_to_use": "TTM P/E is more current and comparable with other sources. FY P/E is useful for year-over-year consistency."
+                },
+                "note": "TTM = Trailing Twelve Months (rolling 4 quarters). FY = Fiscal Year (fixed 12-month period)."
             }
 
             # Dividend metrics (from key_metrics)
@@ -1072,6 +1127,22 @@ Focus on the most significant trends and their implications for investors."""
     - Price data: specify "close price" or "realtime" and timezone if known
     - If P/E changes from previous analysis, EXPLAIN why (price change, EPS update, etc.)
 
+    ### 2.5 P/E RATIO: FY vs TTM (CRITICAL FOR USER CLARITY)
+    We provide TWO P/E values - explain both to users:
+
+    **P/E (FY)**: Uses EPS from the latest FISCAL YEAR (fixed 12-month period)
+    **P/E (TTM)**: Uses EPS from TRAILING TWELVE MONTHS (rolling 4 quarters) - THIS MATCHES YAHOO FINANCE
+
+    ⚠️ **WHY THEY DIFFER**:
+    - FY EPS is from a fixed period (e.g., fiscal year ending Jan 2025)
+    - TTM EPS is rolling (sum of last 4 quarters, updated each quarter)
+    - If recent quarters had higher/lower earnings than same quarters last year, TTM ≠ FY
+
+    📌 **ALWAYS EXPLAIN TO USERS**:
+    - "Our P/E (TTM) of X.X matches Yahoo Finance because both use trailing 12-month EPS"
+    - "Our P/E (FY) of X.X uses fiscal year EPS which may differ from TTM"
+    - Help users understand which to use for their analysis
+
     ### 3. SEPARATE FACTS vs INTERPRETATION vs ACTION
     - **FACTS**: Raw data with period tags and source
     - **INTERPRETATION**: Your analysis of what the data means
@@ -1335,6 +1406,7 @@ Focus on the most significant trends and their implications for investors."""
         leverage = report.get('leverage', {})
         growth = report.get('growth', {})
         data_snapshot = report.get('data_snapshot', {})
+        pe_comparison = report.get('pe_comparison', {})
 
         # Build comprehensive raw data summary for LLM
         raw_data_summary = f"""
@@ -1353,21 +1425,49 @@ Focus on the most significant trends and their implications for investors."""
     - Market Cap (quote): {self._format_large_number(data_snapshot.get('market_cap_quote', 0))}
 
     ═══════════════════════════════════════════════════════════════════════════════
-    📊 VALUATION RATIOS (Calculated from current price)
+    ⚠️ P/E RATIO COMPARISON (FY vs TTM) - IMPORTANT FOR USERS
     ═══════════════════════════════════════════════════════════════════════════════
 
-    **How P/E is calculated**: P/E = Price / EPS = {valuation.get('price', 'N/A')} / {valuation.get('eps_ttm', 'N/A')} = {valuation.get('pe_ttm', 'N/A')}
-    **How P/B is calculated**: P/B = Price / Book Value per Share = {valuation.get('price', 'N/A')} / {valuation.get('book_value_per_share', 'N/A')} = {valuation.get('pb_ttm', 'N/A')}
-    **How P/S is calculated**: P/S = Price / Revenue per Share = {valuation.get('price', 'N/A')} / {valuation.get('revenue_per_share', 'N/A')} = {valuation.get('ps_ttm', 'N/A')}
+    🔴 **WHY DO WE SHOW TWO P/E VALUES?**
+    Different sources (Yahoo Finance, Bloomberg, etc.) may show different P/E values.
+    This is NOT an error - they use different EPS calculations:
 
-    | Metric | Value | Calculation |
-    |--------|-------|-------------|
-    | P/E [TTM] | {valuation.get('pe_ttm', 'N/A')} | Price ${valuation.get('price', 'N/A')} / EPS ${valuation.get('eps_ttm', 'N/A')} |
-    | P/B [TTM] | {valuation.get('pb_ttm', 'N/A')} | Price / BVPS ${valuation.get('book_value_per_share', 'N/A')} |
-    | P/S [TTM] | {valuation.get('ps_ttm', 'N/A')} | Price / Rev/Share ${valuation.get('revenue_per_share', 'N/A')} |
-    | Forward P/E | {valuation.get('forward_pe', 'N/A')} | From analyst estimates |
-    | PEG | {valuation.get('peg', 'N/A')} | P/E / Growth rate |
-    | EV/EBITDA | {valuation.get('ev_ebitda', 'N/A')} | Enterprise value based |
+    | Type | P/E | EPS | Explanation |
+    |------|-----|-----|-------------|
+    | **P/E (FY)** | {valuation.get('pe_fy', 'N/A')} | ${valuation.get('eps_fy', 'N/A')} | Uses EPS from latest fiscal year ({pe_comparison.get('fy_period', 'N/A')}). Good for YoY comparison. |
+    | **P/E (TTM)** | {valuation.get('pe_ttm', 'N/A')} | ${valuation.get('eps_ttm', 'N/A')} | Uses rolling 12-month EPS (last 4 quarters). **Matches Yahoo Finance.** |
+    | **Forward P/E** | {valuation.get('forward_pe', 'N/A')} | Analyst Est. | Based on next 12-month EPS estimates from analysts. |
+
+    📌 **KEY DIFFERENCES EXPLAINED**:
+    - **FY (Fiscal Year)**: EPS from a fixed 12-month period (e.g., Jan 2024 - Jan 2025)
+    - **TTM (Trailing Twelve Months)**: EPS from the most recent 4 quarters (rolling)
+    - If recent quarters had HIGHER earnings → TTM EPS > FY EPS → TTM P/E < FY P/E
+    - If recent quarters had LOWER earnings → TTM EPS < FY EPS → TTM P/E > FY P/E
+
+    💡 **WHICH P/E TO USE?**
+    - **Compare with Yahoo Finance/Bloomberg?** → Use P/E (TTM)
+    - **Year-over-year analysis?** → Use P/E (FY) for consistency
+    - **Valuation thesis?** → Consider Forward P/E for growth expectations
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    📊 VALUATION RATIOS (Full Details)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    **Calculation Methods**:
+    - P/E (FY): Price ${valuation.get('price', 'N/A')} / EPS FY ${valuation.get('eps_fy', 'N/A')} = {valuation.get('pe_fy', 'N/A')}
+    - P/E (TTM): From FMP /key-metrics-ttm endpoint = {valuation.get('pe_ttm', 'N/A')}
+    - P/B: Price / Book Value per Share = {valuation.get('price', 'N/A')} / {valuation.get('book_value_per_share', 'N/A')} = {valuation.get('pb_ttm', 'N/A')}
+    - P/S: Price / Revenue per Share = {valuation.get('price', 'N/A')} / {valuation.get('revenue_per_share', 'N/A')} = {valuation.get('ps_ttm', 'N/A')}
+
+    | Metric | FY Value | TTM Value | Notes |
+    |--------|----------|-----------|-------|
+    | **P/E Ratio** | {valuation.get('pe_fy', 'N/A')} | {valuation.get('pe_ttm', 'N/A')} | TTM matches Yahoo Finance |
+    | **P/B Ratio** | {valuation.get('pb_fy', 'N/A')} | {valuation.get('pb_ttm', 'N/A')} | Book value per share |
+    | **P/S Ratio** | {valuation.get('ps_fy', 'N/A')} | {valuation.get('ps_ttm', 'N/A')} | Revenue per share |
+    | **EPS** | ${valuation.get('eps_fy', 'N/A')} | ${valuation.get('eps_ttm', 'N/A')} | Earnings per share |
+    | Forward P/E | - | {valuation.get('forward_pe', 'N/A')} | Analyst estimates |
+    | PEG | - | {valuation.get('peg', 'N/A')} | P/E / Growth rate |
+    | EV/EBITDA | - | {valuation.get('ev_ebitda', 'N/A')} | Enterprise value based |
 
     ═══════════════════════════════════════════════════════════════════════════════
     💰 PROFITABILITY (Source: FMP /income-statement TTM)
