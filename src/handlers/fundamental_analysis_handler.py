@@ -804,12 +804,21 @@ Focus on the most significant trends and their implications for investors."""
             # =====================================================
             # VALUATION ANALYSIS (Using valuation calculators)
             # =====================================================
+            # Calculate shares_outstanding with fallback from marketCap/price
+            shares_outstanding = km_data.get("sharesOutstanding")
+            if not shares_outstanding and quote:
+                market_cap = quote.get("marketCap")
+                price = quote.get("price")
+                if market_cap and price and price > 0:
+                    shares_outstanding = market_cap / price
+                    self.logger.info(f"[VALUATION] Calculated shares_outstanding from marketCap/price: {shares_outstanding:.0f}")
+
             valuation_analysis = self._calculate_intrinsic_value(
                 symbol=symbol,
                 current_price=quote.get("price") if quote else None,
                 eps=income_stmt[0].get("eps") if income_stmt else None,
                 fcf=cash_flow[0].get("freeCashFlow") if cash_flow else None,
-                shares_outstanding=km_data.get("sharesOutstanding"),
+                shares_outstanding=shares_outstanding,
                 cash=balance_sheet[0].get("cashAndCashEquivalents") if balance_sheet else 0,
                 debt=balance_sheet[0].get("totalDebt") if balance_sheet else 0,
                 eps_growth_rate=growth_data_list[0].get("epsgrowth") if growth_data_list else None,
@@ -1104,20 +1113,26 @@ Focus on the most significant trends and their implications for investors."""
             pe_analysis = intrinsic_value.get('pe_analysis', {})
             methodology_notes = intrinsic_value.get('methodology_notes', [])
 
+            # Pre-format values to handle None safely
+            price_str = f"${current_price:.2f}" if current_price else "N/A"
+            graham_str = f"${graham_val:.2f}" if graham_val else "N/A"
+            dcf_str = f"${dcf_val:.2f}" if dcf_val else "N/A"
+            verdict_str = verdict.upper().replace('_', ' ') if verdict else "N/A"
+
             valuation_section = f"""
     ═══════════════════════════════════════════════════════════════════════════════
     💰 INTRINSIC VALUE ANALYSIS (Calculated)
     ═══════════════════════════════════════════════════════════════════════════════
 
-    **Current Market Price**: ${current_price:.2f} (if available)
+    **Current Market Price**: {price_str}
 
     **Graham Formula Valuation**:
-    - Intrinsic Value: ${graham_val:.2f if graham_val else 'N/A'}
+    - Intrinsic Value: {graham_str}
     - Formula: V = EPS × (8.5 + 2g) × (4.4/Y)
     - Details: {intrinsic_value.get('graham_details', {})}
 
     **DCF Valuation**:
-    - Intrinsic Value: ${dcf_val:.2f if dcf_val else 'N/A'}
+    - Intrinsic Value: {dcf_str}
     - Assumptions: 10% WACC, 2.5% terminal growth
     - Details: {intrinsic_value.get('dcf_details', {})}
 
@@ -1125,7 +1140,7 @@ Focus on the most significant trends and their implications for investors."""
     - Current P/E: {pe_analysis.get('current_pe', 'N/A')}
     - Interpretation: {pe_analysis.get('pe_interpretation', 'N/A')}
 
-    **Overall Valuation Verdict**: {verdict.upper().replace('_', ' ')}
+    **Overall Valuation Verdict**: {verdict_str}
 
     **Methodology Notes**:
     {chr(10).join('- ' + note for note in methodology_notes)}
