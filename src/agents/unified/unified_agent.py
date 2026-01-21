@@ -2276,28 +2276,35 @@ Analyze the data above and provide a **comprehensive, data-driven response** to 
         if has_web_search:
             system_prompt += """
 
-### WEB SEARCH SOURCE CITATIONS (MANDATORY)
+### WEB SEARCH SOURCE CITATIONS (MANDATORY - ChatGPT Style)
 
-**CRITICAL**: You MUST include a "Sources" section at the END of your response with ALL web search citations.
+**CRITICAL**: You MUST include clickable source links in TWO ways:
 
-**Format Requirements**:
-1. Create a dedicated "## 📚 Sources" section at the very end
-2. List EVERY citation from webSearch results as clickable markdown links
-3. Include both the title and URL for each source
-4. Group related sources if helpful
+#### 1. INLINE CITATIONS (Throughout your response)
+When referencing information from web search, ALWAYS include the source as a clickable markdown link INLINE.
+
+**Format**: Statement + [Source Name](URL)
+
+**Examples**:
+- "NVIDIA đạt doanh thu kỷ lục $35.1 tỷ trong Q3 2024. [NVIDIA Investor Relations](https://investor.nvidia.com/...)"
+- "Theo [Reuters](https://reuters.com/...), chip H200 đang gặp vấn đề về chuỗi cung ứng."
+- "TSMC dành 70% công suất CoWoS-L cho NVIDIA. [TechPowerUp](https://www.techpowerup.com/...)"
+
+**DO NOT** write statements without source links. Every claim from web search needs a citation.
+
+#### 2. SOURCES SECTION (At the end)
+After your analysis, include a "## 📚 Sources" section listing all sources used.
 
 **Example Format**:
 ```
 ## 📚 Sources
-
-The analysis above is based on the following sources:
 
 1. [NVIDIA Announces Financial Results for Q3 2026](https://investor.nvidia.com/news/...)
 2. [TSMC Reserves 70% of CoWoS-L Capacity for NVIDIA](https://www.techpowerup.com/...)
 3. [AMD launches MI325X to rival Nvidia's Blackwell](https://www.cnbc.com/...)
 ```
 
-**WARNING**: If you do not include source citations, your response will be considered incomplete."""
+**WARNING**: Responses without inline source citations will be considered incomplete and unverifiable."""
 
         messages = [{"role": "system", "content": system_prompt}]
 

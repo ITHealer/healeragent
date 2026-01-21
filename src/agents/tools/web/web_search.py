@@ -795,7 +795,12 @@ class WebSearchTool(BaseTool):
             return None
 
     def _create_llm_context(self, result_data: Dict[str, Any]) -> str:
-        """Create formatted context string for LLM consumption."""
+        """
+        Create formatted context string for LLM consumption.
+
+        Enhanced to provide citations in copy-paste ready markdown link format
+        for inline citations throughout the response.
+        """
         source = result_data.get("source", "unknown")
         query = result_data.get("query", "")
 
@@ -808,31 +813,68 @@ class WebSearchTool(BaseTool):
         # Add synthesized answer (OpenAI only)
         answer = result_data.get("answer", "")
         if answer:
-            lines.append("📋 ANSWER:")
+            lines.append("📋 SYNTHESIZED ANSWER:")
             lines.append(answer[:2000])
             lines.append("")
 
-        # Add citations
+        # Add citations with MARKDOWN LINK FORMAT for easy inline use
         citations = result_data.get("citations", [])
         if citations:
-            lines.append(f"📚 CITATIONS ({len(citations)}):")
+            lines.extend([
+                "═══════════════════════════════════════════════════════════",
+                "📚 SOURCES (Use these markdown links in your response)",
+                "═══════════════════════════════════════════════════════════",
+                "",
+                "⚠️ IMPORTANT: Include these links INLINE when citing information!",
+                "Format: 'Statement here. [Source Title](URL)'",
+                "",
+            ])
+
             for i, c in enumerate(citations[:10], 1):
-                title = c.get("title", "Untitled")[:100]
+                title = c.get("title", "Untitled")
+                # Clean title for markdown (remove special chars that break links)
+                clean_title = title.replace("[", "(").replace("]", ")").replace("\n", " ")[:80]
                 url = c.get("url", "")
-                lines.append(f"  [{i}] {title}")
-                lines.append(f"      🔗 {url}")
+
+                lines.append(f"[{i}] {clean_title}")
+                lines.append(f"    URL: {url}")
+                lines.append(f"    📋 MARKDOWN LINK: [{clean_title}]({url})")
+                lines.append("")
+
+            # Quick reference section
+            lines.extend([
+                "─────────────────────────────────────────────────────────",
+                "QUICK COPY-PASTE (Markdown links ready to use inline):",
+                "─────────────────────────────────────────────────────────",
+            ])
+            for i, c in enumerate(citations[:10], 1):
+                title = c.get("title", "Untitled")
+                clean_title = title.replace("[", "(").replace("]", ")").replace("\n", " ")[:60]
+                url = c.get("url", "")
+                if url:
+                    lines.append(f"  [{i}] [{clean_title}]({url})")
             lines.append("")
 
-        # Add results (Tavily format)
+        # Add results (Tavily format) - also with markdown links
         results = result_data.get("results", [])
         if results and not answer:  # Only show if no answer (Tavily)
-            lines.append(f"🔍 SEARCH RESULTS ({len(results)}):")
+            lines.extend([
+                "═══════════════════════════════════════════════════════════",
+                f"🔍 SEARCH RESULTS ({len(results)}) - Include links when citing!",
+                "═══════════════════════════════════════════════════════════",
+                "",
+            ])
             for i, r in enumerate(results[:5], 1):
-                lines.append(f"{i}. {r.get('title', '')}")
+                title = r.get("title", "")
+                clean_title = title.replace("[", "(").replace("]", ")").replace("\n", " ")[:80]
+                url = r.get("url", "")
                 content = r.get("content", "")
+
+                lines.append(f"[{i}] {clean_title}")
                 if content:
-                    lines.append(f"   {content[:250]}...")
-                lines.append(f"   Source: {r.get('url', '')}")
+                    lines.append(f"    Summary: {content[:300]}...")
+                lines.append(f"    URL: {url}")
+                lines.append(f"    📋 MARKDOWN LINK: [{clean_title[:50]}]({url})")
                 lines.append("")
 
         return "\n".join(lines)
