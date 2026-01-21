@@ -570,11 +570,10 @@ Focus on the most significant trends and their implications for investors."""
         try:
             # 1. Fetch all necessary data
             self.logger.info(f"Generating comprehensive fundamental data for {symbol}")
-
+            
             # Get all data in parallel for better performance. Fetch data concurrently
             results = await asyncio.gather(
                 tool_service.get_key_metrics(symbol, limit=1),
-                tool_service.get_key_metrics_ttm(symbol),  # NEW: TTM metrics with accurate P/E
                 tool_service.get_income_statement(symbol, limit=5),
                 tool_service.get_balance_sheet(symbol, limit=5),
                 tool_service.get_cash_flow_statement(symbol, limit=5),
@@ -582,27 +581,16 @@ Focus on the most significant trends and their implications for investors."""
                 tool_service.get_financial_statement_growth(symbol, limit=5),
                 return_exceptions=True
             )
-
-            key_metrics, key_metrics_ttm, income_stmt, balance_sheet, cash_flow, quote, growth_data = results
+            
+            key_metrics, income_stmt, balance_sheet, cash_flow, quote, growth_data = results
 
             # Handle exceptions
             key_metrics = key_metrics if not isinstance(key_metrics, Exception) else None
-            key_metrics_ttm = key_metrics_ttm if not isinstance(key_metrics_ttm, Exception) else None
             income_stmt = income_stmt if not isinstance(income_stmt, Exception) else None
             balance_sheet = balance_sheet if not isinstance(balance_sheet, Exception) else None
             cash_flow = cash_flow if not isinstance(cash_flow, Exception) else None
             quote = quote if not isinstance(quote, Exception) else None
             growth_data = growth_data if not isinstance(growth_data, Exception) else None
-
-            # Convert key_metrics_ttm to dict if it's a Pydantic model
-            km_ttm_dict = {}
-            if key_metrics_ttm:
-                if hasattr(key_metrics_ttm, 'model_dump'):
-                    km_ttm_dict = key_metrics_ttm.model_dump()
-                elif hasattr(key_metrics_ttm, 'dict'):
-                    km_ttm_dict = key_metrics_ttm.dict()
-                elif isinstance(key_metrics_ttm, dict):
-                    km_ttm_dict = key_metrics_ttm
 
             # =====================================================
             # RAW DATA LOGGING FOR VALIDATION (CRITICAL FOR DEBUG)
@@ -611,25 +599,13 @@ Focus on the most significant trends and their implications for investors."""
             self.logger.info(f"RAW FUNDAMENTAL DATA FOR {symbol}")
             self.logger.info(f"=" * 60)
 
-            # Log Key Metrics (raw) - FY data
+            # Log Key Metrics (raw)
             if key_metrics:
-                self.logger.info(f"[RAW] Key Metrics FY ({len(key_metrics)} records):")
+                self.logger.info(f"[RAW] Key Metrics ({len(key_metrics)} records):")
                 for i, km in enumerate(key_metrics[:2]):  # Log first 2 for brevity
                     self.logger.info(f"  Record {i}: {json.dumps(km, default=str)[:500]}...")
             else:
-                self.logger.warning(f"[RAW] Key Metrics FY: NONE/EMPTY")
-
-            # Log Key Metrics TTM (raw) - TRUE TTM data with accurate P/E
-            if km_ttm_dict:
-                self.logger.info(f"[RAW] Key Metrics TTM (accurate current ratios):")
-                self.logger.info(f"  P/E TTM: {km_ttm_dict.get('peRatioTTM', 'N/A')}")
-                self.logger.info(f"  P/B TTM: {km_ttm_dict.get('pbRatioTTM', 'N/A')}")
-                self.logger.info(f"  P/S TTM: {km_ttm_dict.get('priceToSalesRatioTTM', 'N/A')}")
-                self.logger.info(f"  EV/EBITDA TTM: {km_ttm_dict.get('enterpriseValueOverEBITDATTM', 'N/A')}")
-                self.logger.info(f"  Market Cap TTM: {km_ttm_dict.get('marketCapTTM', 'N/A')}")
-                self.logger.info(f"  Net Income/Share TTM: {km_ttm_dict.get('netIncomePerShareTTM', 'N/A')}")
-            else:
-                self.logger.warning(f"[RAW] Key Metrics TTM: NONE/EMPTY")
+                self.logger.warning(f"[RAW] Key Metrics: NONE/EMPTY")
 
             # Log Quote (raw)
             if quote:
@@ -701,48 +677,38 @@ Focus on the most significant trends and their implications for investors."""
             revenue_per_share = km_data.get("revenuePerShare")
 
             # =====================================================
-            # USE TTM RATIOS FROM key_metrics_ttm (MOST ACCURATE!)
+            # CALCULATE RATIOS FROM CURRENT PRICE (Not from key_metrics!)
             # =====================================================
-            # key_metrics_ttm uses current price + TTM EPS (last 4 quarters)
-            # This matches Yahoo Finance / GuruFocus / other data providers
+            # key_metrics ratios use HISTORICAL price, we need CURRENT price
+            calc_pe = None
+            calc_pb = None
+            calc_ps = None
 
-            # Get TTM ratios (preferred - most accurate)
-            ttm_pe = km_ttm_dict.get("peRatioTTM")
-            ttm_pb = km_ttm_dict.get("pbRatioTTM")
-            ttm_ps = km_ttm_dict.get("priceToSalesRatioTTM")
-            ttm_eps = km_ttm_dict.get("netIncomePerShareTTM")
-            ttm_ev_ebitda = km_ttm_dict.get("enterpriseValueOverEBITDATTM")
-            ttm_peg = km_ttm_dict.get("pegRatioTTM")
+            if current_price and current_price > 0:
+                if eps_ttm and eps_ttm > 0:
+                    calc_pe = round(current_price / eps_ttm, 2)
+                if book_value_per_share and book_value_per_share > 0:
+                    calc_pb = round(current_price / book_value_per_share, 2)
+                if revenue_per_share and revenue_per_share > 0:
+                    calc_ps = round(current_price / revenue_per_share, 2)
 
-            # Fallback: Calculate from FY data if TTM not available
-            calc_pe_from_fy = None
-            if current_price and current_price > 0 and eps_ttm and eps_ttm > 0:
-                calc_pe_from_fy = round(current_price / eps_ttm, 2)
+            # Log calculated vs reported ratios for transparency
+            reported_pe = km_data.get("peRatio")
+            reported_pb = km_data.get("pbRatio")
+            reported_ps = km_data.get("priceToSalesRatio")
 
-            # Log comparison for transparency
-            fy_pe = km_data.get("peRatio")
-
-            self.logger.info(f"[VALUATION RATIOS COMPARISON]")
+            self.logger.info(f"[SANITY CHECK] Valuation Ratios:")
             self.logger.info(f"  Price (quote): ${current_price}")
-            self.logger.info(f"  ─────────────────────────────────────")
-            self.logger.info(f"  P/E from key_metrics_ttm (ACCURATE): {ttm_pe}")
-            self.logger.info(f"  P/E calculated from FY EPS ${eps_ttm}: {calc_pe_from_fy}")
-            self.logger.info(f"  P/E from key_metrics FY: {fy_pe}")
-            self.logger.info(f"  ─────────────────────────────────────")
-            self.logger.info(f"  TTM EPS (from key_metrics_ttm): ${ttm_eps}")
-            self.logger.info(f"  FY EPS (from income_stmt): ${eps_ttm}")
-            self.logger.info(f"  ─────────────────────────────────────")
-            self.logger.info(f"  P/B TTM: {ttm_pb}")
-            self.logger.info(f"  P/S TTM: {ttm_ps}")
-            self.logger.info(f"  EV/EBITDA TTM: {ttm_ev_ebitda}")
+            self.logger.info(f"  EPS (income_stmt): ${eps_ttm}")
+            self.logger.info(f"  Book Value/Share: ${book_value_per_share}")
+            self.logger.info(f"  Revenue/Share: ${revenue_per_share}")
+            self.logger.info(f"  Calculated P/E: {calc_pe} vs Reported (key_metrics): {reported_pe}")
+            self.logger.info(f"  Calculated P/B: {calc_pb} vs Reported (key_metrics): {reported_pb}")
+            self.logger.info(f"  Calculated P/S: {calc_ps} vs Reported (key_metrics): {reported_ps}")
 
-            # Determine which P/E to use (TTM preferred)
-            final_pe = ttm_pe if ttm_pe else calc_pe_from_fy
-            final_pb = ttm_pb if ttm_pb else (round(current_price / book_value_per_share, 2) if book_value_per_share and current_price else None)
-            final_ps = ttm_ps if ttm_ps else (round(current_price / revenue_per_share, 2) if revenue_per_share and current_price else None)
-            pe_source = "key_metrics_ttm" if ttm_pe else "calculated_from_FY_EPS"
-
-            self.logger.info(f"  ✅ FINAL P/E USED: {final_pe} (source: {pe_source})")
+            # Warn if significant difference (>10%)
+            if calc_pe and reported_pe and abs(calc_pe - reported_pe) / reported_pe > 0.1:
+                self.logger.warning(f"  ⚠️ P/E mismatch >10%: Using calculated value {calc_pe}")
 
             # 2. Calculate all metrics
             report = {
@@ -752,11 +718,10 @@ Focus on the most significant trends and their implications for investors."""
                     "price_source": "FMP /quote",
                     "price": current_price,
                     "price_date": datetime.now().strftime("%Y-%m-%d"),
-                    "financial_period_fy": income_stmt[0].get("date") if income_stmt else "N/A",
+                    "financial_period": income_stmt[0].get("date") if income_stmt else "N/A",
                     "market_cap_quote": quote_market_cap,
                     "market_cap_km": km_data.get("marketCap"),
-                    "ttm_data_available": bool(km_ttm_dict),
-                    "note": "Ratios from FMP key_metrics_ttm (current price + TTM EPS)"
+                    "note": "Ratios calculated from current price + TTM metrics"
                 },
                 "valuation": {},
                 "growth": {},
@@ -767,22 +732,18 @@ Focus on the most significant trends and their implications for investors."""
                 "risk": {}
             }
 
-            # Valuation metrics - USE TTM VALUES (most accurate, matches Yahoo/GuruFocus)
+            # Valuation metrics - USE CALCULATED VALUES (from current price)
             report["valuation"] = {
                 "price": current_price,
                 "market_cap": quote_market_cap,
-                # TTM ratios from key_metrics_ttm (ACCURATE - matches Yahoo Finance)
-                "pe_ttm": round(final_pe, 2) if final_pe else None,
-                "pe_source": pe_source,
-                "pb_ttm": round(final_pb, 2) if final_pb else None,
-                "ps_ttm": round(final_ps, 2) if final_ps else None,
-                "ev_ebitda": round(ttm_ev_ebitda, 2) if ttm_ev_ebitda else km_data.get("enterpriseValueOverEBITDA"),
-                # Forward P/E (analyst estimates)
-                "forward_pe": km_data.get("forwardPE") or km_ttm_dict.get("forwardPERatioTTM"),
-                "peg": ttm_peg if ttm_peg else km_data.get("pegRatio"),
+                "pe_ttm": calc_pe,  # Calculated from current price
+                "pb_ttm": calc_pb,  # Calculated from current price
+                "ps_ttm": calc_ps,  # Calculated from current price
+                "forward_pe": km_data.get("forwardPE"),  # Keep from key_metrics (analyst estimates)
+                "peg": km_data.get("pegRatio"),
+                "ev_ebitda": km_data.get("enterpriseValueOverEBITDA"),
                 # Raw inputs for transparency
-                "eps_ttm": ttm_eps if ttm_eps else eps_ttm,
-                "eps_source": "key_metrics_ttm" if ttm_eps else "income_statement_FY",
+                "eps_ttm": eps_ttm,
                 "book_value_per_share": book_value_per_share,
                 "revenue_per_share": revenue_per_share,
             }
