@@ -677,25 +677,92 @@ Always end with this note:
 
 SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in sentiment and news analysis.
 
-## FACTS HIERARCHY
-1. **SENTIMENT DATA**: Social sentiment scores and trends
-2. **NEWS**: Recent headlines and their potential impact
+## FACTS HIERARCHY (CRITICAL)
+1. **PRIMARY**: Use EXACT numbers from provided data (scores, counts, dates)
+2. **CITE SOURCES**: Always reference specific headlines with source and date
 3. **DON'T SPECULATE**: Base analysis on provided data only
+4. **LANGUAGE CONSISTENCY**: Match user's language throughout (no switching mid-response)
 
-## OUTPUT STRUCTURE
-1. **Sentiment Overview**: Bullish/Bearish/Neutral with score
-2. **Key News Themes**: Important recent developments
-3. **Market Impact**: How might this affect the stock?
-4. **Trading Implications**: What should traders watch for?
+## REQUIRED OUTPUT STRUCTURE
 
-## IMPORTANT REMINDER
-Always end with this note:
+### 1. SENTIMENT SNAPSHOT (ALWAYS INCLUDE - Use provided metadata)
+| Metric | Value |
+|--------|-------|
+| Score | X.XX (scale: -1 to +1, where -1=very bearish, 0=neutral, +1=very bullish) |
+| Label | BULLISH / BEARISH / NEUTRAL |
+| Time Window | X days (from metadata) |
+| Data Points | N samples (from metadata) |
+| Sources | StockTwits, Twitter (from metadata) |
+| Platform Breakdown | StockTwits: X.XX, Twitter: X.XX (if available) |
 
-"⚠️ **IMPORTANT NOTE**: This analysis is based on **NEWS & MARKET SENTIMENT** only. For a complete investment decision, you should also review:
-- **Technical Analysis**: Is the price trend confirming or contradicting the news?
-- **Market Position**: Is the stock outperforming the broader market?
-- **Risk Analysis**: Appropriate stop-loss levels if news changes
-- **Fundamental Analysis**: Does the news impact long-term fundamentals?"
+**Interpretation Guide:**
+- Score > +0.3: Strong bullish sentiment
+- Score +0.1 to +0.3: Moderate bullish
+- Score -0.1 to +0.1: Neutral (market in "wait and see" mode)
+- Score -0.3 to -0.1: Moderate bearish
+- Score < -0.3: Strong bearish sentiment
+
+### 2. TOP HEADLINES (LIST ACTUAL HEADLINES FROM DATA)
+Present in table format:
+| # | Date | Source | Title | Source Type |
+|---|------|--------|-------|-------------|
+| 1 | 2024-01-15 | Reuters | [Actual title from data] | Factual |
+| 2 | 2024-01-14 | Motley Fool | [Actual title from data] | Opinion |
+| ... | ... | ... | ... | ... |
+
+**Source Type Classification:**
+- **Factual**: Reuters, Bloomberg, WSJ, AP, CNBC, MarketWatch, Financial Times
+- **Opinion/Analysis**: Motley Fool, Seeking Alpha, Nasdaq.com articles, Investor's Business Daily
+- **Press Release**: BusinessWire, PRNewswire, GlobeNewswire
+
+### 3. NEWS THEMES (Group headlines by topic)
+For each theme (3-5 themes):
+- **Theme Name**: Brief description
+- **Headlines**: List which headlines (#1, #3, #5) belong to this theme
+- **Sentiment Impact**: Positive / Negative / Neutral for this theme
+
+Example:
+**Theme 1: Supply Chain Concerns** (Negative)
+- Headlines: #2, #5
+- Impact: These reports suggest potential delivery delays...
+
+**Theme 2: Partner Ecosystem Strength** (Positive)
+- Headlines: #1, #4
+- Impact: Strong partnerships indicate...
+
+### 4. MARKET IMPACT ASSESSMENT
+Based on the themes above:
+- **Short-term** (days): Expected reaction and why
+- **Medium-term** (weeks): Potential implications
+- **Conflicting Signals**: Note if positive and negative themes are offsetting
+
+### 5. TRADING IMPLICATIONS
+- **Key Catalysts to Watch**: Specific events from news that could move stock
+- **Risk Factors**: Specific risks identified from headlines
+- **Recommended Stance**: Based on sentiment + news alignment
+
+### 6. DATA QUALITY NOTES
+Always include:
+- Time period of data
+- Any limitations (e.g., "Social sentiment reflects retail investors, not institutional")
+- Confidence level based on sample size
+
+## AVOID THESE MISTAKES
+❌ Saying "based on recent headlines" without listing them with date + source
+❌ Not specifying sentiment scale (always say "scale: -1 to +1")
+❌ Missing time window for sentiment data
+❌ Creating themes without citing which headlines belong to them
+❌ Mixing languages (if user asked in Vietnamese, respond 100% in Vietnamese)
+❌ Making strong claims without evidence from provided data
+
+## IMPORTANT REMINDER (Match user's language)
+Always end with this note in the SAME LANGUAGE as the user's request:
+
+"⚠️ **LƯU Ý QUAN TRỌNG** (hoặc IMPORTANT NOTE): Phân tích này chỉ dựa trên **TIN TỨC & TÂM LÝ THỊ TRƯỜNG**. Để có quyết định đầu tư hoàn chỉnh, bạn cần xem xét thêm:
+- **Phân tích Kỹ thuật**: Xu hướng giá có xác nhận tin tức không?
+- **Vị thế Thị trường**: Cổ phiếu có vượt trội so với thị trường chung?
+- **Phân tích Rủi ro**: Mức stop-loss phù hợp nếu tin tức thay đổi
+- **Phân tích Cơ bản**: Tin tức có ảnh hưởng đến nền tảng dài hạn?"
 """
 
 
@@ -1689,39 +1756,212 @@ class MarketScannerHandler(LoggerMixin):
         sentiment_data: Dict[str, Any],
         news_data: Dict[str, Any]
     ) -> str:
-        """Build combined summary from sentiment and news tools."""
+        """
+        Build combined summary from sentiment and news tools.
+
+        Enhanced to address ChatGPT feedback:
+        - Include sentiment metadata (scale, window, sample size)
+        - List headlines with source and date
+        - Classify source types (factual vs opinion)
+        - Structure data for theme grouping
+        """
         lines = [f"=== SENTIMENT & NEWS ANALYSIS: {symbol} ===", ""]
 
-        # Sentiment section
+        # ═══════════════════════════════════════════════════════════════════
+        # SENTIMENT SECTION (with full metadata for transparency)
+        # ═══════════════════════════════════════════════════════════════════
         if sentiment_data:
-            sentiment_summary = sentiment_data.get("llm_summary", "")
-            if sentiment_summary:
-                lines.append("SOCIAL SENTIMENT:")
-                lines.append(sentiment_summary)
+            # Extract metadata
+            score = sentiment_data.get("sentiment_score", 0)
+            label = sentiment_data.get("sentiment_label", "NEUTRAL")
+            trend = sentiment_data.get("sentiment_trend", "Stable")
+            data_points = sentiment_data.get("data_points", 0)
+            raw_score = sentiment_data.get("raw_score", 0.5)
+            stocktwits_avg = sentiment_data.get("stocktwits_avg")
+            twitter_avg = sentiment_data.get("twitter_avg")
+            volatility = sentiment_data.get("volatility", 0)
+
+            lines.extend([
+                "═══════════════════════════════════════════════════════════",
+                "SENTIMENT DATA (Social Media Analysis)",
+                "═══════════════════════════════════════════════════════════",
+                "",
+                "METADATA (Use these exact values in your analysis):",
+                f"  Score: {score:.3f}",
+                f"  Scale: -1 to +1 (where -1=very bearish, 0=neutral, +1=very bullish)",
+                f"  Label: {label}",
+                f"  Time Window: 7 days (default lookback)",
+                f"  Data Points: {data_points} samples",
+                f"  Sources: StockTwits + Twitter (social media aggregation)",
+                f"  Trend: {trend}",
+                f"  Volatility: {volatility:.4f} (score variation)",
+                ""
+            ])
+
+            # Platform breakdown
+            if stocktwits_avg is not None or twitter_avg is not None:
+                lines.append("PLATFORM BREAKDOWN:")
+                if stocktwits_avg is not None:
+                    lines.append(f"  StockTwits avg: {stocktwits_avg:.3f} (0-1 scale)")
+                if twitter_avg is not None:
+                    lines.append(f"  Twitter avg: {twitter_avg:.3f} (0-1 scale)")
+                lines.append("")
+
+            # Score interpretation guide
+            lines.extend([
+                "SCORE INTERPRETATION (for your analysis):",
+                f"  Current score {score:.3f} means:",
+            ])
+            if score > 0.3:
+                lines.append("    → Strong bullish sentiment")
+            elif score > 0.1:
+                lines.append("    → Moderate bullish sentiment")
+            elif score > -0.1:
+                lines.append("    → Neutral (market in 'wait and see' mode)")
+            elif score > -0.3:
+                lines.append("    → Moderate bearish sentiment")
             else:
-                # Fallback to raw data
-                score = sentiment_data.get("sentiment_score", 0)
-                label = "BULLISH" if score > 0.3 else "BEARISH" if score < -0.3 else "NEUTRAL"
-                lines.append(f"SOCIAL SENTIMENT: {label} (Score: {score:.2f})")
+                lines.append("    → Strong bearish sentiment")
             lines.append("")
 
-        # News section
+            # Data quality note
+            lines.extend([
+                "DATA QUALITY NOTE:",
+                "  - Social sentiment reflects RETAIL investor mood",
+                "  - NOT representative of institutional investors",
+                "  - Updated hourly (not real-time)",
+                f"  - Confidence: {'High' if data_points >= 20 else 'Medium' if data_points >= 10 else 'Low'} ({data_points} data points)",
+                ""
+            ])
+
+        # ═══════════════════════════════════════════════════════════════════
+        # NEWS SECTION (with source classification)
+        # ═══════════════════════════════════════════════════════════════════
         if news_data:
-            news_summary = news_data.get("llm_summary", "")
-            if news_summary:
-                lines.append("RECENT NEWS:")
-                lines.append(news_summary)
+            articles = news_data.get("articles", [])
+            article_count = news_data.get("article_count", len(articles))
+
+            lines.extend([
+                "═══════════════════════════════════════════════════════════",
+                "NEWS DATA (Recent Headlines)",
+                "═══════════════════════════════════════════════════════════",
+                "",
+                f"Total Articles Retrieved: {article_count}",
+                ""
+            ])
+
+            if articles:
+                lines.append("TOP HEADLINES (Use in table format for output):")
+                lines.append("| # | Date | Source | Title | Source Type |")
+                lines.append("|---|------|--------|-------|-------------|")
+
+                for i, article in enumerate(articles[:10], 1):
+                    title = article.get("title", "Untitled")
+                    # Truncate title but keep meaningful
+                    if len(title) > 80:
+                        title = title[:77] + "..."
+
+                    source = article.get("site", "Unknown")
+                    pub_date = article.get("published_date", "")[:10]  # Just date
+                    url = article.get("url", "")
+
+                    # Classify source type
+                    source_type = self._classify_news_source(source)
+
+                    lines.append(f"| {i} | {pub_date} | {source} | {title} | {source_type} |")
+
+                lines.append("")
+
+                # Add URLs section for verification
+                lines.append("ARTICLE URLS (for reference):")
+                for i, article in enumerate(articles[:10], 1):
+                    url = article.get("url", "N/A")
+                    lines.append(f"  [{i}] {url}")
+                lines.append("")
+
+                # Add text previews for theme identification
+                lines.append("ARTICLE PREVIEWS (for theme identification):")
+                for i, article in enumerate(articles[:10], 1):
+                    title = article.get("title", "Untitled")
+                    text = article.get("text", "")[:200]
+                    source = article.get("site", "Unknown")
+                    lines.append(f"[{i}] {title}")
+                    lines.append(f"    Source: {source}")
+                    if text:
+                        lines.append(f"    Preview: {text}...")
+                    lines.append("")
+
+                # Source type legend
+                lines.extend([
+                    "SOURCE TYPE LEGEND:",
+                    "  Factual: Reuters, Bloomberg, WSJ, AP, CNBC, MarketWatch, Financial Times",
+                    "  Opinion: Motley Fool, Seeking Alpha, Nasdaq.com articles, IBD",
+                    "  Press Release: BusinessWire, PRNewswire, GlobeNewswire",
+                    ""
+                ])
             else:
-                # Fallback to raw articles
-                articles = news_data.get("articles", [])
-                if articles:
-                    lines.append(f"RECENT NEWS: {len(articles)} articles")
-                    for i, article in enumerate(articles[:5], 1):
-                        title = article.get("title", "")[:100]
-                        date = article.get("publishedDate", "")[:10]
-                        lines.append(f"  {i}. [{date}] {title}")
+                lines.append("No recent news articles found for this symbol.")
+                lines.append("")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # ANALYSIS INSTRUCTIONS
+        # ═══════════════════════════════════════════════════════════════════
+        lines.extend([
+            "═══════════════════════════════════════════════════════════",
+            "ANALYSIS INSTRUCTIONS",
+            "═══════════════════════════════════════════════════════════",
+            "",
+            "1. Use the EXACT metadata values above (score, scale, window, etc.)",
+            "2. List headlines in table format with source type classification",
+            "3. Group headlines into 3-5 themes, citing which headline # belongs to each",
+            "4. Note any conflicting signals between sentiment and news",
+            "5. Match the user's language throughout (no mixing languages)",
+            ""
+        ])
 
         return "\n".join(lines) if len(lines) > 2 else f"No sentiment/news data available for {symbol}"
+
+    def _classify_news_source(self, source: str) -> str:
+        """
+        Classify news source as Factual, Opinion, or Press Release.
+
+        Based on common financial news source credibility.
+        """
+        source_lower = source.lower() if source else ""
+
+        # Factual/News Wire sources
+        factual_sources = [
+            "reuters", "bloomberg", "wsj", "wall street journal", "ap",
+            "associated press", "cnbc", "marketwatch", "financial times",
+            "ft.com", "barron", "yahoo finance", "investing.com"
+        ]
+
+        # Opinion/Analysis sources
+        opinion_sources = [
+            "motley fool", "seeking alpha", "nasdaq.com", "nasdaq",
+            "investor's business daily", "ibd", "benzinga", "thestreet",
+            "fool.com", "zacks"
+        ]
+
+        # Press Release sources
+        pr_sources = [
+            "businesswire", "prnewswire", "globenewswire", "accesswire",
+            "pr newswire", "business wire"
+        ]
+
+        for s in factual_sources:
+            if s in source_lower:
+                return "Factual"
+
+        for s in opinion_sources:
+            if s in source_lower:
+                return "Opinion"
+
+        for s in pr_sources:
+            if s in source_lower:
+                return "Press Release"
+
+        return "Other"
 
     # =========================================================================
     # LLM STREAMING - Using tool's llm_summary directly
