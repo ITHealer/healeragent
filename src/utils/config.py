@@ -84,6 +84,27 @@ class Settings(BaseSettings):
     # Financial ratios: calculated from financials
     CACHE_TTL_FMP_RATIOS: int = int(os.getenv("CACHE_TTL_FMP_RATIOS", 60 * 15))  # 15 minutes
 
+    # =============================================================================
+    # SCANNER STEP CACHING TTLs (for synthesis)
+    # =============================================================================
+    # Technical: price data changes frequently
+    CACHE_TTL_SCANNER_TECHNICAL: int = int(os.getenv("CACHE_TTL_SCANNER_TECHNICAL", 180))  # 3 minutes
+
+    # Position: Relative strength vs benchmark
+    CACHE_TTL_SCANNER_POSITION: int = int(os.getenv("CACHE_TTL_SCANNER_POSITION", 300))  # 5 minutes
+
+    # Risk: stop loss levels tied to current price
+    CACHE_TTL_SCANNER_RISK: int = int(os.getenv("CACHE_TTL_SCANNER_RISK", 300))  # 5 minutes
+
+    # Sentiment: news/sentiment less volatile
+    CACHE_TTL_SCANNER_SENTIMENT: int = int(os.getenv("CACHE_TTL_SCANNER_SENTIMENT", 600))  # 10 minutes
+
+    # Fundamental: fundamentals rarely change intraday
+    CACHE_TTL_SCANNER_FUNDAMENTAL: int = int(os.getenv("CACHE_TTL_SCANNER_FUNDAMENTAL", 900))  # 15 minutes
+
+    # Synthesis report cache (short TTL as it aggregates all steps)
+    CACHE_TTL_SCANNER_SYNTHESIS: int = int(os.getenv("CACHE_TTL_SCANNER_SYNTHESIS", 300))  # 5 minutes
+
     # Define global variables with the Field class
     ENV_STATE: str = Field('dev', env='ENV_STATE')
     LOG_LEVEL: str = Field('DEBUG', env='LOG_LEVEL')

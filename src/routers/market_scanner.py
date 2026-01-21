@@ -1,22 +1,24 @@
 """
 Market Scanner Router
 
-5 consolidated analysis API endpoints:
+6 consolidated analysis API endpoints:
 1. POST /scanner/technical/stream - Technical & Chart Analysis
 2. POST /scanner/position/stream - Market Position (Relative Strength)
 3. POST /scanner/risk/stream - Risk Analysis
 4. POST /scanner/sentiment/stream - Sentiment & News
 5. POST /scanner/fundamental/stream - Fundamental Analysis
+6. POST /scanner/synthesis/stream - Comprehensive Synthesis Report (NEW)
 
 All endpoints:
 - Support streaming responses (SSE)
 - Save to chat session for context continuity
+- Cache results for synthesis step
 - Use improved analysis tools
 """
 
 import json
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
@@ -24,11 +26,17 @@ from fastapi.responses import StreamingResponse
 from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.market_scanner_handler import market_scanner_handler
 from src.handlers.fundamental_analysis_handler import FundamentalAnalysisHandler
+from src.handlers.synthesis_handler import synthesis_handler
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ModelProviderFactory
 from src.helpers.chat_management_helper import ChatService
 from src.handlers.llm_chat_handler import ChatMessageHistory
 from src.services.tool_call_service import ToolCallService
+from src.helpers.scanner_cache_helper import (
+    save_scanner_result,
+    get_all_scanner_results,
+    format_cache_status_message
+)
 from src.helpers.llm_chat_helper import (
     stream_with_heartbeat,
     SSE_HEADERS,
@@ -80,6 +88,19 @@ class ScannerResponse(BaseModel):
     status: str
     message: str
     data: Optional[Dict[str, Any]] = None
+
+
+class SynthesisRequest(ScannerRequest):
+    """Request for synthesis report (Step 6)."""
+    run_missing_steps: bool = Field(True, description="Auto-run missing analysis steps")
+    include_web_search: bool = Field(False, description="Include web search enrichment")
+    timeframe: str = Field("1Y", description="Timeframe for technical analysis")
+    benchmark: str = Field("SPY", description="Benchmark for position analysis")
+
+
+class CacheStatusRequest(BaseModel):
+    """Request for checking cache status."""
+    symbol: str = Field(..., description="Stock symbol to check")
 
 
 # =============================================================================
@@ -190,6 +211,14 @@ async def scanner_technical_stream(
             if scan_request.session_id and user_id and question_id and complete_response:
                 save_assistant_response(scan_request.session_id, question_id, complete_response)
 
+            # Save to cache for synthesis step
+            if complete_response:
+                await save_scanner_result(
+                    symbol=scan_request.symbol,
+                    step_name="technical",
+                    result={"content": complete_response, "cached_at": datetime.now().isoformat()}
+                )
+
             yield sse_done()
 
         except Exception as e:
@@ -260,6 +289,14 @@ async def scanner_position_stream(
             complete_response = "".join(full_response)
             if scan_request.session_id and user_id and question_id and complete_response:
                 save_assistant_response(scan_request.session_id, question_id, complete_response)
+
+            # Save to cache for synthesis step
+            if complete_response:
+                await save_scanner_result(
+                    symbol=scan_request.symbol,
+                    step_name="position",
+                    result={"content": complete_response, "cached_at": datetime.now().isoformat()}
+                )
 
             yield sse_done()
 
@@ -334,6 +371,14 @@ async def scanner_risk_stream(
             if scan_request.session_id and user_id and question_id and complete_response:
                 save_assistant_response(scan_request.session_id, question_id, complete_response)
 
+            # Save to cache for synthesis step
+            if complete_response:
+                await save_scanner_result(
+                    symbol=scan_request.symbol,
+                    step_name="risk",
+                    result={"content": complete_response, "cached_at": datetime.now().isoformat()}
+                )
+
             yield sse_done()
 
         except Exception as e:
@@ -403,6 +448,14 @@ async def scanner_sentiment_stream(
             complete_response = "".join(full_response)
             if scan_request.session_id and user_id and question_id and complete_response:
                 save_assistant_response(scan_request.session_id, question_id, complete_response)
+
+            # Save to cache for synthesis step
+            if complete_response:
+                await save_scanner_result(
+                    symbol=scan_request.symbol,
+                    step_name="sentiment",
+                    result={"content": complete_response, "cached_at": datetime.now().isoformat()}
+                )
 
             yield sse_done()
 
@@ -488,6 +541,14 @@ async def scanner_fundamental_stream(
             if scan_request.session_id and user_id and question_id and complete_response:
                 save_assistant_response(scan_request.session_id, question_id, complete_response)
 
+            # Save to cache for synthesis step
+            if complete_response:
+                await save_scanner_result(
+                    symbol=scan_request.symbol,
+                    step_name="fundamental",
+                    result={"content": complete_response, "cached_at": datetime.now().isoformat()}
+                )
+
             yield sse_done()
 
         except Exception as e:
@@ -500,3 +561,124 @@ async def scanner_fundamental_stream(
         media_type="text/event-stream",
         headers=SSE_HEADERS
     )
+
+
+# =============================================================================
+# STEP 6: SYNTHESIS REPORT (NEW)
+# =============================================================================
+@router.post("/scanner/synthesis/stream", summary="Synthesis Report (Streaming)")
+async def scanner_synthesis_stream(
+    request: Request,
+    scan_request: SynthesisRequest,
+    api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
+):
+    """
+    Comprehensive synthesis report combining all 5 analysis steps.
+
+    Features:
+    - Auto-checks cache for available step results
+    - Runs missing steps in parallel if run_missing_steps=True
+    - 6 LLM calls for comprehensive synthesis:
+        1. Executive Summary
+        2-4. Detailed Sections (parallel)
+        5. Web Search Enrichment (optional)
+        6. Final Recommendation with Scoring
+    - Weighted composite scoring system
+    - Outputs structured Markdown report
+
+    Response Events (SSE):
+    - {"type": "progress", "step": "...", "message": "..."}
+    - {"type": "content", "section": "...", "content": "..."}
+    - {"type": "data", "section": "scoring", "data": {...}}
+    - {"type": "done"}
+    """
+    user_id = getattr(request.state, "user_id", None)
+
+    question_id = None
+    question_content = scan_request.question_input or f"Comprehensive synthesis report for {scan_request.symbol}"
+    if scan_request.session_id and user_id:
+        question_id = save_user_question(scan_request.session_id, user_id, question_content)
+
+    async def generate_stream():
+        full_response = []
+
+        try:
+            api_key = ModelProviderFactory._get_api_key(scan_request.provider_type)
+
+            # Stream synthesis
+            synthesis_gen = synthesis_handler.synthesize(
+                symbol=scan_request.symbol,
+                model_name=scan_request.model_name,
+                provider_type=scan_request.provider_type,
+                api_key=api_key,
+                target_language=scan_request.target_language,
+                run_missing_steps=scan_request.run_missing_steps,
+                include_web_search=scan_request.include_web_search,
+                timeframe=scan_request.timeframe,
+                benchmark=scan_request.benchmark
+            )
+
+            async for event in synthesis_gen:
+                # Collect content for session save
+                if event.get("type") == "content":
+                    content = event.get("content", event.get("chunk", ""))
+                    if content:
+                        full_response.append(content)
+
+                # Stream event to client
+                yield f"{json.dumps(event, ensure_ascii=False)}\n\n"
+
+                # Check for done/error
+                if event.get("type") in ("done", "error"):
+                    break
+
+            # Save complete response to chat session
+            complete_response = "\n".join(full_response)
+            if scan_request.session_id and user_id and question_id and complete_response:
+                save_assistant_response(scan_request.session_id, question_id, complete_response)
+
+        except Exception as e:
+            logger.error(f"[Scanner] Synthesis streaming error: {e}")
+            yield sse_error(str(e))
+            yield sse_done()
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS
+    )
+
+
+# =============================================================================
+# CACHE STATUS ENDPOINT
+# =============================================================================
+@router.post("/scanner/cache/status", summary="Check Scanner Cache Status")
+async def scanner_cache_status(
+    request: Request,
+    cache_request: CacheStatusRequest,
+    api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
+):
+    """
+    Check which analysis steps are cached for a symbol.
+
+    Returns:
+    - available: List of cached step names
+    - missing: List of steps that need to be run
+    - cache_ages: How old each cached result is (in seconds)
+    """
+    try:
+        cache_status = await get_all_scanner_results(cache_request.symbol)
+
+        return {
+            "status": "success",
+            "symbol": cache_request.symbol.upper(),
+            "available": cache_status.get("available", []),
+            "missing": cache_status.get("missing", []),
+            "cache_ages": cache_status.get("cache_ages", {}),
+            "checked_at": cache_status.get("checked_at"),
+            "message": format_cache_status_message(cache_status)
+        }
+
+    except Exception as e:
+        logger.error(f"[Scanner] Cache status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
