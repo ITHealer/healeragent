@@ -17,6 +17,23 @@ from src.hedge_fund.tools.api_fmp import (
     get_market_cap
 )
 
+# Import valuation calculators for enhanced analysis
+try:
+    from src.agents.tools.finance_guru.calculators.valuation import (
+        DCFCalculator,
+        GrahamCalculator,
+        ValuationCalculator,
+    )
+    from src.agents.tools.finance_guru.models.valuation import (
+        DCFInputData,
+        DCFConfig,
+        GrahamInputData,
+        GrahamConfig,
+    )
+    VALUATION_AVAILABLE = True
+except ImportError:
+    VALUATION_AVAILABLE = False
+
 class FundamentalAnalysisHandler(LoggerMixin):
     """
     Handler for fundamental analysis operations.
@@ -280,33 +297,249 @@ Focus on the most significant trends and their implications for investors."""
         Higher score indicates better quality growth.
         """
         score = 50  # Base score
-        
+
         # Revenue growth contribution
         revenue_growth = data.get("revenueGrowth", 0) or 0
         score += min(revenue_growth * 100, 20)  # Max 20 points
-        
+
         # Profitability improvement
         net_income_growth = data.get("netIncomeGrowth", 0) or 0
         if net_income_growth > revenue_growth:
             score += 10  # Operating leverage
-        
+
         # Cash flow quality
         fcf_growth = data.get("freeCashFlowGrowth", 0) or 0
         if fcf_growth > 0:
             score += min(fcf_growth * 50, 15)  # Max 15 points
-        
+
         # Debt management
         debt_growth = data.get("debtGrowth", 0) or 0
         if debt_growth < 0:
             score += 5  # Reducing debt
         elif debt_growth > 0.2:
             score -= 10  # High debt growth
-        
+
         # Long-term consistency
         if data.get("fiveYRevenueGrowthPerShare", 0) > 0.5:
             score += 10  # Consistent long-term growth
-        
+
         return min(max(score, 0), 100)  # Bound between 0-100
+
+    def _calculate_intrinsic_value(
+        self,
+        symbol: str,
+        current_price: Optional[float],
+        eps: Optional[float],
+        fcf: Optional[float],
+        shares_outstanding: Optional[float],
+        cash: Optional[float] = 0,
+        debt: Optional[float] = 0,
+        eps_growth_rate: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Calculate intrinsic value using valuation models.
+
+        Uses Graham Formula and DCF when data is available.
+        Returns valuation analysis with verdict.
+
+        IMPORTANT FINANCIAL LOGIC:
+        - Graham Formula: V = EPS × (8.5 + 2g) × (4.4/Y)
+          - Uses FORWARD growth estimate (5Y expected)
+          - If using historical CAGR, must be stated explicitly
+
+        - DCF: PV of projected free cash flows + terminal value
+          - More appropriate for companies with positive FCF
+          - Sensitive to discount rate and terminal growth assumptions
+
+        - P/E Analysis:
+          - Compare current P/E to historical range
+          - Compare to industry peers
+          - P/E expansion/contraction thesis
+
+        Args:
+            symbol: Stock symbol
+            current_price: Current stock price
+            eps: Earnings per share (TTM)
+            fcf: Free cash flow (total, in same units as shares)
+            shares_outstanding: Number of shares outstanding
+            cash: Cash and equivalents
+            debt: Total debt
+            eps_growth_rate: Expected EPS growth rate (decimal)
+
+        Returns:
+            Dict with intrinsic value calculations and verdict
+        """
+        result = {
+            "graham_value": None,
+            "dcf_value": None,
+            "current_price": current_price,
+            "pe_analysis": None,
+            "verdict": "insufficient_data",
+            "methodology_notes": [],
+        }
+
+        if not VALUATION_AVAILABLE:
+            result["methodology_notes"].append("Valuation calculators not available")
+            return result
+
+        # Calculate P/E ratio and analysis
+        if current_price and eps and eps > 0:
+            current_pe = current_price / eps
+            result["pe_analysis"] = {
+                "current_pe": round(current_pe, 2),
+                "pe_interpretation": self._interpret_pe_ratio(current_pe),
+            }
+            result["methodology_notes"].append(f"P/E [TTM]: {current_pe:.2f}")
+
+        # Graham Formula Valuation
+        if eps and eps > 0:
+            try:
+                # Default growth rate: 10% if not provided
+                growth_rate = eps_growth_rate if eps_growth_rate else 0.10
+                # Cap growth rate at reasonable levels
+                growth_rate = min(max(growth_rate, 0), 0.30)  # 0-30% range
+
+                graham_data = GrahamInputData(
+                    symbol=symbol,
+                    eps=eps,
+                    growth_rate=growth_rate,
+                    current_price=current_price or 100,  # Placeholder if no price
+                    aaa_yield=0.044,  # Standard 4.4% AAA bond yield
+                )
+                graham_config = GrahamConfig(margin_of_safety=0.25)
+                graham_calc = GrahamCalculator()
+                graham_result = graham_calc.calculate(graham_data, graham_config)
+
+                result["graham_value"] = round(graham_result.intrinsic_value, 2)
+                result["graham_details"] = {
+                    "eps_used": eps,
+                    "growth_rate_used": growth_rate,
+                    "growth_rate_source": "historical_eps_growth" if eps_growth_rate else "default_10%",
+                    "margin_of_safety_price": round(graham_result.margin_of_safety_price, 2),
+                }
+                result["methodology_notes"].append(
+                    f"Graham Value: ${graham_result.intrinsic_value:.2f} "
+                    f"(using {growth_rate*100:.1f}% growth, {'historical CAGR' if eps_growth_rate else 'default estimate'})"
+                )
+
+            except Exception as e:
+                self.logger.warning(f"Graham calculation failed for {symbol}: {e}")
+                result["methodology_notes"].append(f"Graham calculation error: {str(e)}")
+
+        # DCF Valuation
+        if fcf and fcf > 0 and shares_outstanding and shares_outstanding > 0:
+            try:
+                fcf_per_share = fcf / shares_outstanding
+                cash_val = cash if cash else 0
+                debt_val = debt if debt else 0
+
+                # Projected growth rates (conservative)
+                growth_rates = [0.10, 0.08, 0.06, 0.05, 0.04]  # Declining growth
+
+                dcf_data = DCFInputData(
+                    symbol=symbol,
+                    current_fcf=fcf,
+                    growth_rates=growth_rates,
+                    terminal_growth=0.025,  # 2.5% perpetual growth
+                    discount_rate=0.10,  # 10% WACC assumption
+                    shares_outstanding=shares_outstanding,
+                    current_price=current_price,
+                    cash=cash_val,
+                    debt=debt_val,
+                )
+                dcf_config = DCFConfig(margin_of_safety=0.25)
+                dcf_calc = DCFCalculator()
+                dcf_result = dcf_calc.calculate(dcf_data, dcf_config)
+
+                result["dcf_value"] = round(dcf_result.intrinsic_value_per_share, 2)
+                result["dcf_details"] = {
+                    "fcf_used": fcf,
+                    "discount_rate": 0.10,
+                    "terminal_growth": 0.025,
+                    "enterprise_value": round(dcf_result.enterprise_value, 0),
+                    "margin_of_safety_price": round(dcf_result.margin_of_safety_price, 2),
+                }
+                result["methodology_notes"].append(
+                    f"DCF Value: ${dcf_result.intrinsic_value_per_share:.2f} "
+                    f"(10% WACC, 2.5% terminal growth)"
+                )
+
+            except Exception as e:
+                self.logger.warning(f"DCF calculation failed for {symbol}: {e}")
+                result["methodology_notes"].append(f"DCF calculation error: {str(e)}")
+
+        # Determine overall verdict
+        result["verdict"] = self._determine_valuation_verdict(
+            current_price=current_price,
+            graham_value=result.get("graham_value"),
+            dcf_value=result.get("dcf_value"),
+        )
+
+        return result
+
+    def _interpret_pe_ratio(self, pe_ratio: float) -> str:
+        """
+        Interpret P/E ratio with context.
+
+        Standard interpretation:
+        - < 10: Potentially undervalued or declining business
+        - 10-15: Fair value for mature companies
+        - 15-25: Growth premium
+        - 25-40: High growth expectations
+        - > 40: Very high expectations or speculation
+        """
+        if pe_ratio < 10:
+            return "low_pe_value_or_distressed"
+        elif pe_ratio < 15:
+            return "fair_value_mature"
+        elif pe_ratio < 25:
+            return "growth_premium"
+        elif pe_ratio < 40:
+            return "high_growth_expectations"
+        else:
+            return "very_high_speculative"
+
+    def _determine_valuation_verdict(
+        self,
+        current_price: Optional[float],
+        graham_value: Optional[float],
+        dcf_value: Optional[float],
+    ) -> str:
+        """
+        Determine overall valuation verdict based on intrinsic values.
+
+        METHODOLOGY:
+        1. If both Graham and DCF available, use average
+        2. Compare to current price
+        3. Verdict based on upside/downside potential
+
+        IMPORTANT: This is a metrics-based assessment, NOT investment advice.
+        """
+        if not current_price or current_price <= 0:
+            return "insufficient_data"
+
+        values = []
+        if graham_value and graham_value > 0:
+            values.append(graham_value)
+        if dcf_value and dcf_value > 0:
+            values.append(dcf_value)
+
+        if not values:
+            return "insufficient_data"
+
+        avg_intrinsic = sum(values) / len(values)
+        upside_pct = ((avg_intrinsic - current_price) / current_price) * 100
+
+        if upside_pct > 30:
+            return "significantly_undervalued"
+        elif upside_pct > 15:
+            return "undervalued"
+        elif upside_pct > -10:
+            return "fairly_valued"
+        elif upside_pct > -25:
+            return "overvalued"
+        else:
+            return "significantly_overvalued"
     
 
     async def generate_comprehensive_fundamental_data(
@@ -333,7 +566,7 @@ Focus on the most significant trends and their implications for investors."""
             )
             
             key_metrics, income_stmt, balance_sheet, cash_flow, quote, growth_data = results
-            
+
             # Handle exceptions
             key_metrics = key_metrics if not isinstance(key_metrics, Exception) else None
             income_stmt = income_stmt if not isinstance(income_stmt, Exception) else None
@@ -341,7 +574,76 @@ Focus on the most significant trends and their implications for investors."""
             cash_flow = cash_flow if not isinstance(cash_flow, Exception) else None
             quote = quote if not isinstance(quote, Exception) else None
             growth_data = growth_data if not isinstance(growth_data, Exception) else None
-            
+
+            # =====================================================
+            # RAW DATA LOGGING FOR VALIDATION (CRITICAL FOR DEBUG)
+            # =====================================================
+            self.logger.info(f"=" * 60)
+            self.logger.info(f"RAW FUNDAMENTAL DATA FOR {symbol}")
+            self.logger.info(f"=" * 60)
+
+            # Log Key Metrics (raw)
+            if key_metrics:
+                self.logger.info(f"[RAW] Key Metrics ({len(key_metrics)} records):")
+                for i, km in enumerate(key_metrics[:2]):  # Log first 2 for brevity
+                    self.logger.info(f"  Record {i}: {json.dumps(km, default=str)[:500]}...")
+            else:
+                self.logger.warning(f"[RAW] Key Metrics: NONE/EMPTY")
+
+            # Log Quote (raw)
+            if quote:
+                self.logger.info(f"[RAW] Quote: {json.dumps(quote, default=str)[:300]}")
+            else:
+                self.logger.warning(f"[RAW] Quote: NONE/EMPTY")
+
+            # Log Income Statement (raw)
+            if income_stmt:
+                self.logger.info(f"[RAW] Income Statement ({len(income_stmt)} records):")
+                if income_stmt:
+                    latest_income = income_stmt[0]
+                    self.logger.info(f"  Latest Period: {latest_income.get('date', 'N/A')}")
+                    self.logger.info(f"  Revenue: {latest_income.get('revenue', 'N/A')}")
+                    self.logger.info(f"  Net Income: {latest_income.get('netIncome', 'N/A')}")
+                    self.logger.info(f"  EPS: {latest_income.get('eps', 'N/A')}")
+            else:
+                self.logger.warning(f"[RAW] Income Statement: NONE/EMPTY")
+
+            # Log Balance Sheet (raw)
+            if balance_sheet:
+                self.logger.info(f"[RAW] Balance Sheet ({len(balance_sheet)} records):")
+                if balance_sheet:
+                    latest_bs = balance_sheet[0]
+                    self.logger.info(f"  Latest Period: {latest_bs.get('date', 'N/A')}")
+                    self.logger.info(f"  Total Debt: {latest_bs.get('totalDebt', 'N/A')}")
+                    self.logger.info(f"  Total Equity: {latest_bs.get('totalStockholdersEquity', 'N/A')}")
+            else:
+                self.logger.warning(f"[RAW] Balance Sheet: NONE/EMPTY")
+
+            # Log Cash Flow (raw)
+            if cash_flow:
+                self.logger.info(f"[RAW] Cash Flow ({len(cash_flow)} records):")
+                if cash_flow:
+                    latest_cf = cash_flow[0]
+                    self.logger.info(f"  Latest Period: {latest_cf.get('date', 'N/A')}")
+                    self.logger.info(f"  Free Cash Flow: {latest_cf.get('freeCashFlow', 'N/A')}")
+                    self.logger.info(f"  Operating Cash Flow: {latest_cf.get('operatingCashFlow', 'N/A')}")
+            else:
+                self.logger.warning(f"[RAW] Cash Flow: NONE/EMPTY")
+
+            # Log Growth Data (raw)
+            if growth_data:
+                self.logger.info(f"[RAW] Growth Data ({len(growth_data)} records):")
+                if growth_data:
+                    latest_growth = growth_data[0] if isinstance(growth_data[0], dict) else self._convert_to_dict(growth_data[0])
+                    self.logger.info(f"  Latest Period: {latest_growth.get('date', 'N/A')}")
+                    self.logger.info(f"  Revenue Growth: {latest_growth.get('revenueGrowth', 'N/A')}")
+                    self.logger.info(f"  EPS Growth: {latest_growth.get('epsgrowth', 'N/A')}")
+            else:
+                self.logger.warning(f"[RAW] Growth Data: NONE/EMPTY")
+
+            self.logger.info(f"=" * 60)
+            # =====================================================
+
             # Extract data
             km_data = key_metrics[0] if key_metrics else {}
             
@@ -493,12 +795,37 @@ Focus on the most significant trends and their implications for investors."""
                 "altman_z": km_data.get("altmanZScore"),
                 "piotroski_f": km_data.get("piotroskiScore")
             }
-            
+
             # Growth data for AI analysis
             growth_data_list = []
             if growth_data:
                 growth_data_list = [self._convert_to_dict(item) for item in growth_data]
-            
+
+            # =====================================================
+            # VALUATION ANALYSIS (Using valuation calculators)
+            # =====================================================
+            valuation_analysis = self._calculate_intrinsic_value(
+                symbol=symbol,
+                current_price=quote.get("price") if quote else None,
+                eps=income_stmt[0].get("eps") if income_stmt else None,
+                fcf=cash_flow[0].get("freeCashFlow") if cash_flow else None,
+                shares_outstanding=km_data.get("sharesOutstanding"),
+                cash=balance_sheet[0].get("cashAndCashEquivalents") if balance_sheet else 0,
+                debt=balance_sheet[0].get("totalDebt") if balance_sheet else 0,
+                eps_growth_rate=growth_data_list[0].get("epsgrowth") if growth_data_list else None,
+            )
+
+            # Add valuation analysis to report
+            report["intrinsic_value"] = valuation_analysis
+
+            # Log calculated valuation
+            if valuation_analysis:
+                self.logger.info(f"[VALUATION] Intrinsic Value Analysis:")
+                self.logger.info(f"  Graham Value: {valuation_analysis.get('graham_value', 'N/A')}")
+                self.logger.info(f"  DCF Value: {valuation_analysis.get('dcf_value', 'N/A')}")
+                self.logger.info(f"  Current Price: {valuation_analysis.get('current_price', 'N/A')}")
+                self.logger.info(f"  Verdict: {valuation_analysis.get('verdict', 'N/A')}")
+
             return {
                 "fundamental_report": report,
                 "growth_data": growth_data_list
@@ -618,17 +945,57 @@ Focus on the most significant trends and their implications for investors."""
     - **INTERPRETATION**: Your analysis of what the data means
     - **ACTION**: Recommendations based on interpretation
 
-    ### 4. PEG RATIO CALCULATION (IMPORTANT)
-    - Standard PEG = P/E ÷ FORWARD earnings growth estimate (not historical CAGR)
-    - If using historical CAGR, explicitly state: "Using historical 5Y EPS CAGR (not forward estimates)"
+    ### 4. VALUATION ANALYSIS (CRITICAL - USE PROVIDED DATA)
+
+    **P/E Ratio Analysis**:
+    - ALWAYS compare current P/E to:
+      a) Historical P/E range (if available)
+      b) Industry/sector average P/E
+      c) Growth rate (PEG concept)
+    - P/E alone is NOT enough for buy/sell decision
+    - Low P/E may indicate: value opportunity OR declining business
+    - High P/E may indicate: growth premium OR overvaluation
+
+    **Intrinsic Value (Graham & DCF)**:
+    - If Graham Value and DCF Value are provided, USE THEM
+    - Compare intrinsic values to current market price
+    - State margin of safety: (Intrinsic Value - Price) / Price
+    - Note limitations:
+      * Graham uses historical growth (less accurate than forward estimates)
+      * DCF is sensitive to discount rate and terminal growth assumptions
+
+    **PEG Ratio**:
+    - Standard PEG = P/E ÷ FORWARD earnings growth estimate
+    - If using historical CAGR, explicitly state: "Using historical EPS CAGR (not forward estimates)"
     - PEG < 1.0 suggests undervalued relative to growth
     - PEG > 2.0 suggests overvalued relative to growth
+
+    **Investment Decision Framework**:
+    - NOT just "P/E is X, therefore buy/sell"
+    - MUST consider: P/E relative to growth, intrinsic value vs price, risk factors
+    - Confidence level should reflect data quality and uncertainty
 
     ### 5. BULL/BASE/BEAR SCENARIOS (REQUIRED)
     Always include a brief scenario analysis:
     - **Bull Case**: What needs to happen for upside (1-2 sentences)
     - **Base Case**: Most likely outcome (1-2 sentences)
     - **Bear Case**: Key risks and downside triggers (1-2 sentences)
+
+    ### 6. FINANCIAL RATIOS INTERPRETATION
+
+    **Profitability**:
+    - Net Margin: >20% excellent, 10-20% good, <10% monitor
+    - ROE: >15% excellent, 10-15% good, <10% below average
+    - ROA: >10% excellent, 5-10% good
+
+    **Leverage**:
+    - D/E Ratio: <0.5 conservative, 0.5-1.0 moderate, >1.0 aggressive
+    - Current Ratio: >1.5 strong, 1.0-1.5 adequate, <1.0 liquidity risk
+
+    **Growth Quality**:
+    - Revenue growth > EPS growth: margin compression warning
+    - EPS growth > Revenue growth: operating leverage, positive
+    - FCF growth tracking EPS: high quality earnings
 
     ## CONTEXT AWARENESS
     When previous analyses are provided in context:
@@ -643,7 +1010,8 @@ Focus on the most significant trends and their implications for investors."""
     - Risk/reward assessment with quantified scenarios
     - Professional tone but easy to understand
     - Use appropriate icons for visual appeal
-    - Explain financial terms briefly for general audience"""
+    - Explain financial terms briefly for general audience
+    - ALWAYS cite the pre-calculated intrinsic values if provided"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -716,6 +1084,7 @@ Focus on the most significant trends and their implications for investors."""
         - Data source attribution
         - PEG calculation guidance
         - Bull/Base/Bear scenarios requirement
+        - Intrinsic value calculations (Graham, DCF)
         """
         # Extract latest growth data with date
         latest_growth = growth_data[0] if growth_data else {}
@@ -723,6 +1092,49 @@ Focus on the most significant trends and their implications for investors."""
 
         # Determine period type from report
         report_date = report.get('generated', datetime.now().isoformat())[:10]
+
+        # Extract intrinsic value data if available
+        intrinsic_value = report.get('intrinsic_value', {})
+        valuation_section = ""
+        if intrinsic_value:
+            graham_val = intrinsic_value.get('graham_value')
+            dcf_val = intrinsic_value.get('dcf_value')
+            current_price = intrinsic_value.get('current_price')
+            verdict = intrinsic_value.get('verdict', 'N/A')
+            pe_analysis = intrinsic_value.get('pe_analysis', {})
+            methodology_notes = intrinsic_value.get('methodology_notes', [])
+
+            valuation_section = f"""
+    ═══════════════════════════════════════════════════════════════════════════════
+    💰 INTRINSIC VALUE ANALYSIS (Calculated)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    **Current Market Price**: ${current_price:.2f} (if available)
+
+    **Graham Formula Valuation**:
+    - Intrinsic Value: ${graham_val:.2f if graham_val else 'N/A'}
+    - Formula: V = EPS × (8.5 + 2g) × (4.4/Y)
+    - Details: {intrinsic_value.get('graham_details', {})}
+
+    **DCF Valuation**:
+    - Intrinsic Value: ${dcf_val:.2f if dcf_val else 'N/A'}
+    - Assumptions: 10% WACC, 2.5% terminal growth
+    - Details: {intrinsic_value.get('dcf_details', {})}
+
+    **P/E Analysis**:
+    - Current P/E: {pe_analysis.get('current_pe', 'N/A')}
+    - Interpretation: {pe_analysis.get('pe_interpretation', 'N/A')}
+
+    **Overall Valuation Verdict**: {verdict.upper().replace('_', ' ')}
+
+    **Methodology Notes**:
+    {chr(10).join('- ' + note for note in methodology_notes)}
+
+    ⚠️ IMPORTANT: The above intrinsic values are CALCULATED ESTIMATES.
+    - Graham uses historical EPS growth (not forward estimates) - less accurate
+    - DCF uses conservative assumptions - adjust based on company specifics
+    - Compare with your own analysis before making investment decisions
+"""
 
         prompt = f"""
     Analyze the comprehensive fundamental data for {symbol}:
@@ -735,7 +1147,7 @@ Focus on the most significant trends and their implications for investors."""
     ═══════════════════════════════════════════════════════════════════════════════
 
     {json.dumps(report, indent=2)}
-
+    {valuation_section}
     ═══════════════════════════════════════════════════════════════════════════════
     📈 RECENT GROWTH TRENDS
     Period: Annual (YoY) as of {growth_date}
