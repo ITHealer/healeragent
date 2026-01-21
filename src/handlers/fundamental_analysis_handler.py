@@ -595,24 +595,55 @@ Focus on the most significant trends and their implications for investors."""
             """
 
             # System prompt with context awareness
-            system_prompt = """You are an expert fundamental analyst with 20+ years experience.
+            system_prompt = f"""You are an expert fundamental analyst with 20+ years experience.
 
     {language_instruction}
-    
+
+    ## DATA INTEGRITY RULES (CRITICAL)
+
+    ### 1. PERIOD TAGS (MANDATORY)
+    Every financial metric MUST include its period:
+    - [FY2025] for fiscal year data
+    - [TTM] for trailing twelve months
+    - [Q3 FY2025] for quarterly data
+    - Example: "Revenue [FY2025]: $130.5B" NOT just "Revenue: $130.5B"
+
+    ### 2. DATA SOURCE
+    All data comes from Financial Modeling Prep (FMP) API.
+    When citing key metrics, mention: "(Source: FMP API, [period])"
+
+    ### 3. SEPARATE FACTS vs INTERPRETATION vs ACTION
+    Structure your analysis with clear separation:
+    - **FACTS**: Raw data with period tags and source
+    - **INTERPRETATION**: Your analysis of what the data means
+    - **ACTION**: Recommendations based on interpretation
+
+    ### 4. PEG RATIO CALCULATION (IMPORTANT)
+    - Standard PEG = P/E ÷ FORWARD earnings growth estimate (not historical CAGR)
+    - If using historical CAGR, explicitly state: "Using historical 5Y EPS CAGR (not forward estimates)"
+    - PEG < 1.0 suggests undervalued relative to growth
+    - PEG > 2.0 suggests overvalued relative to growth
+
+    ### 5. BULL/BASE/BEAR SCENARIOS (REQUIRED)
+    Always include a brief scenario analysis:
+    - **Bull Case**: What needs to happen for upside (1-2 sentences)
+    - **Base Case**: Most likely outcome (1-2 sentences)
+    - **Bear Case**: Key risks and downside triggers (1-2 sentences)
+
+    ## CONTEXT AWARENESS
     When previous analyses are provided in context:
     - Reference significant changes in fundamental metrics
     - Update investment thesis based on new data
     - Highlight improvement or deterioration in financial health
     - Compare current valuation with previous assessments
 
-    Focus on:
-    - Data-driven analysis with specific metrics
-    - Clear investment recommendations
-    - Risk/reward assessment
-    - Actionable insights for investors
+    ## OUTPUT QUALITY
+    - Data-driven analysis with specific metrics AND period tags
+    - Clear investment recommendations with confidence level
+    - Risk/reward assessment with quantified scenarios
     - Professional tone but easy to understand
-    - Make presentation more attractive by adding appropriate icons
-    - Briefly explain clearly, annotate the meaning of indicators affecting the market"""
+    - Use appropriate icons for visual appeal
+    - Explain financial terms briefly for general audience"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -678,61 +709,117 @@ Focus on the most significant trends and their implications for investors."""
         target_language: Optional[str] = None
     ) -> str:
         """
-        Create comprehensive prompt combining all fundamental metrics for AI analysis
+        Create comprehensive prompt combining all fundamental metrics for AI analysis.
+
+        Enhanced with:
+        - Period tags for all metrics
+        - Data source attribution
+        - PEG calculation guidance
+        - Bull/Base/Bear scenarios requirement
         """
-        # Extract latest growth data
+        # Extract latest growth data with date
         latest_growth = growth_data[0] if growth_data else {}
-        
+        growth_date = latest_growth.get('date', 'N/A')
+
+        # Determine period type from report
+        report_date = report.get('generated', datetime.now().isoformat())[:10]
+
         prompt = f"""
     Analyze the comprehensive fundamental data for {symbol}:
 
-    **FUNDAMENTAL METRICS REPORT:**
+    ═══════════════════════════════════════════════════════════════════════════════
+    📊 FUNDAMENTAL METRICS REPORT
+    Data Source: Financial Modeling Prep (FMP) API
+    Report Generated: {report_date}
+    Period: TTM (Trailing Twelve Months) unless otherwise noted
+    ═══════════════════════════════════════════════════════════════════════════════
+
     {json.dumps(report, indent=2)}
 
-    **RECENT GROWTH TRENDS:**
-    - Revenue Growth: {self._format_percentage(latest_growth.get('revenueGrowth', 0))}
-    - EPS Growth: {self._format_percentage(latest_growth.get('epsgrowth', 0))}
-    - FCF Growth: {self._format_percentage(latest_growth.get('freeCashFlowGrowth', 0))}
-    - Operating Income Growth: {self._format_percentage(latest_growth.get('operatingIncomeGrowth', 0))}
+    ═══════════════════════════════════════════════════════════════════════════════
+    📈 RECENT GROWTH TRENDS
+    Period: Annual (YoY) as of {growth_date}
+    ═══════════════════════════════════════════════════════════════════════════════
 
-    Provide a comprehensive investment analysis:
+    - Revenue Growth [YoY]: {self._format_percentage(latest_growth.get('revenueGrowth', 0))}
+    - EPS Growth [YoY]: {self._format_percentage(latest_growth.get('epsgrowth', 0))}
+    - FCF Growth [YoY]: {self._format_percentage(latest_growth.get('freeCashFlowGrowth', 0))}
+    - Operating Income Growth [YoY]: {self._format_percentage(latest_growth.get('operatingIncomeGrowth', 0))}
 
-    1. **INVESTMENT RATING & THESIS**
+    ═══════════════════════════════════════════════════════════════════════════════
+    📝 ANALYSIS REQUIREMENTS
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    Provide a comprehensive investment analysis with the following structure:
+
+    ### 1. 📊 INVESTMENT RATING & THESIS
     - Clear rating: STRONG BUY / BUY / HOLD / SELL / STRONG SELL
     - Core investment thesis in 2-3 sentences
-    - Confidence level: HIGH / MEDIUM / LOW
+    - Confidence level: HIGH / MEDIUM / LOW (with justification)
+    - **NOTE**: Rating is metrics-based, not investment advice
 
-    2. **FINANCIAL HEALTH SCORE (0-100)**
+    ### 2. 💯 FINANCIAL HEALTH SCORE (0-100)
     - Calculate weighted score based on all metrics
-    - Breakdown by category (Valuation, Growth, Profitability, Leverage, Cash Flow)
+    - Breakdown by category with individual scores:
+      | Category | Score (0-20) | Key Metrics |
+      |----------|--------------|-------------|
+      | Valuation | X/20 | P/E, P/S, P/B |
+      | Growth | X/20 | Rev CAGR, EPS CAGR |
+      | Profitability | X/20 | Net Margin, ROE |
+      | Leverage | X/20 | D/E, Current Ratio |
+      | Cash Flow | X/20 | FCF, FCF Yield |
 
-    3. **KEY STRENGTHS** (3-5 points with specific metrics)
-    - What makes this stock attractive?
-    - Use exact numbers from the data
+    ### 3. ✅ KEY STRENGTHS (3-5 points)
+    - Use exact metrics WITH period tags: "Net Margin [TTM]: 55.8%"
+    - Explain WHY each metric is strong
 
-    4. **CRITICAL RISKS** (2-3 points with specific metrics)
-    - What are the main concerns?
-    - Quantify the risks
+    ### 4. ⚠️ CRITICAL RISKS (2-3 points)
+    - Quantify risks with specific metrics
+    - Include both financial and business risks
 
-    5. **VALUATION ASSESSMENT**
+    ### 5. 💰 VALUATION ASSESSMENT
     - Is it overvalued/fairly valued/undervalued?
     - Compare P/E, P/B, P/S to growth rates
-    - PEG analysis if available
 
-    6. **ACTIONABLE RECOMMENDATIONS**
-    - Entry strategy (price levels, timing)
-    - Position sizing (% of portfolio)
-    - Exit strategy (targets and stop loss)
+    **PEG Analysis** (IMPORTANT):
+    - If PEG is available in data, use it directly
+    - If calculating manually:
+      - State clearly: "PEG calculated using [5Y historical CAGR / forward estimates]"
+      - PEG = P/E ÷ EPS Growth Rate
+      - Note: Using historical CAGR is less accurate than forward estimates
+    - Interpretation: PEG < 1.0 = potentially undervalued, > 2.0 = potentially overvalued
+
+    ### 6. 🎯 SCENARIO ANALYSIS (REQUIRED)
+    Provide brief scenarios (1-2 sentences each):
+
+    | Scenario | Description | Trigger |
+    |----------|-------------|---------|
+    | **Bull** 🐂 | Upside case | What needs to happen |
+    | **Base** ⚖️ | Most likely | Expected outcome |
+    | **Bear** 🐻 | Downside risk | Key risk triggers |
+
+    ### 7. 📋 ACTIONABLE RECOMMENDATIONS
+    - Entry strategy (general guidance, not specific prices)
+    - Position sizing suggestion (% of portfolio)
     - Time horizon
+    - Key catalysts to watch
 
-    7. **KEY METRICS TO MONITOR**
-    - Which metrics are most critical?
-    - What would change your thesis?
+    ### 8. 📡 KEY METRICS TO MONITOR
+    - Which 3-5 metrics are most critical for this stock?
+    - What changes would alter your thesis?
 
-    Format with clear headers, use bullet points, and be specific with numbers.
-    Make it actionable for investors to make informed decisions.
+    ═══════════════════════════════════════════════════════════════════════════════
+    ⚠️ IMPORTANT FORMATTING RULES
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    1. ALWAYS include period tags: [TTM], [FY2025], [Q3 FY2025], [5Y CAGR]
+    2. Cite data source when using key numbers: "(FMP API, TTM)"
+    3. Use exact numbers from the data - never fabricate
+    4. Separate FACTS from INTERPRETATION clearly
+    5. Include Bull/Base/Bear scenarios
+    6. End with disclaimer: Analysis is informational, not investment advice
     """
-        
+
         return prompt
     
 
