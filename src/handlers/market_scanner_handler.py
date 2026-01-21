@@ -679,9 +679,20 @@ SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in se
 
 ## FACTS HIERARCHY (CRITICAL)
 1. **PRIMARY**: Use EXACT numbers from provided data (scores, counts, dates)
-2. **CITE SOURCES**: Always reference specific headlines with source and date
+2. **CITE SOURCES WITH LINKS**: Always include clickable markdown links to sources
 3. **DON'T SPECULATE**: Base analysis on provided data only
 4. **LANGUAGE CONSISTENCY**: Match user's language throughout (no switching mid-response)
+
+## CRITICAL: INCLUDE CLICKABLE SOURCE LINKS
+
+When referencing news articles, ALWAYS include the URL as a clickable markdown link.
+
+**Format Examples:**
+- Inline citation: "Chip H200 của NVIDIA đang gặp vấn đề về chuỗi cung ứng. [Reuters](https://example.com/article)"
+- Table format: `| [Article Title](URL) | Source | Date |`
+- Theme discussion: "Theo báo cáo từ [Bloomberg](URL), công ty đang..."
+
+**DO NOT** just mention sources without links. The data provides URLs - USE THEM.
 
 ## REQUIRED OUTPUT STRUCTURE
 
@@ -702,43 +713,48 @@ SENTIMENT_NEWS_SYSTEM_PROMPT = """You are a financial analyst specializing in se
 - Score -0.3 to -0.1: Moderate bearish
 - Score < -0.3: Strong bearish sentiment
 
-### 2. TOP HEADLINES (LIST ACTUAL HEADLINES FROM DATA)
-Present in table format:
-| # | Date | Source | Title | Source Type |
-|---|------|--------|-------|-------------|
-| 1 | 2024-01-15 | Reuters | [Actual title from data] | Factual |
-| 2 | 2024-01-14 | Motley Fool | [Actual title from data] | Opinion |
-| ... | ... | ... | ... | ... |
+### 2. TOP HEADLINES WITH LINKS (REQUIRED - Use markdown links)
+Present headlines with clickable links:
+
+| # | Date | Headline (with link) | Source Type |
+|---|------|----------------------|-------------|
+| 1 | 2024-01-15 | [Actual headline title](URL) | Factual |
+| 2 | 2024-01-14 | [Another headline](URL) | Opinion |
+
+**OR** use bullet format with inline links:
+1. **[Headline Title](URL)** - Source Name, Date - Source Type
+2. **[Another Headline](URL)** - Source Name, Date - Source Type
 
 **Source Type Classification:**
 - **Factual**: Reuters, Bloomberg, WSJ, AP, CNBC, MarketWatch, Financial Times
 - **Opinion/Analysis**: Motley Fool, Seeking Alpha, Nasdaq.com articles, Investor's Business Daily
 - **Press Release**: BusinessWire, PRNewswire, GlobeNewswire
 
-### 3. NEWS THEMES (Group headlines by topic)
+### 3. NEWS THEMES (Group headlines by topic - INCLUDE LINKS)
 For each theme (3-5 themes):
 - **Theme Name**: Brief description
-- **Headlines**: List which headlines (#1, #3, #5) belong to this theme
+- **Related Articles**: List with clickable links
 - **Sentiment Impact**: Positive / Negative / Neutral for this theme
 
 Example:
-**Theme 1: Supply Chain Concerns** (Negative)
-- Headlines: #2, #5
-- Impact: These reports suggest potential delivery delays...
+**Theme 1: Rủi ro Chuỗi cung ứng** (Tiêu cực)
+- [NVIDIA H200 chips face delays](URL) - Reuters
+- [Supply chain concerns mount](URL) - Bloomberg
+- Impact: Các báo cáo này cho thấy khả năng chậm trễ giao hàng...
 
-**Theme 2: Partner Ecosystem Strength** (Positive)
-- Headlines: #1, #4
-- Impact: Strong partnerships indicate...
+**Theme 2: Sức mạnh Hệ sinh thái** (Tích cực)
+- [TSMC reports strong demand](URL) - MarketWatch
+- Impact: Đối tác sản xuất mạnh mẽ...
 
 ### 4. MARKET IMPACT ASSESSMENT
-Based on the themes above:
+Based on the themes above (cite sources with links):
 - **Short-term** (days): Expected reaction and why
 - **Medium-term** (weeks): Potential implications
 - **Conflicting Signals**: Note if positive and negative themes are offsetting
 
 ### 5. TRADING IMPLICATIONS
-- **Key Catalysts to Watch**: Specific events from news that could move stock
-- **Risk Factors**: Specific risks identified from headlines
+- **Key Catalysts to Watch**: Specific events from news (with source links)
+- **Risk Factors**: Specific risks identified from headlines (with source links)
 - **Recommended Stance**: Based on sentiment + news alignment
 
 ### 6. DATA QUALITY NOTES
@@ -748,10 +764,11 @@ Always include:
 - Confidence level based on sample size
 
 ## AVOID THESE MISTAKES
-❌ Saying "based on recent headlines" without listing them with date + source
+❌ Mentioning articles WITHOUT including their clickable URL
+❌ Saying "based on recent headlines" without listing them with links
 ❌ Not specifying sentiment scale (always say "scale: -1 to +1")
 ❌ Missing time window for sentiment data
-❌ Creating themes without citing which headlines belong to them
+❌ Creating themes without citing which articles (with links) belong to them
 ❌ Mixing languages (if user asked in Vietnamese, respond 100% in Vietnamese)
 ❌ Making strong claims without evidence from provided data
 
@@ -1835,7 +1852,7 @@ class MarketScannerHandler(LoggerMixin):
             ])
 
         # ═══════════════════════════════════════════════════════════════════
-        # NEWS SECTION (with source classification)
+        # NEWS SECTION (with source classification and CLICKABLE LINKS)
         # ═══════════════════════════════════════════════════════════════════
         if news_data:
             articles = news_data.get("articles", [])
@@ -1843,53 +1860,58 @@ class MarketScannerHandler(LoggerMixin):
 
             lines.extend([
                 "═══════════════════════════════════════════════════════════",
-                "NEWS DATA (Recent Headlines)",
+                "NEWS DATA (Recent Headlines WITH URLs)",
                 "═══════════════════════════════════════════════════════════",
                 "",
                 f"Total Articles Retrieved: {article_count}",
+                "",
+                "⚠️ IMPORTANT: Use these URLs to create CLICKABLE markdown links in your output!",
+                "Format: [Title](URL) or [Source](URL)",
                 ""
             ])
 
             if articles:
-                lines.append("TOP HEADLINES (Use in table format for output):")
-                lines.append("| # | Date | Source | Title | Source Type |")
-                lines.append("|---|------|--------|-------|-------------|")
+                # Headlines with URLs for markdown links
+                lines.append("TOP HEADLINES (INCLUDE URLs AS CLICKABLE LINKS):")
+                lines.append("")
 
                 for i, article in enumerate(articles[:10], 1):
                     title = article.get("title", "Untitled")
-                    # Truncate title but keep meaningful
-                    if len(title) > 80:
-                        title = title[:77] + "..."
-
                     source = article.get("site", "Unknown")
-                    pub_date = article.get("published_date", "")[:10]  # Just date
+                    pub_date = article.get("published_date", "")[:10]
                     url = article.get("url", "")
+                    text = article.get("text", "")[:200]
 
                     # Classify source type
                     source_type = self._classify_news_source(source)
 
-                    lines.append(f"| {i} | {pub_date} | {source} | {title} | {source_type} |")
+                    # Format for easy markdown link creation
+                    lines.extend([
+                        f"[{i}] HEADLINE: {title}",
+                        f"    SOURCE: {source} ({source_type})",
+                        f"    DATE: {pub_date}",
+                        f"    URL: {url}",
+                        f"    MARKDOWN LINK: [{title[:60]}{'...' if len(title) > 60 else ''}]({url})",
+                    ])
+                    if text:
+                        lines.append(f"    PREVIEW: {text}...")
+                    lines.append("")
 
-                lines.append("")
-
-                # Add URLs section for verification
-                lines.append("ARTICLE URLS (for reference):")
-                for i, article in enumerate(articles[:10], 1):
-                    url = article.get("url", "N/A")
-                    lines.append(f"  [{i}] {url}")
-                lines.append("")
-
-                # Add text previews for theme identification
-                lines.append("ARTICLE PREVIEWS (for theme identification):")
+                # Quick reference table
+                lines.extend([
+                    "QUICK REFERENCE (Copy-paste ready markdown links):",
+                    "─────────────────────────────────────────────────────────",
+                ])
                 for i, article in enumerate(articles[:10], 1):
                     title = article.get("title", "Untitled")
-                    text = article.get("text", "")[:200]
+                    short_title = title[:50] + "..." if len(title) > 50 else title
                     source = article.get("site", "Unknown")
-                    lines.append(f"[{i}] {title}")
-                    lines.append(f"    Source: {source}")
-                    if text:
-                        lines.append(f"    Preview: {text}...")
-                    lines.append("")
+                    url = article.get("url", "")
+                    if url:
+                        lines.append(f"  [{i}] [{short_title}]({url}) - {source}")
+                    else:
+                        lines.append(f"  [{i}] {short_title} - {source} (no URL)")
+                lines.append("")
 
                 # Source type legend
                 lines.extend([
@@ -1904,7 +1926,7 @@ class MarketScannerHandler(LoggerMixin):
                 lines.append("")
 
         # ═══════════════════════════════════════════════════════════════════
-        # ANALYSIS INSTRUCTIONS
+        # ANALYSIS INSTRUCTIONS (Emphasize clickable links)
         # ═══════════════════════════════════════════════════════════════════
         lines.extend([
             "═══════════════════════════════════════════════════════════",
@@ -1912,10 +1934,15 @@ class MarketScannerHandler(LoggerMixin):
             "═══════════════════════════════════════════════════════════",
             "",
             "1. Use the EXACT metadata values above (score, scale, window, etc.)",
-            "2. List headlines in table format with source type classification",
-            "3. Group headlines into 3-5 themes, citing which headline # belongs to each",
-            "4. Note any conflicting signals between sentiment and news",
-            "5. Match the user's language throughout (no mixing languages)",
+            "2. ⭐ ALWAYS include clickable markdown links: [Title](URL)",
+            "3. When discussing themes, cite articles WITH their links",
+            "4. Group headlines into 3-5 themes, each theme lists relevant article links",
+            "5. Note any conflicting signals between sentiment and news",
+            "6. Match the user's language throughout (no mixing languages)",
+            "",
+            "Example output format:",
+            "  'Theo báo cáo từ [Reuters](URL), chip H200 đang gặp vấn đề...'",
+            "  'Tin tức tích cực từ [TSMC partnership news](URL) cho thấy...'",
             ""
         ])
 
