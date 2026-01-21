@@ -250,7 +250,24 @@ Focus on the most significant trends and their implications for investors."""
         if value is None:
             return "N/A"
         return f"{value * 100:.2f}%"
-    
+
+    def _format_large_number(self, value: float) -> str:
+        """Format large numbers with B/M/K suffix for readability."""
+        if value is None or value == 0:
+            return "N/A"
+        abs_value = abs(value)
+        sign = "-" if value < 0 else ""
+        if abs_value >= 1e12:
+            return f"{sign}{abs_value/1e12:.2f}T"
+        elif abs_value >= 1e9:
+            return f"{sign}{abs_value/1e9:.2f}B"
+        elif abs_value >= 1e6:
+            return f"{sign}{abs_value/1e6:.2f}M"
+        elif abs_value >= 1e3:
+            return f"{sign}{abs_value/1e3:.2f}K"
+        else:
+            return f"{sign}{abs_value:.2f}"
+
     def _extract_key_insights(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract key insights for quick reference."""
         return {
@@ -931,7 +948,7 @@ Focus on the most significant trends and their implications for investors."""
             """
 
             # System prompt with context awareness
-            system_prompt = f"""You are an expert fundamental analyst with 20+ years experience.
+            system_prompt = f"""You are a fundamental analyst providing data-driven stock analysis.
 
     {language_instruction}
 
@@ -944,58 +961,82 @@ Focus on the most significant trends and their implications for investors."""
     - [Q3 FY2025] for quarterly data
     - Example: "Revenue [FY2025]: $130.5B" NOT just "Revenue: $130.5B"
 
-    ### 2. DATA SOURCE
-    All data comes from Financial Modeling Prep (FMP) API.
-    When citing key metrics, mention: "(Source: FMP API, [period])"
+    ### 2. DATA SOURCE & TIMESTAMPS
+    - All data comes from Financial Modeling Prep (FMP) API
+    - When citing key metrics: "(Source: FMP /key-metrics-ttm, as of [date])"
+    - Price data: specify "close price" or "realtime" and timezone if known
+    - If P/E changes from previous analysis, EXPLAIN why (price change, EPS update, etc.)
 
     ### 3. SEPARATE FACTS vs INTERPRETATION vs ACTION
-    Structure your analysis with clear separation:
     - **FACTS**: Raw data with period tags and source
     - **INTERPRETATION**: Your analysis of what the data means
     - **ACTION**: Recommendations based on interpretation
 
-    ### 4. VALUATION ANALYSIS (CRITICAL - USE PROVIDED DATA)
+    ### 4. TWO INVESTOR PERSPECTIVES (REQUIRED)
+    Always analyze from BOTH perspectives:
 
-    **P/E Ratio Analysis**:
-    - ALWAYS compare current P/E to:
-      a) Historical P/E range (if available)
-      b) Industry/sector average P/E
-      c) Growth rate (PEG concept)
-    - P/E alone is NOT enough for buy/sell decision
-    - Low P/E may indicate: value opportunity OR declining business
-    - High P/E may indicate: growth premium OR overvaluation
+    **A) Growth Investor Perspective** (ưu tiên tăng giá):
+    - Focus on: EPS growth, Revenue growth, Forward P/E vs Trailing P/E
+    - High P/E acceptable if justified by growth
+    - Key question: "Is Forward P/E significantly lower than Trailing P/E?"
+      - YES → market expects strong EPS growth (positive for growth thesis)
+      - NO → growth expectations are modest
 
-    **Intrinsic Value (Graham & DCF)**:
-    - If Graham Value and DCF Value are provided, USE THEM
-    - Compare intrinsic values to current market price
-    - State margin of safety: (Intrinsic Value - Price) / Price
-    - Note limitations:
-      * Graham uses historical growth (less accurate than forward estimates)
-      * DCF is sensitive to discount rate and terminal growth assumptions
+    **B) Dividend Investor Perspective** (ưu tiên dòng tiền):
+    - Focus on: Dividend Yield, Payout Ratio, Dividend Growth history
+    - If Yield < 1%: NOT suitable as core dividend holding
+    - If Yield > 3% with stable payout: potential income stock
 
-    **PEG Ratio**:
-    - Standard PEG = P/E ÷ FORWARD earnings growth estimate
-    - If using historical CAGR, explicitly state: "Using historical EPS CAGR (not forward estimates)"
-    - PEG < 1.0 suggests undervalued relative to growth
-    - PEG > 2.0 suggests overvalued relative to growth
+    ### 5. P/E DIAGNOSTIC TEST (3 Scenarios)
+    Evaluate P/E using this framework:
 
-    **Investment Decision Framework**:
-    - NOT just "P/E is X, therefore buy/sell"
-    - MUST consider: P/E relative to growth, intrinsic value vs price, risk factors
-    - Confidence level should reflect data quality and uncertainty
+    ✅ **GOOD Scenario** (đậu mạnh):
+    - Forward P/E << Trailing P/E (market expects EPS jump)
+    - Business confirming growth (revenue/segment growth strong)
+    - P/E not outlier vs industry peers
 
-    ### 5. BULL/BASE/BEAR SCENARIOS (REQUIRED)
-    Always include a brief scenario analysis:
-    - **Bull Case**: What needs to happen for upside (1-2 sentences)
-    - **Base Case**: Most likely outcome (1-2 sentences)
-    - **Bear Case**: Key risks and downside triggers (1-2 sentences)
+    ➖ **NEUTRAL Scenario** (đậu nhẹ, cần quan sát):
+    - Forward P/E slightly < Trailing P/E
+    - Growth slowing but still positive
+    - Valuation in line with peers
 
-    ### 6. FINANCIAL RATIOS INTERPRETATION
+    ❌ **RISK Scenario** (rớt):
+    - Trailing P/E high AND Forward P/E also high
+    - EPS forecast being cut
+    - No dividend cushion (yield too low)
+    - If growth misses expectations, price volatility will be high
+
+    ### 6. INTRINSIC VALUE MODELS (USE WITH CAUTION)
+
+    **CRITICAL**: DCF and Graham are MODEL ESTIMATES, not facts!
+
+    **Confidence Level**: Always use **MEDIUM** confidence for model-based valuations
+    - These models depend heavily on assumptions
+    - Growth stocks often appear "overvalued" in DCF/Graham
+    - DO NOT use "HIGH confidence" for model-based conclusions
+
+    **Required Disclaimers**:
+    - "DCF estimate based on: WACC X%, terminal growth Y%"
+    - "Graham formula uses historical growth (less accurate than forward estimates)"
+    - "Model estimates have wide uncertainty range"
+
+    ### 7. PEG RATIO GUIDANCE
+    - Standard PEG = P/E ÷ FORWARD earnings growth
+    - If using historical CAGR: "PEG using historical 5Y CAGR (not forward estimates)"
+    - PEG < 1.0: potentially undervalued vs growth
+    - PEG 1.0-1.5: fairly valued
+    - PEG > 2.0: potentially expensive vs growth
+
+    ### 8. PEER COMPARISON (if data available)
+    - Compare P/E, P/S, FCF Yield with 2-3 industry peers
+    - State if stock is premium/discount to peers
+    - Note: premium may be justified by superior growth
+
+    ### 9. FINANCIAL RATIOS BENCHMARKS
 
     **Profitability**:
     - Net Margin: >20% excellent, 10-20% good, <10% monitor
     - ROE: >15% excellent, 10-15% good, <10% below average
-    - ROA: >10% excellent, 5-10% good
 
     **Leverage**:
     - D/E Ratio: <0.5 conservative, 0.5-1.0 moderate, >1.0 aggressive
@@ -1003,24 +1044,14 @@ Focus on the most significant trends and their implications for investors."""
 
     **Growth Quality**:
     - Revenue growth > EPS growth: margin compression warning
-    - EPS growth > Revenue growth: operating leverage, positive
-    - FCF growth tracking EPS: high quality earnings
-
-    ## CONTEXT AWARENESS
-    When previous analyses are provided in context:
-    - Reference significant changes in fundamental metrics
-    - Update investment thesis based on new data
-    - Highlight improvement or deterioration in financial health
-    - Compare current valuation with previous assessments
+    - EPS growth > Revenue growth: operating leverage (positive)
 
     ## OUTPUT QUALITY
-    - Data-driven analysis with specific metrics AND period tags
-    - Clear investment recommendations with confidence level
-    - Risk/reward assessment with quantified scenarios
-    - Professional tone but easy to understand
-    - Use appropriate icons for visual appeal
-    - Explain financial terms briefly for general audience
-    - ALWAYS cite the pre-calculated intrinsic values if provided"""
+    - Data-driven with specific metrics AND period tags
+    - Accessible to both beginners and professional traders
+    - Use icons for visual clarity
+    - Brief explanations of financial terms for general audience
+    - NEVER claim "HIGH confidence" for model-based valuations"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -1112,6 +1143,8 @@ Focus on the most significant trends and their implications for investors."""
             verdict = intrinsic_value.get('verdict', 'N/A')
             pe_analysis = intrinsic_value.get('pe_analysis', {})
             methodology_notes = intrinsic_value.get('methodology_notes', [])
+            dcf_details = intrinsic_value.get('dcf_details', {})
+            graham_details = intrinsic_value.get('graham_details', {})
 
             # Pre-format values to handle None safely
             price_str = f"${current_price:.2f}" if current_price else "N/A"
@@ -1119,36 +1152,111 @@ Focus on the most significant trends and their implications for investors."""
             dcf_str = f"${dcf_val:.2f}" if dcf_val else "N/A"
             verdict_str = verdict.upper().replace('_', ' ') if verdict else "N/A"
 
+            # Calculate Price/Intrinsic ratios
+            price_to_graham = f"{current_price/graham_val:.2f}x" if graham_val and current_price else "N/A"
+            price_to_dcf = f"{current_price/dcf_val:.2f}x" if dcf_val and current_price else "N/A"
+
+            # Calculate margin of safety
+            graham_margin = f"{((graham_val - current_price)/current_price)*100:.1f}%" if graham_val and current_price else "N/A"
+            dcf_margin = f"{((dcf_val - current_price)/current_price)*100:.1f}%" if dcf_val and current_price else "N/A"
+
+            # DCF Sensitivity Analysis (WACC ±1%, Terminal Growth ±0.5%)
+            dcf_sensitivity = ""
+            if dcf_val and current_price:
+                base_wacc = dcf_details.get('discount_rate', 0.10)
+                base_tg = dcf_details.get('terminal_growth', 0.025)
+                # Approximate sensitivity: DCF value inversely proportional to (WACC - terminal_growth)
+                # Lower WACC = higher value, Higher terminal growth = higher value
+                dcf_low = dcf_val * 0.80  # ~WACC 11%, TG 2%
+                dcf_high = dcf_val * 1.25  # ~WACC 9%, TG 3%
+                dcf_sensitivity = f"""
+    **DCF Sensitivity Analysis** (Confidence: MEDIUM):
+    | Scenario | WACC | Terminal Growth | Estimated Value |
+    |----------|------|-----------------|-----------------|
+    | Conservative | 11% | 2.0% | ${dcf_low:.2f} |
+    | Base Case | 10% | 2.5% | ${dcf_val:.2f} |
+    | Optimistic | 9% | 3.0% | ${dcf_high:.2f} |
+
+    Range: ${dcf_low:.2f} - ${dcf_high:.2f} (Current: {price_str})"""
+
             valuation_section = f"""
     ═══════════════════════════════════════════════════════════════════════════════
-    💰 INTRINSIC VALUE ANALYSIS (Calculated)
+    💰 INTRINSIC VALUE ANALYSIS (MODEL ESTIMATES - Confidence: MEDIUM)
     ═══════════════════════════════════════════════════════════════════════════════
 
     **Current Market Price**: {price_str}
 
     **Graham Formula Valuation**:
     - Intrinsic Value: {graham_str}
+    - Price/Graham: {price_to_graham}
+    - Margin of Safety: {graham_margin}
     - Formula: V = EPS × (8.5 + 2g) × (4.4/Y)
-    - Details: {intrinsic_value.get('graham_details', {})}
+    - Growth Rate Used: {graham_details.get('growth_rate_used', 'N/A')} ({graham_details.get('growth_rate_source', 'N/A')})
+    - ⚠️ Note: Graham uses HISTORICAL growth, not forward estimates
 
     **DCF Valuation**:
     - Intrinsic Value: {dcf_str}
-    - Assumptions: 10% WACC, 2.5% terminal growth
-    - Details: {intrinsic_value.get('dcf_details', {})}
+    - Price/DCF: {price_to_dcf}
+    - Margin of Safety: {dcf_margin}
+    - Assumptions: WACC={dcf_details.get('discount_rate', 0.10)*100:.0f}%, Terminal Growth={dcf_details.get('terminal_growth', 0.025)*100:.1f}%
+    {dcf_sensitivity}
 
     **P/E Analysis**:
-    - Current P/E: {pe_analysis.get('current_pe', 'N/A')}
+    - Current P/E [TTM]: {pe_analysis.get('current_pe', 'N/A')}
     - Interpretation: {pe_analysis.get('pe_interpretation', 'N/A')}
 
-    **Overall Valuation Verdict**: {verdict_str}
+    **Model-Based Verdict**: {verdict_str}
+    ⚠️ This is based on model estimates with inherent uncertainty.
+    Growth stocks often appear "overvalued" in DCF/Graham models.
 
     **Methodology Notes**:
     {chr(10).join('- ' + note for note in methodology_notes)}
 
-    ⚠️ IMPORTANT: The above intrinsic values are CALCULATED ESTIMATES.
-    - Graham uses historical EPS growth (not forward estimates) - less accurate
-    - DCF uses conservative assumptions - adjust based on company specifics
-    - Compare with your own analysis before making investment decisions
+    ═══════════════════════════════════════════════════════════════════════════════
+    ⚠️ IMPORTANT DISCLAIMERS
+    ═══════════════════════════════════════════════════════════════════════════════
+    - DCF/Graham are MODEL ESTIMATES, not facts
+    - Results depend heavily on assumptions (growth rates, discount rates)
+    - Growth stocks typically show as "overvalued" in these models
+    - Always compare with peer valuations and business fundamentals
+    - These estimates have MEDIUM confidence, not HIGH
+"""
+
+        # Extract key raw metrics for display
+        valuation = report.get('valuation', {})
+        profitability = report.get('profitability', {})
+        dividends = report.get('dividends', {})
+
+        # Build raw data summary
+        raw_data_summary = f"""
+    ═══════════════════════════════════════════════════════════════════════════════
+    📋 RAW DATA SUMMARY (for validation)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    **Price & Valuation** (Source: FMP /quote, /key-metrics-ttm)
+    - Current Price: ${valuation.get('price', 'N/A')} (as of {report_date})
+    - Market Cap: ${self._format_large_number(valuation.get('market_cap', 0))}
+    - P/E [TTM]: {valuation.get('pe_ttm', 'N/A')}
+    - Forward P/E: {valuation.get('forward_pe', 'N/A')}
+    - P/S [TTM]: {valuation.get('ps_ttm', 'N/A')}
+    - P/B [TTM]: {valuation.get('pb_ttm', 'N/A')}
+    - EV/EBITDA: {valuation.get('ev_ebitda', 'N/A')}
+
+    **Earnings** (Source: FMP /income-statement)
+    - EPS [TTM]: ${profitability.get('eps', 'N/A')}
+    - Revenue [TTM]: ${self._format_large_number(profitability.get('revenue', 0))}
+    - Net Income [TTM]: ${self._format_large_number(profitability.get('net_income', 0))}
+    - Net Margin [TTM]: {self._format_percentage(profitability.get('net_margin', 0))}
+    - ROE [TTM]: {self._format_percentage(profitability.get('roe', 0))}
+
+    **Dividends** (Source: FMP /key-metrics-ttm)
+    - Dividend Yield: {self._format_percentage(dividends.get('dividend_yield', 0))}
+    - Payout Ratio: {self._format_percentage(dividends.get('payout_ratio', 0))}
+    - Annual Dividend: ${dividends.get('dividend_per_share', 'N/A')}
+
+    **Peer Comparison** (Industry benchmark - if available):
+    - Industry Avg P/E: [Compare with sector data if available]
+    - Note: For accurate peer comparison, compare with 2-3 direct competitors
 """
 
         prompt = f"""
@@ -1157,8 +1265,13 @@ Focus on the most significant trends and their implications for investors."""
     ═══════════════════════════════════════════════════════════════════════════════
     📊 FUNDAMENTAL METRICS REPORT
     Data Source: Financial Modeling Prep (FMP) API
-    Report Generated: {report_date}
+    Endpoints: /quote, /key-metrics-ttm, /income-statement, /balance-sheet-statement, /cash-flow-statement
+    Report Generated: {report_date} (UTC)
     Period: TTM (Trailing Twelve Months) unless otherwise noted
+    ═══════════════════════════════════════════════════════════════════════════════
+    {raw_data_summary}
+    ═══════════════════════════════════════════════════════════════════════════════
+    📄 FULL REPORT DATA
     ═══════════════════════════════════════════════════════════════════════════════
 
     {json.dumps(report, indent=2)}
@@ -1182,69 +1295,92 @@ Focus on the most significant trends and their implications for investors."""
     ### 1. 📊 INVESTMENT RATING & THESIS
     - Clear rating: STRONG BUY / BUY / HOLD / SELL / STRONG SELL
     - Core investment thesis in 2-3 sentences
-    - Confidence level: HIGH / MEDIUM / LOW (with justification)
+    - Confidence level: MEDIUM (use MEDIUM for model-based conclusions)
     - **NOTE**: Rating is metrics-based, not investment advice
 
-    ### 2. 💯 FINANCIAL HEALTH SCORE (0-100)
-    - Calculate weighted score based on all metrics
-    - Breakdown by category with individual scores:
-      | Category | Score (0-20) | Key Metrics |
-      |----------|--------------|-------------|
-      | Valuation | X/20 | P/E, P/S, P/B |
-      | Growth | X/20 | Rev CAGR, EPS CAGR |
-      | Profitability | X/20 | Net Margin, ROE |
-      | Leverage | X/20 | D/E, Current Ratio |
-      | Cash Flow | X/20 | FCF, FCF Yield |
+    ### 2. 👥 TWO INVESTOR PERSPECTIVES (REQUIRED)
 
-    ### 3. ✅ KEY STRENGTHS (3-5 points)
-    - Use exact metrics WITH period tags: "Net Margin [TTM]: 55.8%"
+    **A) 📈 Growth Investor View** (ưu tiên tăng giá):
+    - Is this stock suitable for growth investing?
+    - Forward P/E vs Trailing P/E analysis
+    - EPS growth trajectory
+    - Key growth drivers
+
+    **B) 💵 Dividend Investor View** (ưu tiên dòng tiền):
+    - Current Dividend Yield
+    - Is yield > 3%? (threshold for income focus)
+    - Payout ratio sustainability
+    - Conclusion: Suitable/Not suitable as income stock
+
+    ### 3. 🔍 P/E DIAGNOSTIC TEST (3 Scenarios)
+    Evaluate using this framework:
+
+    | Test | Result | Interpretation |
+    |------|--------|----------------|
+    | Forward P/E < Trailing P/E? | YES/NO | Market expects EPS growth? |
+    | P/E vs Industry peers? | Premium/Discount | Relative valuation |
+    | Dividend cushion? | Yield X% | Safety net if growth misses |
+
+    **Overall P/E Verdict**: ✅ GOOD / ➖ NEUTRAL / ❌ RISK
+
+    ### 4. 💯 FINANCIAL HEALTH SCORE (0-100)
+    | Category | Score (0-20) | Key Metrics |
+    |----------|--------------|-------------|
+    | Valuation | X/20 | P/E vs growth, P/S |
+    | Growth | X/20 | Rev CAGR, EPS CAGR |
+    | Profitability | X/20 | Net Margin, ROE |
+    | Leverage | X/20 | D/E, Current Ratio |
+    | Cash Flow | X/20 | FCF, FCF Yield |
+
+    ### 5. ✅ KEY STRENGTHS (3-5 points)
+    - Use exact metrics WITH period tags
     - Explain WHY each metric is strong
 
-    ### 4. ⚠️ CRITICAL RISKS (2-3 points)
+    ### 6. ⚠️ CRITICAL RISKS (2-3 points)
     - Quantify risks with specific metrics
-    - Include both financial and business risks
+    - Note: Low dividend yield = no cushion if growth disappoints
 
-    ### 5. 💰 VALUATION ASSESSMENT
-    - Is it overvalued/fairly valued/undervalued?
-    - Compare P/E, P/B, P/S to growth rates
+    ### 7. 💰 VALUATION ASSESSMENT
 
-    **PEG Analysis** (IMPORTANT):
-    - If PEG is available in data, use it directly
-    - If calculating manually:
-      - State clearly: "PEG calculated using [5Y historical CAGR / forward estimates]"
-      - PEG = P/E ÷ EPS Growth Rate
-      - Note: Using historical CAGR is less accurate than forward estimates
-    - Interpretation: PEG < 1.0 = potentially undervalued, > 2.0 = potentially overvalued
+    **PEG Analysis**:
+    - State source: "PEG using [historical CAGR / forward estimates]"
+    - PEG < 1.0: potentially undervalued vs growth
+    - PEG 1.0-1.5: fairly valued
+    - PEG > 2.0: potentially expensive vs growth
 
-    ### 6. 🎯 SCENARIO ANALYSIS (REQUIRED)
-    Provide brief scenarios (1-2 sentences each):
+    **DCF/Graham Models** (if provided):
+    - Note: These are MODEL ESTIMATES with MEDIUM confidence
+    - Growth stocks often appear "overvalued" in these models
+    - Always cross-check with business fundamentals
 
+    ### 8. 🎯 SCENARIO ANALYSIS (REQUIRED)
     | Scenario | Description | Trigger |
     |----------|-------------|---------|
-    | **Bull** 🐂 | Upside case | What needs to happen |
-    | **Base** ⚖️ | Most likely | Expected outcome |
-    | **Bear** 🐻 | Downside risk | Key risk triggers |
+    | ✅ **GOOD** | Growth confirms, Forward P/E justified | EPS beats estimates |
+    | ➖ **NEUTRAL** | Growth slows but still positive | Mixed signals |
+    | ❌ **RISK** | Growth misses, high P/E not justified | EPS forecast cut |
 
-    ### 7. 📋 ACTIONABLE RECOMMENDATIONS
+    ### 9. 📋 ACTIONABLE RECOMMENDATIONS
     - Entry strategy (general guidance, not specific prices)
-    - Position sizing suggestion (% of portfolio)
+    - Position sizing suggestion
     - Time horizon
     - Key catalysts to watch
 
-    ### 8. 📡 KEY METRICS TO MONITOR
-    - Which 3-5 metrics are most critical for this stock?
+    ### 10. 📡 KEY METRICS TO MONITOR
+    - Which 3-5 metrics are most critical?
     - What changes would alter your thesis?
 
     ═══════════════════════════════════════════════════════════════════════════════
-    ⚠️ IMPORTANT FORMATTING RULES
+    ⚠️ IMPORTANT RULES
     ═══════════════════════════════════════════════════════════════════════════════
 
     1. ALWAYS include period tags: [TTM], [FY2025], [Q3 FY2025], [5Y CAGR]
-    2. Cite data source when using key numbers: "(FMP API, TTM)"
+    2. Cite data source: "(FMP /key-metrics-ttm, as of [date])"
     3. Use exact numbers from the data - never fabricate
     4. Separate FACTS from INTERPRETATION clearly
-    5. Include Bull/Base/Bear scenarios
-    6. End with disclaimer: Analysis is informational, not investment advice
+    5. Use MEDIUM confidence for model-based valuations (DCF/Graham)
+    6. Include BOTH Growth and Dividend investor perspectives
+    7. End with disclaimer: Analysis is informational, not investment advice
     """
 
         return prompt
