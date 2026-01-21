@@ -33,6 +33,7 @@ from src.helpers.scanner_cache_helper import (
 from src.services.scoring_service import scoring_service
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory
+from src.agents.tools.web.web_search import WebSearchTool
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,38 @@ Based on all the analysis provided, create a clear recommendation with:
 
 Be specific and actionable. Use numbers from the analysis.
 Match the user's language if specified.
+"""
+
+WEB_ENRICHMENT_SYSTEM_PROMPT = """You are a financial news analyst synthesizing web search results.
+
+Your task is to create a "Latest News & Catalysts" section for an investment report.
+
+RULES:
+1. Focus on news that impacts investment decisions
+2. Identify upcoming catalysts (earnings, product launches, regulatory events)
+3. Note any Fed/macro factors that could affect the stock
+4. ALWAYS include markdown links to sources: [Title](URL)
+5. Be concise - bullet points preferred
+6. Distinguish between factual news and speculation/opinion
+7. Match the user's language if specified
+
+OUTPUT FORMAT:
+## Latest News & Catalysts
+
+### Recent Developments
+- Key news point 1 [Source](URL)
+- Key news point 2 [Source](URL)
+
+### Upcoming Catalysts
+- Event 1 (date if known)
+- Event 2
+
+### Macro/Sector Factors (if relevant)
+- Factor 1
+- Factor 2
+
+### Market Sentiment
+Brief summary of overall sentiment from news sources.
 """
 
 
@@ -316,6 +349,8 @@ class SynthesisHandler(LoggerMixin):
 
                 web_content = await self._generate_web_enrichment(
                     symbol=symbol,
+                    step_data=step_data,
+                    scoring=scoring_result,
                     model_name=model_name,
                     provider_type=provider_type,
                     api_key=api_key,
@@ -783,23 +818,279 @@ Include specific metrics and how they compare to peers/industry."""
     async def _generate_web_enrichment(
         self,
         symbol: str,
+        step_data: Dict[str, Any],
+        scoring: Dict[str, Any],
         model_name: str,
         provider_type: str,
         api_key: str,
         target_language: Optional[str]
     ) -> str:
-        """Generate web search enrichment (placeholder for future implementation)."""
-        # TODO: Integrate with web search tool
+        """
+        Generate web search enrichment with smart queries.
+
+        Searches for:
+        1. Latest news for the specific symbol
+        2. Sector/industry news if sentiment data suggests importance
+        3. Fed/macro events that could impact the stock
+        4. Upcoming catalysts and events
+
+        Returns formatted markdown with citations.
+        """
+        web_search = WebSearchTool()
+        all_citations = []
+        all_answers = []
+
+        # Build smart queries based on available data
+        queries = self._build_smart_queries(symbol, step_data, scoring)
+
+        self.logger.info(f"[Synthesis] Web enrichment with {len(queries)} queries for {symbol}")
+
+        # Execute searches in parallel (max 3 queries for performance)
+        search_tasks = []
+        for query_info in queries[:3]:
+            task = web_search.execute(
+                query=query_info["query"],
+                max_results=query_info.get("max_results", 3),
+                use_finance_domains=True
+            )
+            search_tasks.append((query_info["category"], task))
+
+        # Gather results
+        search_results = {}
+        for category, task in search_tasks:
+            try:
+                result = await task
+                if result.status == "success" and result.data:
+                    search_results[category] = result.data
+                    # Collect citations
+                    for citation in result.data.get("citations", []):
+                        if citation not in all_citations:
+                            all_citations.append(citation)
+                    # Collect answers
+                    if result.data.get("answer"):
+                        all_answers.append({
+                            "category": category,
+                            "answer": result.data.get("answer", "")
+                        })
+            except Exception as e:
+                self.logger.warning(f"[Synthesis] Web search failed for {category}: {e}")
+
+        # If no results, return minimal section
+        if not search_results:
+            return self._format_no_web_results(symbol)
+
+        # Use LLM to synthesize web search results
+        synthesis_prompt = self._build_web_synthesis_prompt(
+            symbol=symbol,
+            search_results=search_results,
+            all_answers=all_answers,
+            all_citations=all_citations,
+            target_language=target_language
+        )
+
+        messages = [
+            {"role": "system", "content": WEB_ENRICHMENT_SYSTEM_PROMPT},
+            {"role": "user", "content": synthesis_prompt}
+        ]
+
+        # Generate synthesis
+        chunks = []
+        try:
+            async for chunk in self.llm_provider.stream_response(
+                model_name=model_name,
+                messages=messages,
+                provider_type=provider_type,
+                api_key=api_key
+            ):
+                chunks.append(chunk)
+        except Exception as e:
+            self.logger.error(f"[Synthesis] Web synthesis LLM error: {e}")
+            return self._format_raw_web_results(symbol, search_results, all_citations)
+
+        synthesized_content = "".join(chunks)
+
+        # Append citation references
+        citation_section = self._format_citations(all_citations)
+
+        return f"{synthesized_content}\n\n{citation_section}"
+
+    def _build_smart_queries(
+        self,
+        symbol: str,
+        step_data: Dict[str, Any],
+        scoring: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        Build smart search queries based on synthesis context.
+
+        Returns list of queries with categories and priorities.
+        """
+        queries = []
+
+        # Query 1: Always search for latest symbol news
+        queries.append({
+            "category": "symbol_news",
+            "query": f"{symbol} stock latest news today",
+            "max_results": 4,
+            "priority": 1
+        })
+
+        # Query 2: Based on sentiment data - check for catalysts
+        sentiment_content = step_data.get("sentiment", {}).get("content", "")
+        if sentiment_content:
+            # Check if there are earnings, product launches, or other events mentioned
+            if any(word in sentiment_content.lower() for word in ["earnings", "report", "quarter", "guidance"]):
+                queries.append({
+                    "category": "earnings",
+                    "query": f"{symbol} earnings results guidance analyst estimates 2025",
+                    "max_results": 3,
+                    "priority": 2
+                })
+            elif any(word in sentiment_content.lower() for word in ["launch", "product", "announcement", "release"]):
+                queries.append({
+                    "category": "catalyst",
+                    "query": f"{symbol} new product launch announcement 2025",
+                    "max_results": 3,
+                    "priority": 2
+                })
+
+        # Query 3: Fed/macro if risk score indicates high macro sensitivity
+        risk_score = scoring.get("component_scores", {}).get("risk", {}).get("score", 50)
+        if risk_score < 45:  # Higher risk = more macro sensitive
+            queries.append({
+                "category": "macro",
+                "query": "Federal Reserve interest rate decision 2025 stock market impact",
+                "max_results": 3,
+                "priority": 3
+            })
+
+        # Query 4: Sector news if position shows sector relevance
+        position_content = step_data.get("position", {}).get("content", "")
+        if position_content:
+            # Extract sector if mentioned
+            for sector in ["technology", "healthcare", "financial", "energy", "consumer", "industrial"]:
+                if sector in position_content.lower():
+                    queries.append({
+                        "category": "sector",
+                        "query": f"{sector} sector stocks news outlook 2025",
+                        "max_results": 2,
+                        "priority": 3
+                    })
+                    break
+
+        # Sort by priority
+        queries.sort(key=lambda x: x.get("priority", 99))
+
+        return queries
+
+    def _build_web_synthesis_prompt(
+        self,
+        symbol: str,
+        search_results: Dict[str, Any],
+        all_answers: List[Dict[str, str]],
+        all_citations: List[Dict[str, str]],
+        target_language: Optional[str]
+    ) -> str:
+        """Build prompt for LLM to synthesize web search results."""
+        prompt_parts = [
+            f"# WEB SEARCH RESULTS FOR {symbol}",
+            "",
+            "Synthesize these search results into a coherent 'Latest News & Catalysts' section.",
+            "",
+        ]
+
+        # Add answers by category
+        for item in all_answers:
+            prompt_parts.extend([
+                f"## {item['category'].upper().replace('_', ' ')}",
+                item["answer"][:2000],
+                ""
+            ])
+
+        # Add citation list
+        if all_citations:
+            prompt_parts.extend([
+                "## AVAILABLE SOURCES (use markdown links when citing)",
+                ""
+            ])
+            for i, c in enumerate(all_citations[:10], 1):
+                title = c.get("title", "Untitled")[:60]
+                url = c.get("url", "")
+                prompt_parts.append(f"[{i}] [{title}]({url})")
+            prompt_parts.append("")
+
+        prompt_parts.extend([
+            "## YOUR TASK",
+            "Write a 'Latest News & Catalysts' section that:",
+            "1. Summarizes key recent news impacting the stock",
+            "2. Identifies upcoming catalysts or events",
+            "3. Notes any Fed/macro factors if relevant",
+            "4. INCLUDES markdown links to sources inline",
+            "",
+            "Format: Use bullet points and include [Source Title](URL) links.",
+        ])
+
+        if target_language:
+            prompt_parts.append(f"\nIMPORTANT: Respond entirely in {target_language}.")
+
+        return "\n".join(prompt_parts)
+
+    def _format_citations(self, citations: List[Dict[str, str]]) -> str:
+        """Format citations as markdown reference list."""
+        if not citations:
+            return ""
+
+        lines = [
+            "### Sources",
+            ""
+        ]
+
+        for i, c in enumerate(citations[:10], 1):
+            title = c.get("title", "Untitled")[:80]
+            url = c.get("url", "")
+            if url:
+                lines.append(f"{i}. [{title}]({url})")
+
+        return "\n".join(lines)
+
+    def _format_no_web_results(self, symbol: str) -> str:
+        """Format section when no web results available."""
         return f"""
-## Latest News & Updates
+## Latest News & Catalysts
 
-*Web search enrichment is not yet implemented.*
+*Web search did not return results. For the latest news on {symbol}, check:*
 
-To get the latest news for {symbol}, please check:
-- Financial news sites (Bloomberg, Reuters, CNBC)
-- Company investor relations page
-- SEC filings (if applicable)
+- [Bloomberg](https://www.bloomberg.com/quote/{symbol}:US)
+- [Reuters](https://www.reuters.com/markets/companies/{symbol}.O/)
+- [Yahoo Finance](https://finance.yahoo.com/quote/{symbol})
+- Company Investor Relations page
 """
+
+    def _format_raw_web_results(
+        self,
+        symbol: str,
+        search_results: Dict[str, Any],
+        citations: List[Dict[str, str]]
+    ) -> str:
+        """Format raw web results when LLM synthesis fails."""
+        lines = [
+            "## Latest News & Catalysts",
+            "",
+            f"Recent news and updates for {symbol}:",
+            ""
+        ]
+
+        # Add citations as bullet points
+        for c in citations[:8]:
+            title = c.get("title", "Untitled")[:80]
+            url = c.get("url", "")
+            if url:
+                lines.append(f"- [{title}]({url})")
+
+        lines.append("")
+        lines.append("*Review these sources for detailed information.*")
+
+        return "\n".join(lines)
 
     async def _generate_final_recommendation(
         self,
