@@ -117,6 +117,29 @@ Separate recommendations:
 - Exit trigger: price level + logic
 - Trailing stop methodology
 
+### 11. INVESTOR PROFILE SCENARIOS (REQUIRED)
+Include TWO separate analysis perspectives:
+
+**SCENARIO 1 - GROWTH INVESTOR:**
+Focus: Capital appreciation, willing to accept higher valuation
+Key metrics to emphasize:
+- Revenue growth rate (YoY, 5Y CAGR)
+- EPS growth rate
+- Market position and competitive moat
+- Total Addressable Market (TAM) expansion
+- P/E premium justified by growth? (PEG ratio if available)
+Verdict: Is this attractive for a growth investor? Why/why not?
+
+**SCENARIO 2 - DIVIDEND/VALUE INVESTOR:**
+Focus: Steady income, valuation discipline
+Key metrics to emphasize:
+- Dividend yield vs sector average
+- Payout ratio sustainability
+- Free cash flow yield
+- P/E vs historical average and peers
+- Graham/DCF value vs current price (margin of safety)
+Verdict: Is this attractive for a dividend/value investor? Why/why not?
+
 ## OUTPUT FORMAT
 
 Generate report with INPUT → OUTPUT format for each section:
@@ -128,16 +151,18 @@ Generate report with INPUT → OUTPUT format for each section:
 4. **Sentiment Analysis** - Show: Score, sample size, source, time period
 5. **Fundamental Analysis** - Show: Valuation metrics, peer table (correct peers)
 
-### PART 2: INVESTOR ANALYSIS
-6. **Fair Value Assessment** - Show assumptions, note model limitations
-7. **Scenario Analysis** - Bull/Base/Bear with price targets and triggers
+### PART 2: INVESTOR PROFILE ANALYSIS
+6. **Growth Investor Perspective** - Revenue/EPS growth, TAM, competitive position
+7. **Dividend/Value Investor Perspective** - Yield, payout ratio, margin of safety
+8. **Fair Value Assessment** - Show assumptions, note model limitations
+9. **Scenario Analysis** - Bull/Base/Bear with price targets and triggers
 
 ### PART 3: NEWS & CATALYSTS
-8. **News & Catalysts** - Inline citations + Sources section
+10. **News & Catalysts** - Inline citations + Sources section
 
 ### PART 4: CONCLUSION
-9. **Executive Summary** - Key data points from each section
-10. **Action Plan** - Separate for NEW vs EXISTING investors with ATR/structure logic
+11. **Executive Summary** - Key data points from each section
+12. **Action Plan** - Separate for NEW vs EXISTING investors with ATR/structure logic
 
 RESPOND IN THE LANGUAGE SPECIFIED BY target_language PARAMETER.
 """
@@ -1050,7 +1075,7 @@ class SynthesisHandlerV2(LoggerMixin):
         ]
 
         # =====================================================================
-        # SECTION 1: TECHNICAL DATA (RAW METRICS)
+        # SECTION 1: TECHNICAL ANALYSIS (LLM Summary + Raw Data)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1059,15 +1084,23 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        tech_raw = step_data.get("technical", {}).get("raw_data", {})
+        tech_data = step_data.get("technical", {})
+        tech_content = tech_data.get("content", "")
+        tech_raw = tech_data.get("raw_data", {})
+
+        # Include LLM summary first (comprehensive analysis)
+        if tech_content:
+            parts.append("### LLM ANALYSIS SUMMARY:")
+            parts.append(tech_content[:3000])  # Limit to avoid token overflow
+            parts.append("")
+
+        # Then include raw metrics for verification
         if tech_raw:
             parts.extend(self._format_technical_raw_data(tech_raw))
-        else:
-            parts.append("Technical data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 3: POSITION DATA (RAW METRICS)
+        # SECTION 2: MARKET POSITION (LLM Summary + Raw Data)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1076,16 +1109,22 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        pos_raw = step_data.get("position", {}).get("raw_data", {})
-        sector_context = step_data.get("position", {}).get("sector_context", {})
+        pos_data = step_data.get("position", {})
+        pos_content = pos_data.get("content", "")
+        pos_raw = pos_data.get("raw_data", {})
+        sector_context = pos_data.get("sector_context", {})
+
+        if pos_content:
+            parts.append("### LLM ANALYSIS SUMMARY:")
+            parts.append(pos_content[:2000])
+            parts.append("")
+
         if pos_raw or sector_context:
             parts.extend(self._format_position_raw_data(pos_raw, sector_context))
-        else:
-            parts.append("Position data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 4: RISK DATA (RAW METRICS)
+        # SECTION 3: RISK ANALYSIS (LLM Summary + Raw Data)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1094,15 +1133,21 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        risk_raw = step_data.get("risk", {}).get("raw_data", {})
+        risk_data = step_data.get("risk", {})
+        risk_content = risk_data.get("content", "")
+        risk_raw = risk_data.get("raw_data", {})
+
+        if risk_content:
+            parts.append("### LLM ANALYSIS SUMMARY:")
+            parts.append(risk_content[:2000])
+            parts.append("")
+
         if risk_raw:
             parts.extend(self._format_risk_raw_data(risk_raw))
-        else:
-            parts.append("Risk data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 5: SENTIMENT DATA (RAW METRICS)
+        # SECTION 4: SENTIMENT DATA (LLM Summary + Raw Data)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1111,15 +1156,21 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        sent_raw = step_data.get("sentiment", {}).get("raw_data", {})
+        sent_data = step_data.get("sentiment", {})
+        sent_content = sent_data.get("content", "")
+        sent_raw = sent_data.get("raw_data", {})
+
+        if sent_content:
+            parts.append("### LLM ANALYSIS SUMMARY:")
+            parts.append(sent_content[:2000])
+            parts.append("")
+
         if sent_raw:
             parts.extend(self._format_sentiment_raw_data(sent_raw))
-        else:
-            parts.append("Sentiment data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 6: FUNDAMENTAL DATA (RAW METRICS)
+        # SECTION 5: FUNDAMENTAL DATA (LLM Summary + Raw Data)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1128,11 +1179,17 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
+        fund_data = step_data.get("fundamental", {})
+        fund_content = fund_data.get("content", "")
+        fund_raw = fund_data.get("raw_data", {})
+
+        if fund_content:
+            parts.append("### LLM ANALYSIS SUMMARY:")
+            parts.append(fund_content[:3000])
+            parts.append("")
+
         if fund_raw:
             parts.extend(self._format_fundamental_raw_data(fund_raw))
-        else:
-            parts.append("Fundamental data not available.")
         parts.append("")
 
         # =====================================================================
@@ -1220,31 +1277,44 @@ class SynthesisHandlerV2(LoggerMixin):
             parts.append("")
 
         # =====================================================================
-        # SECTION 9: WEB SEARCH RESULTS
+        # SECTION 9: WEB SEARCH RESULTS (Title + URL + Content format)
         # =====================================================================
         if web_data and web_data.get("citations"):
             parts.extend([
                 "=" * 60,
-                "## WEB SEARCH RESULTS (Use Inline Citations)",
+                "## WEB SEARCH RESULTS (CITE INLINE WITH TITLE + URL)",
                 "=" * 60,
                 "",
             ])
 
+            # Include search summaries with citations
             for item in web_data.get("news", []):
                 parts.append(f"### {item['category'].upper()}")
-                parts.append(item["answer"][:1500])
+                parts.append(item["answer"][:2000])
                 parts.append("")
 
-            parts.append("### Available Sources (CITE INLINE):")
-            for i, citation in enumerate(web_data.get("citations", [])[:8], 1):
-                title = citation.get("title", "Untitled")[:60]
+            # List all sources with FULL info (Title + URL + snippet)
+            parts.append("### SOURCES LIST (Use these for inline citations):")
+            parts.append("")
+            for i, citation in enumerate(web_data.get("citations", [])[:10], 1):
+                title = citation.get("title", "Untitled")
                 url = citation.get("url", "")
-                parts.append(f"[{i}] [{title}]({url})")
+                snippet = citation.get("snippet", citation.get("content", ""))[:200]
 
-            parts.append("")
-            parts.append("INSTRUCTION: Cite sources INLINE when making claims, e.g., 'Stock fell 5% [Source Name](URL)'")
-            parts.append("Include a '## Sources' section at the end with all sources used.")
-            parts.append("")
+                parts.append(f"**[{i}] {title}**")
+                parts.append(f"URL: {url}")
+                if snippet:
+                    parts.append(f"Snippet: {snippet}...")
+                parts.append("")
+
+            parts.extend([
+                "### CITATION INSTRUCTIONS:",
+                "When using information from web search, ALWAYS cite inline like this:",
+                "  'NVIDIA stock dropped 4.4% ([Barron's](https://www.barrons.com/...))'",
+                "",
+                "Include a '## Sources' section at the END of your report listing all sources used.",
+                "",
+            ])
 
         # =====================================================================
         # OUTPUT INSTRUCTIONS
@@ -1267,11 +1337,13 @@ class SynthesisHandlerV2(LoggerMixin):
             "3. Risk Analysis - Show: ATR, VaR, Volatility → stop-loss calculation with formula",
             "4. Sentiment Analysis - Show: Score, sample size, source, time period",
             "5. Fundamental Analysis - Show: Valuation metrics, peer table (use correct industry peers)",
-            "6. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
-            "7. Scenario Analysis - Show: Bull/Base/Bear with price targets and triggers",
-            "8. News & Catalysts - With inline citations + Sources section",
-            "9. Executive Summary - Key DATA POINTS from each section",
-            "10. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
+            "6. Growth Investor Perspective - Revenue/EPS growth focus, TAM, competitive position",
+            "7. Dividend/Value Investor Perspective - Yield, payout ratio, margin of safety",
+            "8. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
+            "9. Scenario Analysis - Show: Bull/Base/Bear with price targets and triggers",
+            "10. News & Catalysts - With inline citations (Title + URL) + Sources section",
+            "11. Executive Summary - Key DATA POINTS from each section",
+            "12. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
             "",
             "REMINDERS:",
             "- NO scoring, NO ratings - only raw data and interpretation",
@@ -1288,99 +1360,113 @@ class SynthesisHandlerV2(LoggerMixin):
     # =========================================================================
 
     def _format_technical_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format technical raw data as structured INPUT metrics for LLM."""
-        lines = ["### TECHNICAL INPUTS (Use these exact values in analysis):"]
+        """Format technical raw data using CORRECT structure from get_technical_indicators."""
+        lines = ["### RAW METRICS (Extracted from technical indicators):"]
         lines.append("")
 
-        # Price data
-        if raw.get("price_data"):
-            pd = raw["price_data"]
-            lines.append("**Price Data:**")
-            lines.append(f"- Current Price: ${pd.get('close', 'N/A')}")
-            lines.append(f"- Day Change: {pd.get('change_percent', 'N/A')}%")
-            lines.append(f"- 52W High: ${pd.get('high_52w', 'N/A')}")
-            lines.append(f"- 52W Low: ${pd.get('low_52w', 'N/A')}")
+        # Get indicators dict - this is the actual structure
+        indicators = raw.get("indicators", {})
+
+        # Current price from price_context
+        price_ctx = raw.get("price_context", {})
+        current_price = raw.get("current_price") or price_ctx.get("current_price", 0)
+        if current_price:
+            lines.append(f"**Current Price: ${current_price}**")
             lines.append("")
 
-        # Moving Averages
-        if raw.get("moving_averages"):
-            ma = raw["moving_averages"]
-            lines.append("**Moving Averages:**")
-            lines.append(f"- SMA20: ${ma.get('sma20', 'N/A')}")
-            lines.append(f"- SMA50: ${ma.get('sma50', 'N/A')}")
-            lines.append(f"- SMA200: ${ma.get('sma200', 'N/A')}")
-            lines.append(f"- Price vs SMA200: {'Above' if ma.get('above_sma200') else 'Below'}")
+        # RSI from indicators.rsi
+        rsi_data = indicators.get("rsi", {})
+        rsi_value = rsi_data.get("value")
+        if rsi_value is not None:
+            rsi_zone = "Overbought (>70)" if rsi_value > 70 else "Oversold (<30)" if rsi_value < 30 else "Neutral (30-70)"
+            lines.append(f"**RSI(14): {rsi_value:.1f}** → Zone: {rsi_zone}")
+            if rsi_data.get("signal"):
+                lines.append(f"  Signal: {rsi_data['signal']}")
             lines.append("")
 
-        # Momentum Indicators - CRITICAL for analysis
-        if raw.get("momentum"):
-            m = raw["momentum"]
-            rsi = m.get('rsi', 0)
-            macd = m.get('macd', 0)
-            macd_signal = m.get('macd_signal', 0)
-            macd_hist = m.get('macd_histogram', 0)
-
-            # Pre-calculate interpretation hints
-            rsi_zone = "Overbought (>70)" if rsi > 70 else "Oversold (<30)" if rsi < 30 else "Neutral (30-70)"
-            macd_trend = "Bullish (MACD > Signal)" if macd > macd_signal else "Bearish (MACD < Signal)"
-
-            lines.append("**Momentum Indicators (CITE THESE VALUES):**")
-            lines.append(f"- RSI(14): {rsi} → Zone: {rsi_zone}")
-            lines.append(f"- MACD: {macd}")
-            lines.append(f"- MACD Signal: {macd_signal}")
-            lines.append(f"- MACD Histogram: {macd_hist} → Trend: {macd_trend}")
+        # MACD from indicators.macd
+        macd_data = indicators.get("macd", {})
+        macd_line = macd_data.get("macd_line")
+        macd_signal = macd_data.get("signal_line")
+        macd_hist = macd_data.get("histogram")
+        if macd_line is not None:
+            macd_trend = "Bullish (MACD > Signal)" if macd_line > (macd_signal or 0) else "Bearish (MACD < Signal)"
+            lines.append(f"**MACD Line: {macd_line:.4f}**")
+            lines.append(f"  Signal Line: {macd_signal:.4f}" if macd_signal else "  Signal Line: N/A")
+            lines.append(f"  Histogram: {macd_hist:.4f} → {macd_trend}" if macd_hist else "  Histogram: N/A")
+            if macd_data.get("signal"):
+                lines.append(f"  Signal: {macd_data['signal']}")
             lines.append("")
 
-        # Trend - ADX is critical
-        if raw.get("trend"):
-            t = raw["trend"]
-            adx = t.get('adx', 0)
-            plus_di = t.get('plus_di', 0)
-            minus_di = t.get('minus_di', 0)
-
-            # Pre-calculate interpretation
-            if adx < 15:
+        # ADX from indicators.adx
+        adx_data = indicators.get("adx", {})
+        adx_value = adx_data.get("value")
+        if adx_value is not None:
+            if adx_value < 15:
                 trend_strength = "WEAK (ADX<15: No clear trend)"
-            elif adx < 25:
+            elif adx_value < 25:
                 trend_strength = "MODERATE (ADX 15-25: Developing trend)"
             else:
                 trend_strength = "STRONG (ADX>25: Established trend)"
-
-            di_direction = "Bullish (+DI > -DI)" if plus_di > minus_di else "Bearish (-DI > +DI)"
-
-            lines.append("**Trend Indicators (CITE THESE VALUES):**")
-            lines.append(f"- ADX: {adx} → {trend_strength}")
-            lines.append(f"- +DI: {plus_di}")
-            lines.append(f"- -DI: {minus_di} → Direction: {di_direction}")
+            lines.append(f"**ADX(14): {adx_value:.1f}** → {trend_strength}")
+            plus_di = adx_data.get("plus_di")
+            minus_di = adx_data.get("minus_di")
+            if plus_di is not None and minus_di is not None:
+                di_direction = "Bullish (+DI > -DI)" if plus_di > minus_di else "Bearish (-DI > +DI)"
+                lines.append(f"  +DI: {plus_di:.1f}, -DI: {minus_di:.1f} → {di_direction}")
             lines.append("")
 
-        # Volume
-        if raw.get("volume"):
-            v = raw["volume"]
-            vol = v.get('volume', 0)
-            avg_vol = v.get('avg_volume', 0)
-            rvol = v.get('rvol', 0)
-
-            vol_status = "High (RVOL>1.5)" if rvol > 1.5 else "Low (RVOL<0.7)" if rvol < 0.7 else "Normal"
-
-            lines.append("**Volume:**")
-            lines.append(f"- Current Volume: {vol:,}" if isinstance(vol, (int, float)) else f"- Current Volume: {vol}")
-            lines.append(f"- Average Volume: {avg_vol:,}" if isinstance(avg_vol, (int, float)) else f"- Average Volume: {avg_vol}")
-            lines.append(f"- RVOL: {rvol}x → {vol_status}")
+        # Moving Averages from indicators.moving_averages
+        ma_data = indicators.get("moving_averages", {})
+        sma_data = ma_data.get("sma", {})
+        if sma_data:
+            lines.append("**Moving Averages:**")
+            sma20 = sma_data.get("sma_20", {}).get("value")
+            sma50 = sma_data.get("sma_50", {}).get("value")
+            sma200 = sma_data.get("sma_200", {}).get("value")
+            if sma20: lines.append(f"  SMA20: ${sma20:.2f}")
+            if sma50: lines.append(f"  SMA50: ${sma50:.2f}")
+            if sma200: lines.append(f"  SMA200: ${sma200:.2f}")
+            price_pos = ma_data.get("price_position", {})
+            if price_pos:
+                above_200 = "Above" if price_pos.get("above_sma_200") else "Below"
+                lines.append(f"  Price vs SMA200: {above_200}")
             lines.append("")
 
-        # Signals summary
-        if raw.get("signals"):
-            lines.append("**Technical Signals:**")
-            for signal in raw["signals"][:5]:
-                lines.append(f"- {signal}")
+        # Bollinger Bands from indicators.bollinger_bands
+        bb_data = indicators.get("bollinger_bands", {})
+        if bb_data.get("upper"):
+            lines.append("**Bollinger Bands:**")
+            lines.append(f"  Upper: ${bb_data.get('upper', 0):.2f}")
+            lines.append(f"  Middle: ${bb_data.get('middle', 0):.2f}")
+            lines.append(f"  Lower: ${bb_data.get('lower', 0):.2f}")
+            if bb_data.get("position"):
+                lines.append(f"  Position: {bb_data['position']}")
+            lines.append("")
+
+        # Volume from indicators.volume
+        vol_data = indicators.get("volume", {})
+        if vol_data:
+            rvol = vol_data.get("rvol")
+            if rvol:
+                vol_status = "High (RVOL>1.5)" if rvol > 1.5 else "Low (RVOL<0.7)" if rvol < 0.7 else "Normal"
+                lines.append(f"**RVOL: {rvol:.2f}x** → {vol_status}")
+                lines.append(f"  Volume Trend: {vol_data.get('volume_trend', 'N/A')}")
+                lines.append("")
+
+        # Stochastic from indicators.stochastic
+        stoch_data = indicators.get("stochastic", {})
+        if stoch_data.get("k_value"):
+            lines.append(f"**Stochastic:** %K={stoch_data.get('k_value', 0):.1f}, %D={stoch_data.get('d_value', 0):.1f}")
+            if stoch_data.get("signal"):
+                lines.append(f"  Signal: {stoch_data['signal']}")
             lines.append("")
 
         return lines
 
     def _format_position_raw_data(self, raw: Dict[str, Any], sector_ctx: Dict[str, Any]) -> List[str]:
-        """Format position raw data with CLEAR Sector vs Industry distinction."""
-        lines = ["### POSITION INPUTS (Use these exact values in analysis):"]
+        """Format position raw data using CORRECT structure from get_relative_strength."""
+        lines = ["### RAW POSITION METRICS:"]
         lines.append("")
 
         # GICS Classification - CRITICAL DISTINCTION
@@ -1388,162 +1474,148 @@ class SynthesisHandlerV2(LoggerMixin):
             sector = sector_ctx.get('stock_sector', 'N/A')
             industry = sector_ctx.get('stock_industry', 'N/A')
 
-            lines.append("**GICS Classification (IMPORTANT DISTINCTION):**")
+            lines.append("**GICS Classification:**")
             lines.append(f"- SECTOR (1 of 11 GICS): {sector}")
             lines.append(f"- INDUSTRY (sub-category): {industry}")
             lines.append("")
-            lines.append("NOTE: Sector ≠ Industry. GICS has 11 sectors (e.g., Information Technology),")
-            lines.append("each containing multiple industries (e.g., Semiconductors, Software).")
-            lines.append("")
 
-            # Sector ranking with methodology note
+            # Sector ranking
             sector_rank = sector_ctx.get('sector_rank', 'N/A')
             total_sectors = sector_ctx.get('total_sectors', 11)
             sector_change = sector_ctx.get('sector_change_percent', 0)
 
-            lines.append("**Sector Performance (1-DAY ONLY):**")
-            lines.append(f"- Sector Rank: #{sector_rank}/{total_sectors}")
-            lines.append(f"- Sector Change (1-day): {sector_change:+.2f}%")
+            lines.append("**Sector Performance (1-DAY):**")
+            lines.append(f"- Rank: #{sector_rank}/{total_sectors}")
+            lines.append(f"- Change: {sector_change:+.2f}%")
             lines.append(f"- Status: {sector_ctx.get('sector_status', 'N/A')}")
             lines.append("")
-            lines.append("⚠️ LIMITATION: This is 1-DAY sector ranking from FMP API.")
-            lines.append("   It is NOT the same as multi-timeframe RS analysis.")
-            lines.append("   For medium-term trends, use the RS data below.")
-            lines.append("")
 
-        # RS Data - Multi-timeframe (MORE RELIABLE)
+        # RS Data - from raw which has the structure from get_relative_strength
         if raw:
-            rs_21d = raw.get('excess_return_21d')
-            rs_63d = raw.get('excess_return_63d')
-            rs_126d = raw.get('excess_return_126d')
+            # Multi-timeframe RS metrics
+            rs_metrics = raw.get("rs_metrics", {})
+            if not rs_metrics:
+                # Try direct access (different structure)
+                rs_metrics = raw
 
-            # Determine overall RS trend
-            rs_values = [v for v in [rs_21d, rs_63d, rs_126d] if v is not None]
-            if rs_values:
-                avg_rs = sum(rs_values) / len(rs_values)
-                if avg_rs > 5:
-                    rs_assessment = "OUTPERFORMING (avg RS > 5%)"
-                elif avg_rs > 0:
-                    rs_assessment = "SLIGHTLY OUTPERFORMING (avg RS 0-5%)"
-                elif avg_rs > -5:
-                    rs_assessment = "IN LINE (avg RS -5% to 0%)"
-                else:
-                    rs_assessment = "UNDERPERFORMING (avg RS < -5%)"
-            else:
-                rs_assessment = "N/A"
+            rs_21d = rs_metrics.get('excess_return_21d') or raw.get('excess_return_21d')
+            rs_63d = rs_metrics.get('excess_return_63d') or raw.get('excess_return_63d')
+            rs_126d = rs_metrics.get('excess_return_126d') or raw.get('excess_return_126d')
 
-            lines.append("**Relative Strength vs SPY (MULTI-TIMEFRAME - MORE RELIABLE):**")
+            lines.append("**Relative Strength vs SPY (Multi-Timeframe):**")
             if rs_21d is not None:
                 lines.append(f"- 21-day RS: {rs_21d:+.2f}%")
             if rs_63d is not None:
                 lines.append(f"- 63-day RS: {rs_63d:+.2f}%")
             if rs_126d is not None:
                 lines.append(f"- 126-day RS: {rs_126d:+.2f}%")
-            lines.append(f"- Assessment: {rs_assessment}")
 
-            if raw.get("rs_rating"):
-                lines.append(f"- RS Rating: {raw['rs_rating']}")
-            if raw.get("classification"):
-                lines.append(f"- Classification: {raw['classification']}")
-            lines.append("")
-            lines.append("NOTE: Multi-timeframe RS (21/63/126 days) is more reliable than 1-day sector rank.")
+            # RS Rating and classification
+            rs_rating = raw.get("rs_rating") or rs_metrics.get("rs_rating")
+            classification = raw.get("classification") or rs_metrics.get("classification")
+            trend = raw.get("trend") or rs_metrics.get("trend")
+
+            if rs_rating:
+                lines.append(f"- RS Rating: {rs_rating}")
+            if classification:
+                lines.append(f"- Classification: {classification}")
+            if trend:
+                lines.append(f"- Trend: {trend}")
             lines.append("")
 
         return lines
 
     def _format_risk_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format risk raw data with CLEAR stop-loss calculation logic."""
-        lines = ["### RISK INPUTS (Use these for stop-loss calculations):"]
+        """Format risk raw data using CORRECT structure from suggest_stop_loss and risk_analysis."""
+        lines = ["### RAW RISK METRICS:"]
         lines.append("")
 
+        # Current price
         current_price = raw.get('current_price', 0)
-        lines.append(f"**Current Price: ${current_price}**")
-        lines.append("")
-
-        # ATR - CRITICAL for stop-loss
-        atr_value = 0
-        atr_pct = 0
-        if raw.get("atr"):
-            a = raw["atr"]
-            atr_value = a.get('value', 0)
-            atr_pct = a.get('percent', 0)
-
-            lines.append("**ATR (Average True Range) - USE FOR STOP-LOSS:**")
-            lines.append(f"- ATR Value: ${atr_value}")
-            lines.append(f"- ATR %: {atr_pct}%")
+        if current_price:
+            lines.append(f"**Current Price: ${current_price}**")
             lines.append("")
 
-            # Pre-calculate stop-loss examples
-            if current_price and atr_value:
-                stop_1atr = round(current_price - atr_value, 2)
-                stop_2atr = round(current_price - (2 * atr_value), 2)
-                stop_1atr_pct = round((atr_value / current_price) * 100, 1)
-                stop_2atr_pct = round((2 * atr_value / current_price) * 100, 1)
+        # ATR from stop_loss_recommendations
+        stop_recs = raw.get("stop_loss_recommendations", {})
+        atr_data = stop_recs.get("atr_based", {})
+        atr_value = atr_data.get("atr_value", 0)
+        atr_stop = atr_data.get("stop_price", 0)
+        atr_pct = atr_data.get("risk_percent", 0)
 
-                lines.append("**PRE-CALCULATED STOP-LOSS LEVELS (from current price):**")
-                lines.append(f"- 1× ATR Stop: ${stop_1atr} (risk: {stop_1atr_pct}%)")
-                lines.append(f"  Formula: ${current_price} - ${atr_value} = ${stop_1atr}")
-                lines.append(f"- 2× ATR Stop: ${stop_2atr} (risk: {stop_2atr_pct}%)")
-                lines.append(f"  Formula: ${current_price} - (2 × ${atr_value}) = ${stop_2atr}")
-                lines.append("")
-                lines.append("⚠️ IMPORTANT: These are from CURRENT price. For breakout entries,")
-                lines.append("   recalculate from ENTRY price: Stop = Entry - (2 × ATR)")
-                lines.append("")
+        # Also try direct atr key
+        if not atr_value:
+            atr_value = raw.get("atr", 0)
 
-        # Volatility
-        if raw.get("volatility"):
-            v = raw["volatility"]
-            daily_vol = v.get('daily', 0)
-            annual_vol = v.get('annualized', 0)
-            vol_class = v.get('classification', 'N/A')
+        if atr_value or atr_stop:
+            lines.append("**ATR-Based Stop Loss:**")
+            if atr_value:
+                lines.append(f"- ATR Value: ${atr_value:.2f}")
+            if atr_stop:
+                lines.append(f"- ATR Stop Price: ${atr_stop:.2f}")
+            if atr_pct:
+                lines.append(f"- Risk %: {atr_pct:.1f}%")
+            lines.append("")
 
+        # Pre-calculate stop levels if we have the data
+        if current_price and atr_value:
+            stop_2atr = round(current_price - (2 * atr_value), 2)
+            stop_2atr_pct = round((2 * atr_value / current_price) * 100, 1)
+            lines.append("**PRE-CALCULATED STOPS:**")
+            lines.append(f"- 2× ATR Stop: ${stop_2atr} ({stop_2atr_pct}% risk)")
+            lines.append(f"  Formula: ${current_price:.2f} - (2 × ${atr_value:.2f}) = ${stop_2atr}")
+            lines.append("")
+
+        # Percentage-based stop
+        pct_data = stop_recs.get("percentage_based", {})
+        if pct_data:
+            lines.append("**Percentage-Based Stop:**")
+            lines.append(f"- Stop Price: ${pct_data.get('stop_price', 'N/A')}")
+            lines.append(f"- Risk %: {pct_data.get('risk_percent', 'N/A')}%")
+            lines.append("")
+
+        # Volatility from volatility key
+        vol_data = raw.get("volatility", {})
+        if vol_data:
             lines.append("**Volatility:**")
-            lines.append(f"- Daily Volatility: {daily_vol}%")
-            lines.append(f"- Annualized Volatility: {annual_vol}%")
-            lines.append(f"- Classification: {vol_class}")
-
-            # Volatility context
-            if annual_vol > 50:
-                lines.append("  → HIGH volatility: Consider wider stops, smaller position size")
-            elif annual_vol > 30:
-                lines.append("  → MODERATE volatility: Standard position sizing")
-            else:
-                lines.append("  → LOW volatility: Can use tighter stops")
+            lines.append(f"- Daily: {vol_data.get('daily', 'N/A')}%")
+            lines.append(f"- Annualized: {vol_data.get('annualized', 'N/A')}%")
+            lines.append(f"- Classification: {vol_data.get('classification', 'N/A')}")
             lines.append("")
 
-        # VaR
-        if raw.get("var"):
-            v = raw["var"]
-            var_95 = v.get('var_95', 0)
-            var_99 = v.get('var_99', 0)
-
-            lines.append("**Value at Risk (VaR) - 1-day risk:**")
-            lines.append(f"- VaR 95%: {var_95}% (5% chance of losing more)")
-            lines.append(f"- VaR 99%: {var_99}% (1% chance of losing more)")
-
-            if current_price and var_95:
-                var_95_dollar = round(current_price * abs(var_95) / 100, 2)
-                lines.append(f"  → At ${current_price}, 95% VaR = ${var_95_dollar} max 1-day loss")
+        # VaR from var key
+        var_data = raw.get("var", {})
+        if var_data:
+            var_pct = var_data.get("var_percent", 0)
+            lines.append("**Value at Risk (VaR):**")
+            lines.append(f"- VaR: {var_pct:.2f}% ({var_data.get('confidence_level', 95)}% confidence)")
+            lines.append(f"- Method: {var_data.get('method', 'historical')}")
             lines.append("")
 
-        # Stop Loss Summary
-        lines.append("**STOP-LOSS LOGIC TO USE IN REPORT:**")
-        lines.append("1. For BREAKOUT entries: Stop = Entry - (2 × ATR)")
-        lines.append("2. For STRUCTURE-based: Stop = below recent swing low")
-        lines.append("3. For PERCENTAGE-based: Stop = Entry × (1 - risk%)")
-        lines.append(f"   With ATR=${atr_value}, 2×ATR method gives ~{round(atr_pct * 2, 1)}% risk")
-        lines.append("")
+        # Max Drawdown
+        dd_data = raw.get("max_drawdown", {})
+        if dd_data:
+            lines.append("**Max Drawdown:**")
+            lines.append(f"- Max DD: {dd_data.get('max_drawdown', 0):.1f}%")
+            lines.append(f"- Current DD: {dd_data.get('current_drawdown', 0):.1f}%")
+            lines.append("")
 
         return lines
 
     def _format_sentiment_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format sentiment raw data with SAMPLE SIZE and SOURCE info."""
-        lines = ["### SENTIMENT INPUTS (CITE sample size and source):"]
+        """Format sentiment raw data using CORRECT structure from get_sentiment."""
+        lines = ["### RAW SENTIMENT METRICS:"]
         lines.append("")
 
+        # Sentiment data can be nested
+        sentiment_data = raw.get("sentiment", {}) or raw
+        news_data = raw.get("news", {})
+
         # Overall sentiment score
-        if raw.get("sentiment_score") is not None:
-            score = raw["sentiment_score"]
+        score = sentiment_data.get("sentiment_score") or sentiment_data.get("score")
+        label = sentiment_data.get("sentiment_label") or sentiment_data.get("label")
+
+        if score is not None:
             if score > 0.5:
                 classification = "STRONGLY BULLISH (>0.5)"
             elif score > 0.2:
@@ -1555,62 +1627,34 @@ class SynthesisHandlerV2(LoggerMixin):
             else:
                 classification = "STRONGLY BEARISH (<-0.5)"
 
-            lines.append(f"**Overall Sentiment Score: {score:.3f}**")
+            lines.append(f"**Sentiment Score: {score:.3f}**")
             lines.append(f"- Classification: {classification}")
+            if label:
+                lines.append(f"- Label: {label}")
             lines.append("")
 
-        # Social sentiment with sample size
-        total_samples = 0
-        if raw.get("social_sentiment"):
-            ss = raw["social_sentiment"]
-            social_score = ss.get('score', 'N/A')
-            post_count = ss.get('post_count', 0)
-            total_samples += post_count if isinstance(post_count, int) else 0
-
-            lines.append("**Social Media Sentiment:**")
-            lines.append(f"- Score: {social_score}")
-            lines.append(f"- Sample Size: {post_count} posts analyzed")
-            lines.append(f"- Source: {ss.get('source', 'Social Sentiment API')}")
-            lines.append(f"- Time Period: {ss.get('time_period', 'Last 7 days')}")
-
-            if post_count and post_count < 50:
-                lines.append("  ⚠️ LOW sample size - interpret with caution")
+        # Data points analyzed
+        data_points = sentiment_data.get("data_points_analyzed") or sentiment_data.get("data_count", 0)
+        if data_points:
+            lines.append(f"**Sample Size: {data_points} data points**")
             lines.append("")
 
-        # News sentiment with article count
-        if raw.get("news_sentiment"):
-            ns = raw["news_sentiment"]
-            news_overall = ns.get('overall', 'N/A')
-            article_count = ns.get('article_count', 0)
-            total_samples += article_count if isinstance(article_count, int) else 0
-
-            lines.append("**News Sentiment:**")
-            lines.append(f"- Overall Tone: {news_overall}")
-            lines.append(f"- Sample Size: {article_count} articles analyzed")
-            lines.append(f"- Source: {ns.get('source', 'FMP News API')}")
-            lines.append(f"- Time Period: {ns.get('time_period', 'Last 7 days')}")
-
-            if article_count and article_count < 10:
-                lines.append("  ⚠️ LOW sample size - interpret with caution")
+        # Social sentiment breakdown
+        social = sentiment_data.get("social_breakdown", {})
+        if social:
+            lines.append("**Social Media Breakdown:**")
+            if social.get("stocktwits"):
+                lines.append(f"- StockTwits: {social['stocktwits']:.3f}")
+            if social.get("twitter"):
+                lines.append(f"- Twitter: {social['twitter']:.3f}")
             lines.append("")
 
-        # Summary
-        lines.append("**DATA QUALITY SUMMARY:**")
-        lines.append(f"- Total samples analyzed: {total_samples}")
-        if total_samples < 50:
-            lines.append("- Quality: LOW (< 50 samples) - use as secondary indicator only")
-        elif total_samples < 200:
-            lines.append("- Quality: MODERATE (50-200 samples)")
-        else:
-            lines.append("- Quality: GOOD (> 200 samples)")
-        lines.append("")
-
-        # Key themes
-        if raw.get("key_themes"):
-            lines.append("**Key Themes Detected:**")
-            for theme in raw["key_themes"][:5]:
-                lines.append(f"- {theme}")
-            lines.append("")
+        # News data
+        if news_data:
+            articles = news_data if isinstance(news_data, list) else news_data.get("articles", [])
+            if articles:
+                lines.append(f"**News Articles: {len(articles)} analyzed**")
+                lines.append("")
 
         return lines
 
@@ -1817,42 +1861,64 @@ Past performance is not indicative of future results. Investments involve risk, 
         """Log summary of step data going into synthesis LLM for audit purposes."""
         self.logger.info(f"[SynthesisV2] ========== STEP DATA SUMMARY: {symbol} ==========")
 
-        # Technical
-        tech_raw = step_data.get("technical", {}).get("raw_data", {})
+        # Technical - use correct path: raw['indicators']['rsi']['value']
+        tech_data = step_data.get("technical", {})
+        tech_raw = tech_data.get("raw_data", {})
+        has_tech_content = bool(tech_data.get("content", ""))
         if tech_raw:
-            momentum = tech_raw.get("momentum", {})
-            trend = tech_raw.get("trend", {})
-            self.logger.info(f"[SynthesisV2] TECHNICAL: RSI={momentum.get('rsi', 'N/A')}, "
-                           f"MACD={momentum.get('macd', 'N/A')}, ADX={trend.get('adx', 'N/A')}")
+            indicators = tech_raw.get("indicators", {})
+            rsi_data = indicators.get("rsi", {})
+            macd_data = indicators.get("macd", {})
+            adx_data = indicators.get("adx", {})
+            self.logger.info(f"[SynthesisV2] TECHNICAL: RSI={rsi_data.get('value', 'N/A')}, "
+                           f"MACD={macd_data.get('macd_line', 'N/A')}, ADX={adx_data.get('value', 'N/A')}, "
+                           f"has_content={has_tech_content}")
+        else:
+            self.logger.info(f"[SynthesisV2] TECHNICAL: raw_data=None, has_content={has_tech_content}")
 
         # Position
-        pos_raw = step_data.get("position", {}).get("raw_data", {})
-        sector_ctx = step_data.get("position", {}).get("sector_context", {})
-        if pos_raw or sector_ctx:
-            self.logger.info(f"[SynthesisV2] POSITION: RS_21d={pos_raw.get('excess_return_21d', 'N/A')}, "
-                           f"RS_63d={pos_raw.get('excess_return_63d', 'N/A')}, "
-                           f"Sector={sector_ctx.get('stock_sector', 'N/A')}, "
-                           f"Industry={sector_ctx.get('stock_industry', 'N/A')}")
+        pos_data = step_data.get("position", {})
+        pos_raw = pos_data.get("raw_data", {})
+        sector_ctx = pos_data.get("sector_context", {})
+        has_pos_content = bool(pos_data.get("content", ""))
+        rs_metrics = pos_raw.get("rs_metrics", pos_raw)
+        self.logger.info(f"[SynthesisV2] POSITION: RS_21d={rs_metrics.get('excess_return_21d', 'N/A')}, "
+                       f"RS_63d={rs_metrics.get('excess_return_63d', 'N/A')}, "
+                       f"Sector={sector_ctx.get('stock_sector', 'N/A')}, "
+                       f"Industry={sector_ctx.get('stock_industry', 'N/A')}, "
+                       f"has_content={has_pos_content}")
 
-        # Risk
-        risk_raw = step_data.get("risk", {}).get("raw_data", {})
+        # Risk - use correct path: raw['stop_loss_recommendations']['atr_based']
+        risk_data = step_data.get("risk", {})
+        risk_raw = risk_data.get("raw_data", {})
+        has_risk_content = bool(risk_data.get("content", ""))
         if risk_raw:
-            atr = risk_raw.get("atr", {})
+            stop_recs = risk_raw.get("stop_loss_recommendations", {})
+            atr_data = stop_recs.get("atr_based", {})
             var_data = risk_raw.get("var", {})
-            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr.get('value', 'N/A')} ({atr.get('percent', 'N/A')}%), "
-                           f"VaR95={var_data.get('var_95', 'N/A')}%, Price=${risk_raw.get('current_price', 'N/A')}")
+            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr_data.get('atr_value', risk_raw.get('atr', 'N/A'))}, "
+                           f"VaR={var_data.get('var_percent', 'N/A')}%, "
+                           f"Price=${risk_raw.get('current_price', 'N/A')}, "
+                           f"has_content={has_risk_content}")
+        else:
+            self.logger.info(f"[SynthesisV2] RISK: raw_data=None, has_content={has_risk_content}")
 
-        # Sentiment
-        sent_raw = step_data.get("sentiment", {}).get("raw_data", {})
+        # Sentiment - use correct path: raw['sentiment']
+        sent_data = step_data.get("sentiment", {})
+        sent_raw = sent_data.get("raw_data", {})
+        has_sent_content = bool(sent_data.get("content", ""))
         if sent_raw:
-            social = sent_raw.get("social_sentiment", {})
-            news = sent_raw.get("news_sentiment", {})
-            self.logger.info(f"[SynthesisV2] SENTIMENT: Score={sent_raw.get('sentiment_score', 'N/A')}, "
-                           f"Social_posts={social.get('post_count', 'N/A')}, "
-                           f"News_articles={news.get('article_count', 'N/A')}")
+            sentiment = sent_raw.get("sentiment", sent_raw)
+            self.logger.info(f"[SynthesisV2] SENTIMENT: Score={sentiment.get('sentiment_score', sentiment.get('score', 'N/A'))}, "
+                           f"Label={sentiment.get('sentiment_label', sentiment.get('label', 'N/A'))}, "
+                           f"has_content={has_sent_content}")
+        else:
+            self.logger.info(f"[SynthesisV2] SENTIMENT: raw_data=None, has_content={has_sent_content}")
 
-        # Fundamental
-        fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
+        # Fundamental - this path is correct
+        fund_data = step_data.get("fundamental", {})
+        fund_raw = fund_data.get("raw_data", {})
+        has_fund_content = bool(fund_data.get("content", ""))
         if fund_raw:
             report = fund_raw.get("fundamental_report", {})
             valuation = report.get("valuation", {})
@@ -1860,7 +1926,10 @@ Past performance is not indicative of future results. Investments involve risk, 
             self.logger.info(f"[SynthesisV2] FUNDAMENTAL: P/E={valuation.get('pe_ttm', 'N/A')}, "
                            f"P/S={valuation.get('ps_ttm', 'N/A')}, "
                            f"Graham=${intrinsic.get('graham_value', 'N/A')}, "
-                           f"DCF=${intrinsic.get('dcf_value', 'N/A')}")
+                           f"DCF=${intrinsic.get('dcf_value', 'N/A')}, "
+                           f"has_content={has_fund_content}")
+        else:
+            self.logger.info(f"[SynthesisV2] FUNDAMENTAL: raw_data=None, has_content={has_fund_content}")
 
         # Earnings
         if earnings_data:
