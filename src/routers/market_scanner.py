@@ -27,6 +27,7 @@ from src.utils.logger.custom_logging import LoggerMixin
 from src.handlers.market_scanner_handler import market_scanner_handler
 from src.handlers.fundamental_analysis_handler import FundamentalAnalysisHandler
 from src.handlers.synthesis_handler import synthesis_handler
+from src.handlers.synthesis_handler_v2 import synthesis_handler_v2
 from src.handlers.api_key_authenticator_handler import APIKeyAuth
 from src.providers.provider_factory import ModelProviderFactory
 from src.helpers.chat_management_helper import ChatService
@@ -682,3 +683,87 @@ async def scanner_cache_status(
     except Exception as e:
         logger.error(f"[Scanner] Cache status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# SYNTHESIS V2 - SINGLE LLM CALL ARCHITECTURE
+# =============================================================================
+@router.post("/scanner/synthesis/v2/stream", summary="Synthesis Report V2 (Single LLM Call)")
+async def scanner_synthesis_v2_stream(
+    request: Request,
+    scan_request: SynthesisRequest,
+    api_key_data: Dict[str, Any] = Depends(api_key_auth.author_with_api_key)
+):
+    """
+    Comprehensive synthesis report V2 with improved consistency.
+
+    Key Improvements over V1:
+    - SINGLE LLM CALL: All data in one context for 100% consistency
+    - BINDING SCORING: LLM must follow the calculated score
+    - CONSISTENT Entry/Stop/Target: Based on trading system, math-verified
+    - SPECIFIC CATALYST DATES: Earnings calendar with exact dates
+    - PEER COMPARISON: Comparison table with 3-5 peers
+    - QUALITY WEB ENRICHMENT: Deduplicated, date-filtered, inline citations
+    - CLEAR SECTOR RANKING: Methodology explanation
+
+    Response Events (SSE):
+    - {"type": "progress", "step": "...", "message": "..."}
+    - {"type": "content", "section": "...", "content": "..."}
+    - {"type": "data", "section": "scoring", "data": {...}}
+    - {"type": "done"}
+    """
+    user_id = getattr(request.state, "user_id", None)
+
+    question_id = None
+    question_content = scan_request.question_input or f"Synthesis V2 report for {scan_request.symbol}"
+    if scan_request.session_id and user_id:
+        question_id = save_user_question(scan_request.session_id, user_id, question_content)
+
+    async def generate_stream():
+        full_response = []
+
+        try:
+            api_key = ModelProviderFactory._get_api_key(scan_request.provider_type)
+
+            # Stream synthesis V2
+            synthesis_gen = synthesis_handler_v2.synthesize(
+                symbol=scan_request.symbol,
+                model_name=scan_request.model_name,
+                provider_type=scan_request.provider_type,
+                api_key=api_key,
+                target_language=scan_request.target_language or "vi",
+                run_missing_steps=scan_request.run_missing_steps,
+                include_web_search=scan_request.include_web_search,
+                timeframe=scan_request.timeframe,
+                benchmark=scan_request.benchmark
+            )
+
+            async for event in synthesis_gen:
+                # Collect content for session save
+                if event.get("type") == "content":
+                    content = event.get("content", event.get("chunk", ""))
+                    if content:
+                        full_response.append(content)
+
+                # Stream event to client
+                yield f"{json.dumps(event, ensure_ascii=False)}\n\n"
+
+                # Check for done/error
+                if event.get("type") in ("done", "error"):
+                    break
+
+            # Save complete response to chat session
+            complete_response = "\n".join(full_response)
+            if scan_request.session_id and user_id and question_id and complete_response:
+                save_assistant_response(scan_request.session_id, question_id, complete_response)
+
+        except Exception as e:
+            logger.error(f"[Scanner] Synthesis V2 streaming error: {e}")
+            yield sse_error(str(e))
+            yield sse_done()
+
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS
+    )

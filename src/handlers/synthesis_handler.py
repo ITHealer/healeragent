@@ -531,6 +531,7 @@ class SynthesisHandler(LoggerMixin):
         return {
             "content": content,
             "raw_data": raw_data.get("raw_data"),
+            "sector_context": raw_data.get("sector_context"),  # Include sector_context
             "cached_at": datetime.now().isoformat()
         }
 
