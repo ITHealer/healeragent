@@ -443,22 +443,36 @@ Focus on the most significant trends and their implications for investors."""
                 self.logger.warning(f"Graham calculation failed for {symbol}: {e}")
                 result["methodology_notes"].append(f"Graham calculation error: {str(e)}")
 
-        # DCF Valuation
+        # DCF Valuation with WACC calculation and sensitivity analysis
         if fcf and fcf > 0 and shares_outstanding and shares_outstanding > 0:
             try:
                 fcf_per_share = fcf / shares_outstanding
                 cash_val = cash if cash else 0
                 debt_val = debt if debt else 0
 
+                # Calculate WACC using CAPM: WACC = Rf + Beta × (Rm - Rf)
+                # Default assumptions if not provided
+                risk_free_rate = 0.045  # Current 10-year Treasury yield ~4.5%
+                market_premium = 0.055  # Long-term equity risk premium ~5.5%
+                beta = 1.0  # Default beta, should be passed in for better accuracy
+
+                # Calculate cost of equity using CAPM
+                cost_of_equity = risk_free_rate + beta * market_premium
+
+                # For simplicity, use cost of equity as WACC (assumes no debt or equity-only)
+                # In production, would need debt/equity ratio and cost of debt
+                wacc = cost_of_equity
+
                 # Projected growth rates (conservative)
                 growth_rates = [0.10, 0.08, 0.06, 0.05, 0.04]  # Declining growth
+                terminal_growth = 0.025  # 2.5% perpetual growth
 
                 dcf_data = DCFInputData(
                     symbol=symbol,
                     current_fcf=fcf,
                     growth_rates=growth_rates,
-                    terminal_growth=0.025,  # 2.5% perpetual growth
-                    discount_rate=0.10,  # 10% WACC assumption
+                    terminal_growth=terminal_growth,
+                    discount_rate=wacc,
                     shares_outstanding=shares_outstanding,
                     current_price=current_price,
                     cash=cash_val,
@@ -469,16 +483,48 @@ Focus on the most significant trends and their implications for investors."""
                 dcf_result = dcf_calc.calculate(dcf_data, dcf_config)
 
                 result["dcf_value"] = round(dcf_result.intrinsic_value_per_share, 2)
+
+                # Calculate sensitivity analysis (3x3 grid: WACC × Terminal Growth)
+                sensitivity = self._calculate_dcf_sensitivity(
+                    fcf=fcf,
+                    shares_outstanding=shares_outstanding,
+                    base_wacc=wacc,
+                    base_terminal_growth=terminal_growth,
+                    growth_rates=growth_rates,
+                    cash=cash_val,
+                    debt=debt_val
+                )
+
                 result["dcf_details"] = {
                     "fcf_used": fcf,
-                    "discount_rate": 0.10,
-                    "terminal_growth": 0.025,
+                    "wacc": round(wacc, 4),
+                    "wacc_components": {
+                        "risk_free_rate": risk_free_rate,
+                        "market_premium": market_premium,
+                        "beta": beta,
+                        "cost_of_equity": round(cost_of_equity, 4)
+                    },
+                    "terminal_growth": terminal_growth,
                     "enterprise_value": round(dcf_result.enterprise_value, 0),
                     "margin_of_safety_price": round(dcf_result.margin_of_safety_price, 2),
+                    "sensitivity_analysis": sensitivity
                 }
+
+                # Sanity checks
+                sanity_warnings = []
+                if dcf_result.intrinsic_value_per_share > current_price * 3:
+                    sanity_warnings.append("DCF value > 3x current price - may be overly optimistic")
+                if dcf_result.intrinsic_value_per_share < current_price * 0.3:
+                    sanity_warnings.append("DCF value < 0.3x current price - may be overly pessimistic")
+                if terminal_growth > wacc:
+                    sanity_warnings.append("Terminal growth > WACC - invalid assumption")
+
+                if sanity_warnings:
+                    result["dcf_details"]["sanity_warnings"] = sanity_warnings
+
                 result["methodology_notes"].append(
                     f"DCF Value: ${dcf_result.intrinsic_value_per_share:.2f} "
-                    f"(10% WACC, 2.5% terminal growth)"
+                    f"(WACC={wacc*100:.1f}%, Terminal Growth={terminal_growth*100:.1f}%)"
                 )
 
             except Exception as e:
@@ -493,6 +539,113 @@ Focus on the most significant trends and their implications for investors."""
         )
 
         return result
+
+    def _calculate_dcf_sensitivity(
+        self,
+        fcf: float,
+        shares_outstanding: float,
+        base_wacc: float,
+        base_terminal_growth: float,
+        growth_rates: list,
+        cash: float = 0,
+        debt: float = 0
+    ) -> Dict[str, Any]:
+        """
+        Calculate DCF sensitivity analysis (3x3 grid).
+
+        Creates a matrix showing how DCF value changes with different
+        WACC and terminal growth assumptions.
+
+        Args:
+            fcf: Free cash flow
+            shares_outstanding: Shares outstanding
+            base_wacc: Base WACC rate
+            base_terminal_growth: Base terminal growth rate
+            growth_rates: FCF growth rates for projection period
+            cash: Cash and equivalents
+            debt: Total debt
+
+        Returns:
+            Dict with sensitivity grid and summary
+        """
+        try:
+            # Define sensitivity ranges
+            wacc_variants = [
+                base_wacc - 0.01,  # WACC - 1%
+                base_wacc,          # Base WACC
+                base_wacc + 0.01   # WACC + 1%
+            ]
+
+            tg_variants = [
+                base_terminal_growth - 0.005,  # TG - 0.5%
+                base_terminal_growth,           # Base TG
+                base_terminal_growth + 0.005   # TG + 0.5%
+            ]
+
+            # Calculate DCF for each combination
+            grid = {}
+            values = []
+
+            for wacc in wacc_variants:
+                wacc_key = f"WACC_{wacc*100:.1f}%"
+                grid[wacc_key] = {}
+
+                for tg in tg_variants:
+                    # Skip invalid combinations (terminal growth >= WACC)
+                    if tg >= wacc:
+                        grid[wacc_key][f"TG_{tg*100:.1f}%"] = "N/A (TG >= WACC)"
+                        continue
+
+                    try:
+                        dcf_data = DCFInputData(
+                            symbol="sensitivity",
+                            current_fcf=fcf,
+                            growth_rates=growth_rates,
+                            terminal_growth=tg,
+                            discount_rate=wacc,
+                            shares_outstanding=shares_outstanding,
+                            current_price=100,  # Placeholder
+                            cash=cash,
+                            debt=debt,
+                        )
+                        dcf_config = DCFConfig(margin_of_safety=0.25)
+                        dcf_calc = DCFCalculator()
+                        result = dcf_calc.calculate(dcf_data, dcf_config)
+
+                        value = round(result.intrinsic_value_per_share, 2)
+                        grid[wacc_key][f"TG_{tg*100:.1f}%"] = value
+                        values.append(value)
+                    except:
+                        grid[wacc_key][f"TG_{tg*100:.1f}%"] = "Error"
+
+            # Calculate summary statistics
+            if values:
+                return {
+                    "grid": grid,
+                    "range": {
+                        "min": min(values),
+                        "max": max(values),
+                        "median": sorted(values)[len(values) // 2]
+                    },
+                    "interpretation": self._interpret_sensitivity_range(min(values), max(values))
+                }
+            else:
+                return {"grid": grid, "error": "Could not calculate sensitivity values"}
+
+        except Exception as e:
+            self.logger.warning(f"Sensitivity analysis failed: {e}")
+            return {"error": str(e)}
+
+    def _interpret_sensitivity_range(self, min_val: float, max_val: float) -> str:
+        """Interpret the sensitivity analysis range."""
+        spread = (max_val - min_val) / min_val * 100 if min_val > 0 else 0
+
+        if spread < 20:
+            return "Low sensitivity - DCF value relatively stable across assumptions"
+        elif spread < 50:
+            return "Moderate sensitivity - DCF value varies meaningfully with assumptions"
+        else:
+            return "High sensitivity - DCF value highly dependent on assumptions; use with caution"
 
     def _interpret_pe_ratio(self, pe_ratio: float) -> str:
         """

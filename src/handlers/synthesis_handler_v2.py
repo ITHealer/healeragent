@@ -39,6 +39,109 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# GICS SECTOR CLASSIFICATION (Phase 1: Critical Fix)
+# =============================================================================
+# Official 11 GICS Sectors - used for validation
+GICS_SECTORS = {
+    "Information Technology": ["Semiconductors", "Software", "Hardware", "IT Services", "Electronic Equipment"],
+    "Health Care": ["Pharmaceuticals", "Biotechnology", "Health Care Equipment", "Health Care Services"],
+    "Financials": ["Banks", "Insurance", "Capital Markets", "Consumer Finance"],
+    "Consumer Discretionary": ["Automobiles", "Hotels Restaurants & Leisure", "Retail", "Household Durables"],
+    "Consumer Staples": ["Food Products", "Beverages", "Household Products", "Personal Products"],
+    "Industrials": ["Aerospace & Defense", "Machinery", "Transportation", "Commercial Services"],
+    "Energy": ["Oil & Gas", "Energy Equipment & Services"],
+    "Materials": ["Chemicals", "Metals & Mining", "Construction Materials", "Containers & Packaging"],
+    "Utilities": ["Electric Utilities", "Gas Utilities", "Multi-Utilities", "Water Utilities"],
+    "Real Estate": ["REITs", "Real Estate Management & Development"],
+    "Communication Services": ["Diversified Telecommunication", "Media", "Entertainment", "Interactive Media"]
+}
+
+# Sector name normalization mapping
+SECTOR_ALIASES = {
+    "Technology": "Information Technology",
+    "Tech": "Information Technology",
+    "Healthcare": "Health Care",
+    "Consumer Cyclical": "Consumer Discretionary",
+    "Consumer Defensive": "Consumer Staples",
+    "Basic Materials": "Materials",
+    "Communication": "Communication Services",
+    "Telecom": "Communication Services",
+    "Financial Services": "Financials",
+    "Finance": "Financials"
+}
+
+# Cache TTL configurations (in seconds)
+CACHE_TTL = {
+    "analyst_consensus": 6 * 3600,     # 6 hours - analyst data updates infrequently
+    "insider_trading": 1 * 3600,        # 1 hour - insider data can change quickly
+    "seasonal_analysis": 24 * 3600,     # 24 hours - seasonal patterns are stable
+    "earnings_calendar": 12 * 3600,     # 12 hours - earnings dates are stable
+}
+
+
+def normalize_gics_sector(sector: str) -> str:
+    """
+    Normalize sector name to official GICS sector.
+
+    Args:
+        sector: Raw sector name from API
+
+    Returns:
+        Normalized GICS sector name
+    """
+    if not sector:
+        return "Unknown"
+
+    # Check if already a valid GICS sector
+    if sector in GICS_SECTORS:
+        return sector
+
+    # Check aliases
+    return SECTOR_ALIASES.get(sector, sector)
+
+
+def validate_gics_classification(sector: str, industry: str) -> Dict[str, Any]:
+    """
+    Validate and return proper GICS classification.
+
+    Args:
+        sector: Sector name
+        industry: Industry name
+
+    Returns:
+        Dict with validated sector, industry, and any warnings
+    """
+    normalized_sector = normalize_gics_sector(sector)
+    is_valid_sector = normalized_sector in GICS_SECTORS
+
+    result = {
+        "sector": normalized_sector,
+        "industry": industry,
+        "is_valid_gics": is_valid_sector,
+        "warnings": []
+    }
+
+    if not is_valid_sector:
+        result["warnings"].append(f"'{sector}' is not a standard GICS sector")
+        # Try to find best match
+        for gics_sector in GICS_SECTORS:
+            if sector.lower() in gics_sector.lower() or gics_sector.lower() in sector.lower():
+                result["sector"] = gics_sector
+                result["is_valid_gics"] = True
+                result["warnings"].append(f"Normalized to '{gics_sector}'")
+                break
+
+    # Validate industry belongs to sector
+    if result["is_valid_gics"] and industry:
+        sector_industries = GICS_SECTORS.get(result["sector"], [])
+        industry_match = any(ind.lower() in industry.lower() for ind in sector_industries)
+        if not industry_match:
+            result["warnings"].append(f"Industry '{industry}' may not belong to sector '{result['sector']}'")
+
+    return result
+
+
+# =============================================================================
 # SYSTEM PROMPT (ENGLISH ONLY - Production)
 # =============================================================================
 
@@ -281,23 +384,26 @@ class SynthesisHandlerV2(LoggerMixin):
             }
 
             # =================================================================
-            # PHASE 3: Fetch additional data in parallel
+            # PHASE 3: Fetch additional data in parallel (Enhanced with Phase 2/3 data)
             # =================================================================
             yield {
                 "type": "progress",
                 "step": "enrichment",
-                "message": "Fetching earnings, peers, and news..."
+                "message": "Fetching earnings, peers, analyst consensus, and news..."
             }
 
-            # Parallel fetch: earnings, peers (FMP API), web search
+            # Parallel fetch: earnings, peers (FMP API), analyst consensus, insider trading, web search
             earnings_task = self._fetch_earnings_calendar(symbol)
-            peers_task = self._fetch_peer_comparison_dynamic(symbol)  # NEW: Dynamic FMP API
+            peers_task = self._fetch_peer_comparison_dynamic(symbol)
+            analyst_task = self._fetch_analyst_consensus(symbol)  # Phase 2: Analyst consensus
+            insider_task = self._fetch_insider_trading(symbol)    # Phase 2: Insider trading
+            seasonal_task = self._fetch_seasonal_analysis(symbol) # Phase 3: Seasonal patterns
 
             web_task = None
             if include_web_search:
                 web_task = self._fetch_web_enrichment(symbol, step_data, scoring_result)
 
-            tasks = [earnings_task, peers_task]
+            tasks = [earnings_task, peers_task, analyst_task, insider_task, seasonal_task]
             if web_task:
                 tasks.append(web_task)
 
@@ -305,7 +411,28 @@ class SynthesisHandlerV2(LoggerMixin):
 
             earnings_data = results[0] if not isinstance(results[0], Exception) else None
             peer_data = results[1] if not isinstance(results[1], Exception) else None
-            web_data = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else None
+            analyst_data = results[2] if not isinstance(results[2], Exception) else None
+            insider_data = results[3] if not isinstance(results[3], Exception) else None
+            seasonal_data = results[4] if not isinstance(results[4], Exception) else None
+            web_data = results[5] if len(results) > 5 and not isinstance(results[5], Exception) else None
+
+            # Log what data was fetched successfully
+            self.logger.info(f"[SynthesisV2] Data fetch results for {symbol}:")
+            self.logger.info(f"  - Earnings: {'✓' if earnings_data else '✗'}")
+            self.logger.info(f"  - Peers: {'✓' if peer_data else '✗'}")
+            self.logger.info(f"  - Analyst Consensus: {'✓' if analyst_data else '✗'}")
+            self.logger.info(f"  - Insider Trading: {'✓' if insider_data else '✗'}")
+            self.logger.info(f"  - Seasonal Analysis: {'✓' if seasonal_data else '✗'}")
+            self.logger.info(f"  - Web Search: {'✓' if web_data else '✗'}")
+
+            # =================================================================
+            # Phase 1: Data Consistency Check
+            # =================================================================
+            consistency_check = self._check_data_consistency(step_data, symbol)
+            if consistency_check["issues"]:
+                self.logger.warning(f"[SynthesisV2] Data consistency issues: {consistency_check['issues']}")
+            if consistency_check["warnings"]:
+                self.logger.info(f"[SynthesisV2] Data consistency warnings: {consistency_check['warnings']}")
 
             # =================================================================
             # PHASE 4: Generate report header
@@ -339,7 +466,10 @@ class SynthesisHandlerV2(LoggerMixin):
                 earnings_data=earnings_data,
                 peer_data=peer_data,
                 web_data=web_data,
-                target_language=target_language
+                target_language=target_language,
+                analyst_data=analyst_data,    # Phase 2: Pass analyst data
+                insider_data=insider_data,    # Phase 2: Pass insider data
+                seasonal_data=seasonal_data   # Phase 3: Pass seasonal data
             )
 
             # Calculate trading plan
@@ -349,11 +479,12 @@ class SynthesisHandlerV2(LoggerMixin):
                 scoring=scoring_result
             )
 
-            # Calculate scenario analysis
+            # Calculate scenario analysis with analyst data for better probabilities
             scenario_analysis = self._calculate_scenario_analysis(
                 symbol=symbol,
                 step_data=step_data,
-                scoring=scoring_result
+                scoring=scoring_result,
+                analyst_data=analyst_data  # Phase 2: Use analyst consensus for probabilities
             )
 
             # Add trading plan and scenarios to prompt
@@ -419,11 +550,16 @@ class SynthesisHandlerV2(LoggerMixin):
 
     async def _fetch_earnings_calendar(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
-        Fetch earnings calendar with next earnings date.
+        Fetch earnings calendar with next earnings date (Phase 1: Improved).
 
         Uses TWO FMP endpoints:
         1. /api/v3/earning_calendar - UPCOMING earnings
         2. /stable/earnings - HISTORICAL earnings (beat rate)
+
+        Phase 1 Improvements:
+        - Fiscal year validation based on company fiscal year end
+        - Confirmation status (confirmed vs estimated)
+        - Historical beat/miss patterns with magnitude
         """
         if not self.fmp_api_key:
             self.logger.warning("[Earnings] No FMP API key available")
@@ -434,6 +570,22 @@ class SynthesisHandlerV2(LoggerMixin):
                 today = datetime.now().date()
                 from_date = today.strftime("%Y-%m-%d")
                 to_date = (today + timedelta(days=120)).strftime("%Y-%m-%d")
+
+                # Fetch company profile for fiscal year end month
+                profile_url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}"
+                profile_params = {"apikey": self.fmp_api_key}
+                fiscal_year_end_month = None
+
+                try:
+                    profile_response = await client.get(profile_url, params=profile_params)
+                    if profile_response.status_code == 200:
+                        profile_data = profile_response.json()
+                        if profile_data and isinstance(profile_data, list):
+                            # FMP returns fiscalYearEnd as month name (e.g., "December")
+                            fy_end = profile_data[0].get("fiscalYearEnd", "")
+                            fiscal_year_end_month = self._month_name_to_number(fy_end)
+                except Exception as e:
+                    self.logger.debug(f"[Earnings] Could not fetch fiscal year end: {e}")
 
                 # Fetch UPCOMING earnings
                 calendar_url = "https://financialmodelingprep.com/api/v3/earning_calendar"
@@ -451,11 +603,19 @@ class SynthesisHandlerV2(LoggerMixin):
                     if isinstance(calendar_data, list):
                         for item in calendar_data:
                             if item.get("symbol", "").upper() == symbol.upper():
+                                # Determine confirmation status
+                                eps_estimated = item.get("epsEstimated")
+                                revenue_estimated = item.get("revenueEstimated")
+                                # If we have estimates, consider it more "confirmed"
+                                is_confirmed = eps_estimated is not None and revenue_estimated is not None
+
                                 next_earnings = {
                                     "date": item.get("date"),
                                     "time": item.get("time", "TBD"),
-                                    "eps_estimated": item.get("epsEstimated"),
-                                    "revenue_estimated": item.get("revenueEstimated")
+                                    "eps_estimated": eps_estimated,
+                                    "revenue_estimated": revenue_estimated,
+                                    "is_confirmed": is_confirmed,
+                                    "confirmation_status": "Confirmed (estimates available)" if is_confirmed else "Estimated (no analyst estimates)"
                                 }
                                 break
 
@@ -465,6 +625,7 @@ class SynthesisHandlerV2(LoggerMixin):
 
                 historical = []
                 beat_rate = None
+                avg_surprise_pct = None
 
                 historical_response = await client.get(historical_url, params=historical_params)
 
@@ -478,21 +639,45 @@ class SynthesisHandlerV2(LoggerMixin):
                         )
                         historical = sorted_history[:8]
 
-                        beats = sum(1 for h in historical
-                                   if h.get("epsActual") and h.get("epsEstimated")
-                                   and h["epsActual"] > h["epsEstimated"])
-                        total = len([h for h in historical
-                                    if h.get("epsActual") and h.get("epsEstimated")])
+                        # Calculate beat rate and average surprise
+                        beats = 0
+                        total = 0
+                        surprises = []
+
+                        for h in historical:
+                            actual = h.get("epsActual")
+                            estimated = h.get("epsEstimated")
+                            if actual is not None and estimated is not None:
+                                total += 1
+                                if actual > estimated:
+                                    beats += 1
+                                # Calculate surprise percentage
+                                if estimated != 0:
+                                    surprise_pct = ((actual - estimated) / abs(estimated)) * 100
+                                    surprises.append(surprise_pct)
+
                         beat_rate = round(beats / total, 2) if total > 0 else None
+                        avg_surprise_pct = round(sum(surprises) / len(surprises), 1) if surprises else None
+
+                # Determine fiscal quarter with company-specific FY end
+                fiscal_quarter = self._determine_fiscal_quarter_v2(
+                    date_str=next_earnings.get("date") if next_earnings else None,
+                    fiscal_year_end_month=fiscal_year_end_month
+                )
 
                 return {
                     "next_earnings_date": next_earnings.get("date") if next_earnings else None,
                     "earnings_time": next_earnings.get("time", "TBD") if next_earnings else "TBD",
                     "eps_estimated": next_earnings.get("eps_estimated") if next_earnings else None,
                     "revenue_estimated": next_earnings.get("revenue_estimated") if next_earnings else None,
-                    "fiscal_quarter": self._determine_fiscal_quarter(next_earnings.get("date") if next_earnings else None),
+                    "is_confirmed": next_earnings.get("is_confirmed", False) if next_earnings else False,
+                    "confirmation_status": next_earnings.get("confirmation_status", "Unknown") if next_earnings else "Unknown",
+                    "fiscal_quarter": fiscal_quarter,
+                    "fiscal_year_end_month": fiscal_year_end_month,
                     "historical": historical[:4],
                     "beat_rate": beat_rate,
+                    "avg_surprise_pct": avg_surprise_pct,
+                    "quarters_analyzed": len([h for h in historical if h.get("epsActual") and h.get("epsEstimated")]),
                     "source": "FMP Earnings Calendar API"
                 }
 
@@ -500,8 +685,537 @@ class SynthesisHandlerV2(LoggerMixin):
             self.logger.error(f"[Earnings] Error fetching for {symbol}: {e}")
             return None
 
+    def _month_name_to_number(self, month_name: str) -> Optional[int]:
+        """Convert month name to number (e.g., 'December' -> 12)."""
+        month_map = {
+            "january": 1, "february": 2, "march": 3, "april": 4,
+            "may": 5, "june": 6, "july": 7, "august": 8,
+            "september": 9, "october": 10, "november": 11, "december": 12
+        }
+        if not month_name:
+            return None
+        return month_map.get(month_name.lower())
+
+    def _determine_fiscal_quarter_v2(
+        self,
+        date_str: Optional[str],
+        fiscal_year_end_month: Optional[int] = None
+    ) -> str:
+        """
+        Determine fiscal quarter from date with company-specific fiscal year end.
+
+        Most companies use calendar year (Dec end), but some use different FY ends:
+        - Apple: Sep end (FY2024 = Oct 2023 - Sep 2024)
+        - Microsoft: Jun end
+        - Walmart: Jan end
+
+        Args:
+            date_str: Earnings date in YYYY-MM-DD format
+            fiscal_year_end_month: Month number when fiscal year ends (1-12)
+
+        Returns:
+            Fiscal quarter string (e.g., "Q1 FY2026")
+        """
+        if not date_str:
+            return "N/A"
+
+        try:
+            date = datetime.strptime(date_str, "%Y-%m-%d")
+            month = date.month
+            year = date.year
+
+            # Default to calendar year (December end) if not specified
+            fy_end = fiscal_year_end_month or 12
+
+            # Calculate which quarter the earnings date falls in
+            # Earnings are reported AFTER the quarter ends, typically 4-6 weeks later
+            # So Feb earnings = Q4 (Oct-Dec), May earnings = Q1 (Jan-Mar), etc.
+
+            if fy_end == 12:
+                # Standard calendar year
+                if month in [1, 2, 3]:
+                    return f"Q4 FY{year - 1}"  # Reporting Q4 of previous year
+                elif month in [4, 5, 6]:
+                    return f"Q1 FY{year}"
+                elif month in [7, 8, 9]:
+                    return f"Q2 FY{year}"
+                else:
+                    return f"Q3 FY{year}"
+            else:
+                # Non-standard fiscal year
+                # Calculate fiscal year start month
+                fy_start = (fy_end % 12) + 1
+
+                # Determine which fiscal quarter
+                months_from_fy_start = (month - fy_start) % 12
+                quarter = (months_from_fy_start // 3) + 1
+
+                # Determine fiscal year
+                if month > fy_end:
+                    fiscal_year = year + 1
+                else:
+                    fiscal_year = year
+
+                # Adjust for reporting lag (earnings report previous quarter)
+                if quarter == 1:
+                    return f"Q4 FY{fiscal_year - 1}"
+                else:
+                    return f"Q{quarter - 1} FY{fiscal_year}"
+
+        except Exception as e:
+            self.logger.debug(f"[Earnings] Error determining fiscal quarter: {e}")
+            return "N/A"
+
     def _determine_fiscal_quarter(self, date_str: Optional[str]) -> str:
-        """Determine fiscal quarter from date."""
+        """Determine fiscal quarter from date (legacy method for backward compatibility)."""
+        return self._determine_fiscal_quarter_v2(date_str)
+
+    # =========================================================================
+    # PHASE 2: ANALYST CONSENSUS API
+    # =========================================================================
+
+    async def _fetch_analyst_consensus(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch analyst consensus data from FMP API.
+
+        Endpoints:
+        1. /api/v4/price-target-consensus - Price target consensus
+        2. /api/v4/grades-consensus - Buy/Hold/Sell consensus
+
+        Returns:
+            Dict with analyst consensus data
+        """
+        if not self.fmp_api_key:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Fetch price target consensus
+                pt_url = f"https://financialmodelingprep.com/api/v4/price-target-consensus"
+                pt_params = {"symbol": symbol, "apikey": self.fmp_api_key}
+
+                price_target = None
+                pt_response = await client.get(pt_url, params=pt_params)
+
+                if pt_response.status_code == 200:
+                    pt_data = pt_response.json()
+                    if pt_data and isinstance(pt_data, list) and pt_data:
+                        price_target = pt_data[0]
+
+                # Fetch grades consensus
+                grades_url = f"https://financialmodelingprep.com/api/v4/grades-consensus"
+                grades_params = {"symbol": symbol, "apikey": self.fmp_api_key}
+
+                grades = None
+                grades_response = await client.get(grades_url, params=grades_params)
+
+                if grades_response.status_code == 200:
+                    grades_data = grades_response.json()
+                    if grades_data and isinstance(grades_data, list) and grades_data:
+                        grades = grades_data[0]
+
+                # Calculate consensus metrics
+                result = {
+                    "symbol": symbol,
+                    "price_target": {},
+                    "ratings": {},
+                    "analyst_count": 0,
+                    "source": "FMP Analyst Consensus API"
+                }
+
+                if price_target:
+                    result["price_target"] = {
+                        "high": price_target.get("targetHigh"),
+                        "low": price_target.get("targetLow"),
+                        "consensus": price_target.get("targetConsensus"),
+                        "median": price_target.get("targetMedian")
+                    }
+
+                if grades:
+                    strong_buy = grades.get("strongBuy", 0)
+                    buy = grades.get("buy", 0)
+                    hold = grades.get("hold", 0)
+                    sell = grades.get("sell", 0)
+                    strong_sell = grades.get("strongSell", 0)
+
+                    total = strong_buy + buy + hold + sell + strong_sell
+
+                    result["ratings"] = {
+                        "strong_buy": strong_buy,
+                        "buy": buy,
+                        "hold": hold,
+                        "sell": sell,
+                        "strong_sell": strong_sell,
+                        "total": total,
+                        "bullish_pct": round((strong_buy + buy) / total * 100, 1) if total > 0 else 0,
+                        "bearish_pct": round((sell + strong_sell) / total * 100, 1) if total > 0 else 0
+                    }
+                    result["analyst_count"] = total
+
+                    # Calculate consensus rating
+                    if total > 0:
+                        bullish_pct = (strong_buy + buy) / total
+                        bearish_pct = (sell + strong_sell) / total
+
+                        if bullish_pct > 0.7:
+                            result["consensus_rating"] = "Strong Buy"
+                        elif bullish_pct > 0.5:
+                            result["consensus_rating"] = "Buy"
+                        elif bearish_pct > 0.5:
+                            result["consensus_rating"] = "Sell"
+                        elif bearish_pct > 0.7:
+                            result["consensus_rating"] = "Strong Sell"
+                        else:
+                            result["consensus_rating"] = "Hold"
+
+                return result if result["analyst_count"] > 0 or result["price_target"] else None
+
+        except Exception as e:
+            self.logger.error(f"[Analyst] Error fetching consensus for {symbol}: {e}")
+            return None
+
+    # =========================================================================
+    # PHASE 2: INSIDER TRADING API
+    # =========================================================================
+
+    async def _fetch_insider_trading(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch insider trading data from FMP API.
+
+        Endpoints:
+        1. /api/v4/insider-trading - Recent insider transactions
+        2. /api/v4/insider-trading-statistics - Aggregated statistics
+
+        Returns:
+            Dict with insider trading data
+        """
+        if not self.fmp_api_key:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Fetch recent insider trades
+                trades_url = f"https://financialmodelingprep.com/api/v4/insider-trading"
+                trades_params = {"symbol": symbol, "limit": 50, "apikey": self.fmp_api_key}
+
+                trades = []
+                trades_response = await client.get(trades_url, params=trades_params)
+
+                if trades_response.status_code == 200:
+                    trades_data = trades_response.json()
+                    if isinstance(trades_data, list):
+                        trades = trades_data
+
+                # Fetch aggregated statistics (if available)
+                stats_url = f"https://financialmodelingprep.com/api/v4/insider-trading-statistics"
+                stats_params = {"symbol": symbol, "apikey": self.fmp_api_key}
+
+                stats = None
+                try:
+                    stats_response = await client.get(stats_url, params=stats_params)
+                    if stats_response.status_code == 200:
+                        stats_data = stats_response.json()
+                        if stats_data and isinstance(stats_data, list) and stats_data:
+                            stats = stats_data[0]
+                except:
+                    pass  # Stats endpoint may not be available for all plans
+
+                # Analyze recent trades (last 90 days)
+                ninety_days_ago = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+                recent_trades = [t for t in trades if t.get("filingDate", "") >= ninety_days_ago]
+
+                # Aggregate buy/sell activity
+                total_bought = 0
+                total_sold = 0
+                buy_value = 0
+                sell_value = 0
+                notable_trades = []
+
+                for trade in recent_trades[:20]:  # Limit to most recent 20
+                    shares = trade.get("securitiesTransacted", 0) or 0
+                    price = trade.get("price", 0) or 0
+                    value = shares * price
+                    tx_type = trade.get("transactionType", "").lower()
+
+                    if "purchase" in tx_type or "buy" in tx_type or tx_type == "p":
+                        total_bought += shares
+                        buy_value += value
+                    elif "sale" in tx_type or "sell" in tx_type or tx_type == "s":
+                        total_sold += shares
+                        sell_value += value
+
+                    # Track notable trades (> $100k or by C-suite)
+                    reporter = trade.get("reportingName", "")
+                    is_notable = (
+                        value > 100000 or
+                        any(title in reporter.lower() for title in ["ceo", "cfo", "coo", "cto", "president", "director"])
+                    )
+                    if is_notable:
+                        notable_trades.append({
+                            "date": trade.get("filingDate"),
+                            "insider": reporter,
+                            "type": "Buy" if "purchase" in tx_type or "buy" in tx_type else "Sell",
+                            "shares": shares,
+                            "price": price,
+                            "value": value
+                        })
+
+                # Calculate net activity
+                net_shares = total_bought - total_sold
+                net_value = buy_value - sell_value
+
+                # Determine insider sentiment
+                if net_value > 1000000:
+                    sentiment = "Strongly Bullish"
+                elif net_value > 100000:
+                    sentiment = "Bullish"
+                elif net_value < -1000000:
+                    sentiment = "Strongly Bearish"
+                elif net_value < -100000:
+                    sentiment = "Bearish"
+                else:
+                    sentiment = "Neutral"
+
+                result = {
+                    "symbol": symbol,
+                    "period": "90 days",
+                    "total_trades": len(recent_trades),
+                    "buy_activity": {
+                        "shares": total_bought,
+                        "value": buy_value
+                    },
+                    "sell_activity": {
+                        "shares": total_sold,
+                        "value": sell_value
+                    },
+                    "net_activity": {
+                        "shares": net_shares,
+                        "value": net_value,
+                        "sentiment": sentiment
+                    },
+                    "notable_trades": notable_trades[:5],  # Top 5 notable
+                    "source": "FMP Insider Trading API"
+                }
+
+                if stats:
+                    result["statistics"] = {
+                        "total_insiders": stats.get("totalInsiderBought", 0) + stats.get("totalInsiderSold", 0),
+                        "buyers": stats.get("totalInsiderBought", 0),
+                        "sellers": stats.get("totalInsiderSold", 0)
+                    }
+
+                return result if recent_trades else None
+
+        except Exception as e:
+            self.logger.error(f"[Insider] Error fetching trading data for {symbol}: {e}")
+            return None
+
+    # =========================================================================
+    # PHASE 3: SEASONAL ANALYSIS
+    # =========================================================================
+
+    async def _fetch_seasonal_analysis(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Calculate seasonal performance patterns from historical data.
+
+        Analyzes monthly and quarterly performance patterns over multiple years.
+
+        Returns:
+            Dict with seasonal analysis data
+        """
+        if not self.fmp_api_key:
+            return None
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                # Fetch 5 years of historical data
+                url = f"https://financialmodelingprep.com/api/v3/historical-price-full/{symbol}"
+                params = {"apikey": self.fmp_api_key}
+
+                response = await client.get(url, params=params)
+
+                if response.status_code != 200:
+                    return None
+
+                data = response.json()
+                historical = data.get("historical", [])
+
+                if len(historical) < 252:  # Need at least 1 year of data
+                    return None
+
+                # Calculate monthly returns
+                monthly_returns = {}
+                for i in range(1, 12 + 1):
+                    monthly_returns[i] = []
+
+                # Sort by date ascending
+                historical = sorted(historical, key=lambda x: x.get("date", ""))
+
+                # Group by month and calculate returns
+                for i in range(1, len(historical)):
+                    try:
+                        curr_date = datetime.strptime(historical[i]["date"], "%Y-%m-%d")
+                        prev_date = datetime.strptime(historical[i-1]["date"], "%Y-%m-%d")
+
+                        # Only calculate for different months
+                        if curr_date.month != prev_date.month:
+                            curr_price = historical[i]["close"]
+                            prev_price = historical[i-1]["close"]
+
+                            if prev_price > 0:
+                                monthly_return = ((curr_price - prev_price) / prev_price) * 100
+                                monthly_returns[curr_date.month].append(monthly_return)
+                    except:
+                        continue
+
+                # Calculate statistics for each month
+                month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+                seasonal_stats = {}
+                for month, returns in monthly_returns.items():
+                    if len(returns) >= 3:  # Need at least 3 data points
+                        avg_return = sum(returns) / len(returns)
+                        win_rate = len([r for r in returns if r > 0]) / len(returns) * 100
+                        seasonal_stats[month_names[month - 1]] = {
+                            "avg_return": round(avg_return, 2),
+                            "win_rate": round(win_rate, 1),
+                            "sample_size": len(returns)
+                        }
+
+                # Find best and worst months
+                best_month = max(seasonal_stats.items(), key=lambda x: x[1]["avg_return"]) if seasonal_stats else None
+                worst_month = min(seasonal_stats.items(), key=lambda x: x[1]["avg_return"]) if seasonal_stats else None
+
+                # Calculate quarterly patterns
+                quarterly_stats = {}
+                quarter_map = {
+                    "Q1": [1, 2, 3],
+                    "Q2": [4, 5, 6],
+                    "Q3": [7, 8, 9],
+                    "Q4": [10, 11, 12]
+                }
+
+                for quarter, months in quarter_map.items():
+                    quarter_returns = []
+                    for m in months:
+                        quarter_returns.extend(monthly_returns.get(m, []))
+                    if quarter_returns:
+                        quarterly_stats[quarter] = {
+                            "avg_return": round(sum(quarter_returns) / len(quarter_returns), 2),
+                            "win_rate": round(len([r for r in quarter_returns if r > 0]) / len(quarter_returns) * 100, 1)
+                        }
+
+                return {
+                    "symbol": symbol,
+                    "years_analyzed": len(historical) // 252,
+                    "monthly_patterns": seasonal_stats,
+                    "quarterly_patterns": quarterly_stats,
+                    "best_month": {"month": best_month[0], **best_month[1]} if best_month else None,
+                    "worst_month": {"month": worst_month[0], **worst_month[1]} if worst_month else None,
+                    "source": "Calculated from FMP Historical Data"
+                }
+
+        except Exception as e:
+            self.logger.error(f"[Seasonal] Error calculating for {symbol}: {e}")
+            return None
+
+    # =========================================================================
+    # PHASE 1: DATA CONSISTENCY CHECKER
+    # =========================================================================
+
+    def _check_data_consistency(
+        self,
+        step_data: Dict[str, Any],
+        symbol: str
+    ) -> Dict[str, Any]:
+        """
+        Check data consistency across all steps.
+
+        Validates:
+        - Price consistency across steps
+        - Timestamp freshness
+        - Data completeness
+
+        Returns:
+            Dict with consistency check results
+        """
+        issues = []
+        warnings = []
+        prices = {}
+        timestamps = {}
+
+        # Collect prices from each step
+        for step_name, data in step_data.items():
+            raw = data.get("raw_data", {})
+            cached_at = data.get("cached_at")
+
+            if cached_at:
+                timestamps[step_name] = cached_at
+
+            # Extract price from different step structures
+            if step_name == "risk":
+                price = raw.get("current_price")
+            elif step_name == "technical":
+                price = raw.get("current_price") or raw.get("price_context", {}).get("current_price")
+            elif step_name == "fundamental":
+                report = raw.get("fundamental_report", {})
+                price = report.get("intrinsic_value", {}).get("current_price")
+            else:
+                price = None
+
+            if price:
+                prices[step_name] = price
+
+        # Check price consistency (allow 2% variance for timing differences)
+        if len(prices) >= 2:
+            price_values = list(prices.values())
+            avg_price = sum(price_values) / len(price_values)
+            for step, price in prices.items():
+                variance = abs(price - avg_price) / avg_price * 100
+                if variance > 2:
+                    warnings.append(
+                        f"Price variance in {step}: ${price:.2f} vs avg ${avg_price:.2f} ({variance:.1f}% diff)"
+                    )
+
+        # Check timestamp freshness
+        now = datetime.now()
+        for step, ts_str in timestamps.items():
+            try:
+                # Parse timestamp (assuming ISO format)
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                age_hours = (now - ts.replace(tzinfo=None)).total_seconds() / 3600
+
+                if age_hours > 24:
+                    issues.append(f"{step} data is {age_hours:.1f} hours old (stale)")
+                elif age_hours > 6:
+                    warnings.append(f"{step} data is {age_hours:.1f} hours old")
+            except:
+                pass
+
+        # Check data completeness
+        required_steps = ["technical", "risk", "fundamental"]
+        for step in required_steps:
+            if step not in step_data:
+                issues.append(f"Missing required step: {step}")
+            elif not step_data[step].get("raw_data"):
+                warnings.append(f"No raw_data in {step} step")
+
+        return {
+            "symbol": symbol,
+            "is_consistent": len(issues) == 0,
+            "prices_found": prices,
+            "issues": issues,
+            "warnings": warnings,
+            "timestamp_check": timestamps
+        }
+
+    # =========================================================================
+    # LEGACY COMPATIBILITY
+    # =========================================================================
+
+    def _determine_fiscal_quarter_legacy(self, date_str: Optional[str]) -> str:
+        """Determine fiscal quarter from date (legacy)."""
         if not date_str:
             return "N/A"
         try:
@@ -882,15 +1596,29 @@ class SynthesisHandlerV2(LoggerMixin):
         self,
         symbol: str,
         step_data: Dict[str, Any],
-        scoring: Dict[str, Any]
+        scoring: Dict[str, Any],
+        analyst_data: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Calculate Bull/Base/Bear scenarios with price targets and probabilities."""
+        """
+        Calculate Bull/Base/Bear scenarios with price targets and probabilities.
+
+        Phase 2 Improvement: Use analyst consensus + volatility for probability estimation
+        instead of hardcoded composite score thresholds.
+
+        Methodology:
+        1. Base targets on analyst price targets when available
+        2. Adjust probabilities based on:
+           - Analyst consensus rating (bullish% vs bearish%)
+           - Historical volatility (higher vol = more uncertainty)
+           - Earnings beat rate (higher beat rate = more bullish)
+        """
         risk_raw = step_data.get("risk", {}).get("raw_data", {})
         fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
 
         current_price = risk_raw.get("current_price", 0)
         atr = risk_raw.get("atr", {}).get("value", 0) if isinstance(risk_raw.get("atr"), dict) else 0
-        volatility = risk_raw.get("volatility", {}).get("annualized", 0) if isinstance(risk_raw.get("volatility"), dict) else 0
+        volatility_data = risk_raw.get("volatility", {})
+        volatility = volatility_data.get("annualized", 0) if isinstance(volatility_data, dict) else 0
 
         # Get intrinsic values if available
         intrinsic = fund_raw.get("fundamental_report", {}).get("intrinsic_value", {}) if fund_raw else {}
@@ -899,30 +1627,95 @@ class SynthesisHandlerV2(LoggerMixin):
 
         composite_score = scoring.get("composite_score", 50)
 
-        # Calculate scenario targets based on volatility and score
+        # =================================================================
+        # PHASE 2: Improved target calculation using analyst data
+        # =================================================================
+        bull_target = base_target = bear_target = 0
+
         if current_price > 0:
-            # Bull case: +20-30% depending on score
-            bull_multiplier = 1.25 if composite_score >= 65 else 1.20
-            bull_target = round(current_price * bull_multiplier, 2)
+            # Try to use analyst price targets if available
+            if analyst_data and analyst_data.get("price_target"):
+                pt = analyst_data["price_target"]
+                pt_high = pt.get("high")
+                pt_low = pt.get("low")
+                pt_consensus = pt.get("consensus") or pt.get("median")
 
-            # Base case: +5-10%
-            base_target = round(current_price * 1.08, 2)
+                if pt_high and pt_low and pt_consensus:
+                    # Use analyst targets with some adjustment
+                    bull_target = round(pt_high * 0.95, 2)  # Slightly conservative
+                    base_target = round(pt_consensus, 2)
+                    bear_target = round(pt_low * 1.05, 2)  # Slightly less pessimistic
 
-            # Bear case: -15-25%
-            bear_multiplier = 0.80 if composite_score < 45 else 0.85
-            bear_target = round(current_price * bear_multiplier, 2)
+                    self.logger.debug(f"[Scenario] Using analyst targets: Bull=${bull_target}, Base=${base_target}, Bear=${bear_target}")
+
+            # Fallback to volatility-based calculation
+            if not bull_target:
+                # Use volatility to scale targets (higher vol = wider range)
+                vol_factor = max(volatility / 30, 0.5)  # Normalize to 30% vol baseline
+                vol_factor = min(vol_factor, 2.0)  # Cap at 2x
+
+                bull_multiplier = 1.15 + (0.10 * vol_factor)  # 1.15-1.35
+                bear_multiplier = 0.90 - (0.10 * vol_factor)  # 0.70-0.90
+
+                bull_target = round(current_price * bull_multiplier, 2)
+                base_target = round(current_price * 1.05, 2)  # Conservative 5% base
+                bear_target = round(current_price * bear_multiplier, 2)
+
+        # =================================================================
+        # PHASE 2: Improved probability calculation
+        # =================================================================
+
+        # Start with base probabilities
+        bull_prob, base_prob, bear_prob = 25, 50, 25
+
+        # Adjust based on analyst consensus (if available)
+        if analyst_data and analyst_data.get("ratings"):
+            ratings = analyst_data["ratings"]
+            bullish_pct = ratings.get("bullish_pct", 50)
+            bearish_pct = ratings.get("bearish_pct", 50)
+
+            # Weight analyst consensus heavily (60% weight)
+            bull_prob = round(25 + (bullish_pct - 50) * 0.6, 0)
+            bear_prob = round(25 + (bearish_pct - 50) * 0.6, 0)
+            base_prob = 100 - bull_prob - bear_prob
+
+            # Log the methodology
+            self.logger.debug(f"[Scenario] Analyst-adjusted probs: Bull={bull_prob}%, Bear={bear_prob}%")
+
         else:
-            bull_target = base_target = bear_target = 0
+            # Fallback: Use composite score (legacy method)
+            if composite_score >= 70:
+                bull_prob, base_prob, bear_prob = 35, 45, 20
+            elif composite_score >= 55:
+                bull_prob, base_prob, bear_prob = 30, 45, 25
+            elif composite_score >= 45:
+                bull_prob, base_prob, bear_prob = 25, 45, 30
+            else:
+                bull_prob, base_prob, bear_prob = 20, 40, 40
 
-        # Probability based on composite score
-        if composite_score >= 70:
-            bull_prob, base_prob, bear_prob = 40, 45, 15
-        elif composite_score >= 55:
-            bull_prob, base_prob, bear_prob = 30, 50, 20
-        elif composite_score >= 45:
-            bull_prob, base_prob, bear_prob = 25, 45, 30
+        # Adjust for volatility (higher vol = less certainty in extreme outcomes)
+        if volatility > 40:
+            # High volatility: flatten probabilities toward 33/33/33
+            flatten_factor = min((volatility - 40) / 40, 0.3)  # Max 30% flattening
+            bull_prob = round(bull_prob * (1 - flatten_factor) + 33 * flatten_factor)
+            bear_prob = round(bear_prob * (1 - flatten_factor) + 33 * flatten_factor)
+            base_prob = 100 - bull_prob - bear_prob
+
+        # Ensure probabilities are valid (sum to 100, all positive)
+        bull_prob = max(10, min(50, int(bull_prob)))
+        bear_prob = max(10, min(50, int(bear_prob)))
+        base_prob = 100 - bull_prob - bear_prob
+
+        # Build methodology explanation
+        methodology = []
+        if analyst_data and analyst_data.get("ratings"):
+            methodology.append(f"Analyst consensus: {analyst_data['ratings'].get('bullish_pct', 0):.0f}% bullish")
+            methodology.append(f"Analyst count: {analyst_data.get('analyst_count', 0)}")
         else:
-            bull_prob, base_prob, bear_prob = 15, 40, 45
+            methodology.append("No analyst data - using technical indicators")
+
+        if volatility:
+            methodology.append(f"Volatility factor: {volatility:.1f}% annualized")
 
         return {
             "current_price": current_price,
@@ -949,7 +1742,8 @@ class SynthesisHandlerV2(LoggerMixin):
                 "dcf_value": dcf_value,
                 "premium_discount": self._calculate_premium_discount(current_price, graham_value, dcf_value)
             },
-            "time_horizon": "1-3 months"
+            "probability_methodology": methodology,
+            "time_horizon": "3-6 months"
         }
 
     def _calculate_premium_discount(
@@ -1058,10 +1852,15 @@ class SynthesisHandlerV2(LoggerMixin):
         earnings_data: Optional[Dict[str, Any]],
         peer_data: Optional[Dict[str, Any]],
         web_data: Optional[Dict[str, Any]],
-        target_language: str
+        target_language: str,
+        analyst_data: Optional[Dict[str, Any]] = None,
+        insider_data: Optional[Dict[str, Any]] = None,
+        seasonal_data: Optional[Dict[str, Any]] = None
     ) -> str:
         """
         Build comprehensive prompt using RAW DATA metrics instead of truncated LLM content.
+
+        Phase 2/3 Enhancement: Includes analyst consensus, insider trading, and seasonal data.
         """
         parts = [
             f"# COMPREHENSIVE INVESTMENT ANALYSIS: {symbol}",
@@ -1277,7 +2076,123 @@ class SynthesisHandlerV2(LoggerMixin):
             parts.append("")
 
         # =====================================================================
-        # SECTION 9: WEB SEARCH RESULTS (Title + URL + Content format)
+        # SECTION 9: ANALYST CONSENSUS (Phase 2)
+        # =====================================================================
+        if analyst_data:
+            parts.extend([
+                "=" * 60,
+                "## ANALYST CONSENSUS (FMP API)",
+                "=" * 60,
+                "",
+            ])
+
+            # Price targets
+            pt = analyst_data.get("price_target", {})
+            if pt.get("consensus"):
+                parts.append("**PRICE TARGETS:**")
+                parts.append(f"- Consensus Target: ${pt.get('consensus'):.2f}")
+                parts.append(f"- Median Target: ${pt.get('median'):.2f}" if pt.get("median") else "")
+                parts.append(f"- High: ${pt.get('high'):.2f}" if pt.get("high") else "")
+                parts.append(f"- Low: ${pt.get('low'):.2f}" if pt.get("low") else "")
+                parts.append("")
+
+            # Ratings breakdown
+            ratings = analyst_data.get("ratings", {})
+            if ratings.get("total"):
+                parts.append(f"**ANALYST RATINGS ({ratings.get('total')} analysts):**")
+                parts.append(f"- Strong Buy: {ratings.get('strong_buy', 0)}")
+                parts.append(f"- Buy: {ratings.get('buy', 0)}")
+                parts.append(f"- Hold: {ratings.get('hold', 0)}")
+                parts.append(f"- Sell: {ratings.get('sell', 0)}")
+                parts.append(f"- Strong Sell: {ratings.get('strong_sell', 0)}")
+                parts.append("")
+                parts.append(f"**Summary:** {ratings.get('bullish_pct', 0):.0f}% Bullish, {ratings.get('bearish_pct', 0):.0f}% Bearish")
+                if analyst_data.get("consensus_rating"):
+                    parts.append(f"**Consensus Rating:** {analyst_data['consensus_rating']}")
+                parts.append("")
+
+            parts.append(f"Source: {analyst_data.get('source', 'FMP Analyst Consensus API')}")
+            parts.append("")
+
+        # =====================================================================
+        # SECTION 10: INSIDER TRADING (Phase 2)
+        # =====================================================================
+        if insider_data:
+            parts.extend([
+                "=" * 60,
+                "## INSIDER TRADING (FMP API)",
+                "=" * 60,
+                "",
+            ])
+
+            parts.append(f"**Period:** Last {insider_data.get('period', '90 days')}")
+            parts.append(f"**Total Trades:** {insider_data.get('total_trades', 0)}")
+            parts.append("")
+
+            # Buy/Sell activity
+            buy = insider_data.get("buy_activity", {})
+            sell = insider_data.get("sell_activity", {})
+            net = insider_data.get("net_activity", {})
+
+            parts.append("**ACTIVITY SUMMARY:**")
+            parts.append(f"- Shares Bought: {buy.get('shares', 0):,.0f} (${buy.get('value', 0):,.0f})")
+            parts.append(f"- Shares Sold: {sell.get('shares', 0):,.0f} (${sell.get('value', 0):,.0f})")
+            parts.append(f"- Net Shares: {net.get('shares', 0):+,.0f}")
+            parts.append(f"- Net Value: ${net.get('value', 0):+,.0f}")
+            parts.append(f"- **Insider Sentiment: {net.get('sentiment', 'Neutral')}**")
+            parts.append("")
+
+            # Notable trades
+            notable = insider_data.get("notable_trades", [])
+            if notable:
+                parts.append("**NOTABLE TRADES:**")
+                for trade in notable[:3]:
+                    parts.append(f"- {trade.get('date')}: {trade.get('insider', 'Unknown')} "
+                               f"{trade.get('type')} {trade.get('shares', 0):,.0f} shares at ${trade.get('price', 0):.2f}")
+                parts.append("")
+
+            parts.append(f"Source: {insider_data.get('source', 'FMP Insider Trading API')}")
+            parts.append("")
+
+        # =====================================================================
+        # SECTION 11: SEASONAL ANALYSIS (Phase 3)
+        # =====================================================================
+        if seasonal_data:
+            parts.extend([
+                "=" * 60,
+                "## SEASONAL ANALYSIS (Historical Patterns)",
+                "=" * 60,
+                "",
+            ])
+
+            years = seasonal_data.get("years_analyzed", 0)
+            parts.append(f"**Analysis Period:** {years} years of historical data")
+            parts.append("")
+
+            # Best and worst months
+            best = seasonal_data.get("best_month")
+            worst = seasonal_data.get("worst_month")
+
+            if best:
+                parts.append(f"**BEST MONTH:** {best.get('month')} (Avg: {best.get('avg_return', 0):+.1f}%, Win Rate: {best.get('win_rate', 0):.0f}%)")
+            if worst:
+                parts.append(f"**WORST MONTH:** {worst.get('month')} (Avg: {worst.get('avg_return', 0):+.1f}%, Win Rate: {worst.get('win_rate', 0):.0f}%)")
+            parts.append("")
+
+            # Quarterly patterns
+            quarterly = seasonal_data.get("quarterly_patterns", {})
+            if quarterly:
+                parts.append("**QUARTERLY PATTERNS:**")
+                for q, data in quarterly.items():
+                    parts.append(f"- {q}: Avg {data.get('avg_return', 0):+.1f}%, Win Rate {data.get('win_rate', 0):.0f}%")
+                parts.append("")
+
+            parts.append("⚠️ Note: Past seasonal patterns do not guarantee future performance.")
+            parts.append(f"Source: {seasonal_data.get('source', 'Calculated from FMP Historical Data')}")
+            parts.append("")
+
+        # =====================================================================
+        # SECTION 12: WEB SEARCH RESULTS (Title + URL + Content format)
         # =====================================================================
         if web_data and web_data.get("citations"):
             parts.extend([
@@ -1335,22 +2250,27 @@ class SynthesisHandlerV2(LoggerMixin):
             "1. Technical Analysis - Show: RSI, MACD, ADX, MAs with values → interpretation",
             "2. Market Position - Show: RS (21d/63d/126d), Sector vs Industry (GICS distinction)",
             "3. Risk Analysis - Show: ATR, VaR, Volatility → stop-loss calculation with formula",
-            "4. Sentiment Analysis - Show: Score, sample size, source, time period",
+            "4. Sentiment Analysis - Show: Score, sample size, confidence level, source",
             "5. Fundamental Analysis - Show: Valuation metrics, peer table (use correct industry peers)",
-            "6. Growth Investor Perspective - Revenue/EPS growth focus, TAM, competitive position",
-            "7. Dividend/Value Investor Perspective - Yield, payout ratio, margin of safety",
-            "8. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
-            "9. Scenario Analysis - Show: Bull/Base/Bear with price targets and triggers",
-            "10. News & Catalysts - With inline citations (Title + URL) + Sources section",
-            "11. Executive Summary - Key DATA POINTS from each section",
-            "12. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
+            "6. Analyst Consensus - Price targets, buy/sell ratings, analyst count",
+            "7. Insider Trading - Net buy/sell activity, notable trades, insider sentiment",
+            "8. Growth Investor Perspective - Revenue/EPS growth focus, TAM, competitive position",
+            "9. Dividend/Value Investor Perspective - Yield, payout ratio, margin of safety",
+            "10. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
+            "11. Scenario Analysis - Show: Bull/Base/Bear with probability methodology explained",
+            "12. Seasonal Patterns - Historical monthly/quarterly performance patterns",
+            "13. News & Catalysts - With inline citations (Title + URL) + Sources section",
+            "14. Executive Summary - Key DATA POINTS from each section",
+            "15. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
             "",
             "REMINDERS:",
             "- NO scoring, NO ratings - only raw data and interpretation",
             "- Stop-loss MUST show calculation: 'Stop = Entry - (2×ATR=$X) = $Y'",
             "- Sector is GICS (11 sectors), Industry is sub-classification",
-            "- Cite web sources inline",
+            "- Cite web sources inline with [Title](URL) format",
             "- Include holder-specific rules (reduce/exit triggers with logic)",
+            "- Show sample sizes for sentiment and analyst data",
+            "- Explain probability methodology for scenario analysis",
         ])
 
         return "\n".join(parts)
@@ -1465,18 +2385,37 @@ class SynthesisHandlerV2(LoggerMixin):
         return lines
 
     def _format_position_raw_data(self, raw: Dict[str, Any], sector_ctx: Dict[str, Any]) -> List[str]:
-        """Format position raw data using CORRECT structure from get_relative_strength."""
+        """
+        Format position raw data using CORRECT structure from get_relative_strength.
+
+        Phase 1 Improvement: Uses validate_gics_classification for proper sector validation.
+        """
         lines = ["### RAW POSITION METRICS:"]
         lines.append("")
 
-        # GICS Classification - CRITICAL DISTINCTION
+        # GICS Classification - CRITICAL DISTINCTION with validation
         if sector_ctx:
             sector = sector_ctx.get('stock_sector', 'N/A')
             industry = sector_ctx.get('stock_industry', 'N/A')
 
+            # Validate GICS classification
+            gics_result = validate_gics_classification(sector, industry)
+            normalized_sector = gics_result["sector"]
+            is_valid = gics_result["is_valid_gics"]
+
             lines.append("**GICS Classification:**")
-            lines.append(f"- SECTOR (1 of 11 GICS): {sector}")
+            lines.append(f"- SECTOR (1 of 11 GICS): {normalized_sector}")
+            if not is_valid:
+                lines.append(f"  ⚠️ Original: '{sector}' (not standard GICS)")
             lines.append(f"- INDUSTRY (sub-category): {industry}")
+
+            # Add validation warnings if any
+            if gics_result["warnings"]:
+                lines.append("")
+                lines.append("⚠️ **Classification Notes:**")
+                for warning in gics_result["warnings"]:
+                    lines.append(f"  - {warning}")
+
             lines.append("")
 
             # Sector ranking
@@ -1488,6 +2427,8 @@ class SynthesisHandlerV2(LoggerMixin):
             lines.append(f"- Rank: #{sector_rank}/{total_sectors}")
             lines.append(f"- Change: {sector_change:+.2f}%")
             lines.append(f"- Status: {sector_ctx.get('sector_status', 'N/A')}")
+            lines.append("")
+            lines.append("⚠️ Note: 1-day ranking ≠ multi-timeframe RS analysis")
             lines.append("")
 
         # RS Data - from raw which has the structure from get_relative_strength
@@ -1603,7 +2544,11 @@ class SynthesisHandlerV2(LoggerMixin):
         return lines
 
     def _format_sentiment_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format sentiment raw data using CORRECT structure from get_sentiment."""
+        """
+        Format sentiment raw data using CORRECT structure from get_sentiment.
+
+        Phase 3 Improvement: Includes sample size weighting and confidence levels.
+        """
         lines = ["### RAW SENTIMENT METRICS:"]
         lines.append("")
 
@@ -1615,7 +2560,11 @@ class SynthesisHandlerV2(LoggerMixin):
         score = sentiment_data.get("sentiment_score") or sentiment_data.get("score")
         label = sentiment_data.get("sentiment_label") or sentiment_data.get("label")
 
+        # Get sample size for confidence calculation
+        data_points = sentiment_data.get("data_points_analyzed") or sentiment_data.get("data_count", 0)
+
         if score is not None:
+            # Classification with score range
             if score > 0.5:
                 classification = "STRONGLY BULLISH (>0.5)"
             elif score > 0.2:
@@ -1633,20 +2582,43 @@ class SynthesisHandlerV2(LoggerMixin):
                 lines.append(f"- Label: {label}")
             lines.append("")
 
-        # Data points analyzed
-        data_points = sentiment_data.get("data_points_analyzed") or sentiment_data.get("data_count", 0)
-        if data_points:
-            lines.append(f"**Sample Size: {data_points} data points**")
+            # Phase 3: Sample size weighting and confidence
+            confidence = self._calculate_sentiment_confidence(data_points, score)
+            lines.append(f"**Confidence Level: {confidence['level']}** ({confidence['score']:.0f}/100)")
+            lines.append(f"- Sample Size: {data_points} data points")
+            lines.append(f"- {confidence['explanation']}")
             lines.append("")
+
+            # Warning for low sample size
+            if data_points < 10:
+                lines.append("⚠️ **LOW SAMPLE SIZE WARNING:**")
+                lines.append("   - Less than 10 data points analyzed")
+                lines.append("   - Sentiment may not be statistically significant")
+                lines.append("   - Consider this as directional indicator only")
+                lines.append("")
+            elif data_points < 30:
+                lines.append("⚠️ **MODERATE SAMPLE SIZE:**")
+                lines.append("   - 10-30 data points may show sentiment direction")
+                lines.append("   - Confidence increases with more data points")
+                lines.append("")
 
         # Social sentiment breakdown
         social = sentiment_data.get("social_breakdown", {})
         if social:
             lines.append("**Social Media Breakdown:**")
-            if social.get("stocktwits"):
-                lines.append(f"- StockTwits: {social['stocktwits']:.3f}")
-            if social.get("twitter"):
-                lines.append(f"- Twitter: {social['twitter']:.3f}")
+            stocktwits = social.get("stocktwits")
+            twitter = social.get("twitter")
+
+            if stocktwits is not None:
+                st_label = "Bullish" if stocktwits > 0.1 else "Bearish" if stocktwits < -0.1 else "Neutral"
+                lines.append(f"- StockTwits: {stocktwits:.3f} ({st_label})")
+            if twitter is not None:
+                tw_label = "Bullish" if twitter > 0.1 else "Bearish" if twitter < -0.1 else "Neutral"
+                lines.append(f"- Twitter/X: {twitter:.3f} ({tw_label})")
+
+            # Source attribution
+            lines.append("")
+            lines.append("Source: Social sentiment APIs (last 7 days)")
             lines.append("")
 
         # News data
@@ -1654,9 +2626,76 @@ class SynthesisHandlerV2(LoggerMixin):
             articles = news_data if isinstance(news_data, list) else news_data.get("articles", [])
             if articles:
                 lines.append(f"**News Articles: {len(articles)} analyzed**")
+
+                # Calculate news sentiment if available
+                positive = sum(1 for a in articles if a.get("sentiment", "").lower() == "positive")
+                negative = sum(1 for a in articles if a.get("sentiment", "").lower() == "negative")
+                neutral = len(articles) - positive - negative
+
+                if len(articles) > 0:
+                    lines.append(f"- Positive: {positive} ({positive/len(articles)*100:.0f}%)")
+                    lines.append(f"- Negative: {negative} ({negative/len(articles)*100:.0f}%)")
+                    lines.append(f"- Neutral: {neutral} ({neutral/len(articles)*100:.0f}%)")
                 lines.append("")
 
         return lines
+
+    def _calculate_sentiment_confidence(self, sample_size: int, score: float) -> Dict[str, Any]:
+        """
+        Calculate confidence level for sentiment based on sample size.
+
+        Phase 3: Proper statistical weighting for sentiment confidence.
+
+        Args:
+            sample_size: Number of data points analyzed
+            score: Sentiment score (-1 to 1)
+
+        Returns:
+            Dict with confidence level, score, and explanation
+        """
+        # Base confidence from sample size (0-70 points)
+        if sample_size >= 100:
+            size_score = 70
+        elif sample_size >= 50:
+            size_score = 55
+        elif sample_size >= 30:
+            size_score = 40
+        elif sample_size >= 10:
+            size_score = 25
+        else:
+            size_score = 10
+
+        # Bonus for strong/consistent signal (0-30 points)
+        # Strong signals (far from 0) with sufficient sample size get bonus
+        signal_strength = abs(score)
+        if sample_size >= 20 and signal_strength > 0.3:
+            signal_bonus = min(30, int(signal_strength * 50))
+        else:
+            signal_bonus = 0
+
+        total_score = size_score + signal_bonus
+
+        # Determine confidence level
+        if total_score >= 80:
+            level = "HIGH"
+            explanation = f"Strong signal ({score:.2f}) with adequate sample ({sample_size})"
+        elif total_score >= 50:
+            level = "MODERATE"
+            explanation = f"Reasonable sample size ({sample_size}), signal strength: {signal_strength:.2f}"
+        elif total_score >= 30:
+            level = "LOW"
+            explanation = f"Limited data ({sample_size} points) - treat as directional only"
+        else:
+            level = "VERY LOW"
+            explanation = f"Insufficient data ({sample_size} points) - sentiment unreliable"
+
+        return {
+            "level": level,
+            "score": total_score,
+            "explanation": explanation,
+            "sample_size": sample_size,
+            "signal_strength": signal_strength
+        }
 
     def _format_fundamental_raw_data(self, raw: Dict[str, Any]) -> List[str]:
         """Format fundamental raw data with VALUATION ASSUMPTIONS."""
