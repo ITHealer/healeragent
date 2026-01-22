@@ -42,115 +42,102 @@ logger = logging.getLogger(__name__)
 # SYSTEM PROMPT (ENGLISH ONLY - Production)
 # =============================================================================
 
-CONSOLIDATED_SYSTEM_PROMPT = """You are a senior investment analyst creating a comprehensive investment report.
+CONSOLIDATED_SYSTEM_PROMPT = """You are a senior investment analyst creating a comprehensive, data-driven investment report.
 
-## CRITICAL RULES (MUST FOLLOW)
+## CRITICAL RULES - DATA ACCURACY FIRST
 
-### 1. SCORING IS BINDING
-The composite score and recommendation are PRE-CALCULATED and BINDING. You MUST:
-- Use the EXACT recommendation (BUY/HOLD/SELL) from the scoring data
-- NOT contradict the scoring in any section
-- Align all analysis with the given score
+### 1. NO SCORING - ONLY RAW DATA
+Do NOT invent or display any composite scores, ratings, or numeric scoring.
+Present ONLY the RAW DATA metrics provided and let the reader interpret.
+If scoring data appears in input, IGNORE IT and focus on actual metrics.
 
-### 2. TRADING PLAN CONSISTENCY
-Entry, Stop-Loss, and Targets MUST be mathematically consistent:
+### 2. INPUT → OUTPUT FORMAT (REQUIRED FOR EACH SECTION)
+Each analysis section MUST show:
+- **INPUTS**: List the actual data values used (e.g., RSI=45.2, ADX=18.3)
+- **ANALYSIS**: Your interpretation of the data
+- **SIGNALS**: What the data indicates (bullish/bearish/neutral and WHY)
 
-**If Score >= 65 (BUY/STRONG BUY) - Use BREAKOUT SYSTEM:**
-- Entry: ABOVE current price (breakout confirmation)
-- Stop: Based on ATR or swing low FROM ENTRY PRICE
-- Calculate risk % from ENTRY price, not current price
+Example:
+```
+### Technical Analysis
+**Inputs:** RSI(14)=45.2, MACD=-0.85, ADX=18.3, SMA50=$142, Current=$138
+**Analysis:** RSI in neutral zone (30-70), MACD below signal line, ADX shows weak trend
+**Signal:** NEUTRAL - Conflicting signals with weak trend strength
+```
 
-**If Score 45-64 (HOLD) - Use WAIT & WATCH:**
-- NO entry recommendation (watchlist only)
-- Define CONDITIONS for future entry
-- Provide specific price levels for upgrade/downgrade
+### 3. STOP-LOSS WITH STRUCTURE/ATR LOGIC (CRITICAL)
+When recommending stop-loss, ALWAYS explain the logic:
+- Show the calculation: "Stop = Entry - (2 × ATR)" or "Stop = below swing low at $X"
+- State the ATR value used
+- Calculate percentage from ENTRY price, not current price
+- Example: "ATR=$5.20, Entry=$185, Stop=$185-(2×5.20)=$174.60 (5.6% risk)"
 
-**If Score < 45 (SELL) - Use EXIT/AVOID:**
-- For holders: Exit strategy with specific levels
-- For new investors: AVOID
-- Explain reasoning with data
+### 4. SECTOR vs INDUSTRY (CRITICAL DISTINCTION)
+- **Sector**: One of 11 GICS sectors (e.g., Information Technology, Healthcare)
+- **Industry**: Sub-classification (e.g., Semiconductors, Software)
+- State ranking methodology: "FMP Sector Performance (1-day)"
+- Note limitation: "1-day ranking ≠ multi-timeframe RS analysis"
+- For RS, prefer multi-day data if available (21d/63d/126d)
 
-### 3. STOP-LOSS CALCULATION (CRITICAL)
-Stop-loss percentage MUST be calculated FROM ENTRY PRICE, not current price:
-- Example: If Entry = $185 and Stop = $169, then risk = (185-169)/185 = 8.6%
-- NEVER say "5% from current price" if entry is different from current price
+### 5. PEER COMPARISON - USE CORRECT PEERS
+For Semiconductors: Compare with AMD, AVGO, TSM, INTC, MRVL, QCOM
+For other sectors: Use same industry/sub-industry peers
+Do NOT mix mega-cap tech (AAPL, MSFT, GOOGL) as "peers" for semis.
+Note: "P/E may be distorted for companies with low/negative EPS"
 
-### 4. CATALYST DATES (CRITICAL)
-- Include SPECIFIC dates for earnings from provided data
-- Format: "Earnings: Feb 25, 2026 (AMC)" - use EXACT date from data
-- If no date available, state "Not yet announced"
-- Source: FMP Earnings Calendar API
+### 6. SENTIMENT - SHOW SAMPLE SIZE
+Always state:
+- Number of articles/posts analyzed
+- Data source (e.g., "FMP News API", "Social Sentiment API")
+- Time period (e.g., "last 7 days")
 
-### 5. PEER COMPARISON
-- Include comparison table when peer data is provided
-- Show P/E, P/S, Revenue Growth, Market Cap
-- ADD NOTE: "P/E may be distorted for companies with low/volatile EPS"
-- Compare target's valuation position vs peers
+### 7. VALUATION - SHOW ASSUMPTIONS
+For Graham/DCF values, state assumptions if available:
+- Graham: EPS used, growth rate assumed
+- DCF: WACC, terminal growth, FCF base
+- Note: "Intrinsic value is model-dependent; actual value may differ"
 
-### 6. TECHNICAL SCORE CONSISTENCY
-Technical score MUST match the indicators:
-- ADX < 15 (weak trend): Technical score should be 50-65 max
-- ADX 15-25 (moderate trend): Technical score 60-75
-- ADX > 25 (strong trend): Technical score can be 70-85
-- If MACD bearish + ADX < 15: Technical should be < 60
-- Explain score rationale if indicators seem contradictory
-
-### 7. TRADING PLAN FOR HOLDERS (CRITICAL)
-Always include specific rules for people ALREADY holding the stock:
-- Reduce trigger: specific price level to reduce 50% position
-- Exit trigger: specific price level to exit completely
-- Trailing stop: how to adjust stop as price moves
-- Add trigger: when it's OK to add to position (if applicable)
-
-### 8. SECTOR RANKING METHODOLOGY
-When mentioning sector rank:
-- State the ranking system: "FMP Sector Performance (1-day ranking)"
-- Note the limitation: "This is 1-DAY ranking, different from multi-timeframe RS"
-- Provide context: is sector leading, lagging, or neutral?
+### 8. EARNINGS CALENDAR
+- Use EXACT date from provided data
+- Format: "Feb 25, 2026 (AMC)" or "Not yet announced"
+- Show historical beat rate with sample size: "Beat rate: 80% (last 8 quarters)"
 
 ### 9. WEB CITATIONS (MANDATORY)
-When using web search data:
 - INLINE citations: "Statement [Source Name](URL)"
-- Every claim from web search needs a citation
-- Include "## Sources" section at end with numbered list
+- Include "## Sources" section at end
 
-### 10. SCENARIO ANALYSIS (REQUIRED)
-Include Bull/Base/Bear scenarios with:
-- Price targets for each scenario
-- Probability estimates
-- Key triggers for each scenario
+### 10. TRADING RULES - HOLDER vs NEW INVESTOR
+Separate recommendations:
+**NEW INVESTORS:**
+- Entry conditions (what must happen before entering)
+- Entry price zone with rationale
 
-### 11. FAIR VALUE ASSESSMENT (REQUIRED)
-Compare current price to intrinsic value:
-- Graham Value (if available)
-- DCF Value (if available)
-- State: Premium/Discount to fair value
-- Margin of safety calculation
+**EXISTING HOLDERS:**
+- Reduce trigger: price level + ATR/structure logic
+- Exit trigger: price level + logic
+- Trailing stop methodology
 
-## OUTPUT FORMAT (STRUCTURED)
+## OUTPUT FORMAT
 
-Generate report with these sections IN ORDER:
+Generate report with INPUT → OUTPUT format for each section:
 
-### PART 1: DATA ANALYSIS (5 Steps)
-1. **Technical Analysis** - Trend, momentum, key levels, signals
-2. **Market Position** - RS vs benchmark, sector context
-3. **Risk Analysis** - Volatility, VaR, risk metrics
-4. **Sentiment Analysis** - Sentiment score, news themes
-5. **Fundamental Analysis** - Valuation, growth, peer comparison
+### PART 1: 5-STEP DATA ANALYSIS
+1. **Technical Analysis** - Show: RSI, MACD, ADX, MAs, Volume with actual values
+2. **Market Position** - Show: RS values (21d/63d/126d), Sector(GICS)/Industry separation
+3. **Risk Analysis** - Show: ATR, VaR, Volatility with calculations for stops
+4. **Sentiment Analysis** - Show: Score, sample size, source, time period
+5. **Fundamental Analysis** - Show: Valuation metrics, peer table (correct peers)
 
-### PART 2: INVESTOR-FOCUSED ANALYSIS
-6. **Fair Value Assessment** - Intrinsic value vs current price
-7. **Scenario Analysis** - Bull/Base/Bear with probabilities
+### PART 2: INVESTOR ANALYSIS
+6. **Fair Value Assessment** - Show assumptions, note model limitations
+7. **Scenario Analysis** - Bull/Base/Bear with price targets and triggers
 
 ### PART 3: NEWS & CATALYSTS
-8. **News & Catalysts** - Latest news with inline citations + Sources section
+8. **News & Catalysts** - Inline citations + Sources section
 
-### PART 4: CONCLUSION & ACTION
-9. **Executive Summary** - Key highlights from each step
-10. **Final Recommendation** - Action strategy for:
-    - NEW investors (no position)
-    - EXISTING holders (have position)
-    - Conditions to upgrade/downgrade recommendation
+### PART 4: CONCLUSION
+9. **Executive Summary** - Key data points from each section
+10. **Action Plan** - Separate for NEW vs EXISTING investors with ATR/structure logic
 
 RESPOND IN THE LANGUAGE SPECIFIED BY target_language PARAMETER.
 """
@@ -348,10 +335,18 @@ class SynthesisHandlerV2(LoggerMixin):
             consolidated_prompt += f"\n\n{self._format_trading_plan_section(trading_plan)}"
             consolidated_prompt += f"\n\n{self._format_scenario_section(scenario_analysis)}"
 
+            # =================================================================
+            # LOG STEP DATA FOR DEBUGGING/AUDIT
+            # =================================================================
+            self._log_step_data_summary(symbol, step_data, earnings_data, peer_data)
+
             messages = [
                 {"role": "system", "content": CONSOLIDATED_SYSTEM_PROMPT},
                 {"role": "user", "content": consolidated_prompt}
             ]
+
+            # Log prompt length for monitoring
+            self.logger.info(f"[SynthesisV2] {symbol} - Prompt length: {len(consolidated_prompt)} chars")
 
             # Stream response
             full_content = []
@@ -1048,46 +1043,14 @@ class SynthesisHandlerV2(LoggerMixin):
             f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             f"Target Language: {target_language.upper()}",
             "",
+            "IMPORTANT: Present RAW DATA with INPUT → OUTPUT format.",
+            "DO NOT create or display any composite scores or ratings.",
+            "Let the data speak for itself - reader interprets.",
+            "",
         ]
 
         # =====================================================================
-        # SECTION 1: BINDING SCORING
-        # =====================================================================
-        rec = scoring.get("recommendation", {})
-        dist = rec.get("distribution", {})
-
-        parts.extend([
-            "=" * 60,
-            "## BINDING SCORING DATA (DO NOT CONTRADICT)",
-            "=" * 60,
-            "",
-            f"Composite Score: {scoring.get('composite_score', 'N/A')}/100",
-            f"Recommendation: {rec.get('action', 'HOLD')} (BINDING)",
-            f"Distribution: BUY {dist.get('buy', 0)}% | HOLD {dist.get('hold', 0)}% | SELL {dist.get('sell', 0)}%",
-            f"Confidence: {rec.get('confidence', 'N/A')}%",
-            f"Time Horizon: {rec.get('time_horizon', 'N/A')}",
-            "",
-        ])
-
-        # Component scores
-        parts.append("### Component Scores:")
-        components = scoring.get("component_scores", {})
-        for name, data in components.items():
-            parts.append(f"- {name.title()}: {data.get('score', 'N/A')}/100 (weight: {data.get('weight', 'N/A')}, confidence: {data.get('confidence', 'N/A')})")
-        parts.append("")
-
-        # Key factors
-        key_factors = scoring.get("key_factors", [])
-        if key_factors:
-            bullish = [f["factor"] for f in key_factors if f.get("impact") == "bullish"]
-            bearish = [f["factor"] for f in key_factors if f.get("impact") == "bearish"]
-            parts.append("### Key Factors:")
-            parts.append(f"Bullish: {', '.join(bullish) if bullish else 'None'}")
-            parts.append(f"Bearish: {', '.join(bearish) if bearish else 'None'}")
-            parts.append("")
-
-        # =====================================================================
-        # SECTION 2: TECHNICAL DATA (RAW METRICS)
+        # SECTION 1: TECHNICAL DATA (RAW METRICS)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1176,13 +1139,27 @@ class SynthesisHandlerV2(LoggerMixin):
         # SECTION 7: PEER COMPARISON (DYNAMIC FMP API)
         # =====================================================================
         if peer_data and peer_data.get("peers"):
+            industry = peer_data.get('industry', 'N/A')
+            sector = peer_data.get('sector', 'N/A')
+
             parts.extend([
                 "=" * 60,
                 "## PEER COMPARISON (FMP stock_peers API)",
                 "=" * 60,
                 "",
-                f"Target: {symbol} | Sector: {peer_data.get('sector', 'N/A')} | Industry: {peer_data.get('industry', 'N/A')}",
+                f"**Target:** {symbol}",
+                f"**GICS Sector:** {sector}",
+                f"**Industry:** {industry}",
                 "",
+            ])
+
+            # Add industry-specific peer guidance
+            if "semiconductor" in industry.lower():
+                parts.append("**CORRECT SEMICONDUCTOR PEERS:** AMD, AVGO, TSM, INTC, MRVL, QCOM")
+                parts.append("⚠️ Do NOT compare with mega-cap tech (AAPL, MSFT, GOOGL) as 'peers'")
+                parts.append("")
+
+            parts.extend([
                 "| Symbol | P/E (TTM) | P/S (TTM) | EV/EBITDA | ROE % | Rev Growth % | Market Cap |",
                 "|--------|-----------|-----------|-----------|-------|--------------|------------|",
             ])
@@ -1203,8 +1180,11 @@ class SynthesisHandlerV2(LoggerMixin):
 
             parts.extend([
                 "",
-                "NOTE: P/E ratios may be distorted for companies with low or volatile EPS.",
-                f"Source: {peer_data.get('source', 'FMP API')}",
+                "**IMPORTANT NOTES:**",
+                "- P/E ratios may be distorted for companies with low or volatile EPS",
+                "- ROE > 50% may be distorted by buybacks, leverage, or one-time items",
+                "- Compare within SAME INDUSTRY, not just same sector",
+                f"Source: {peer_data.get('source', 'FMP stock_peers API')}",
                 "",
             ])
 
@@ -1220,17 +1200,23 @@ class SynthesisHandlerV2(LoggerMixin):
             ])
 
             if earnings_data.get("next_earnings_date"):
-                parts.append(f"NEXT EARNINGS: {earnings_data['next_earnings_date']} ({earnings_data.get('earnings_time', 'TBD')})")
+                parts.append(f"**NEXT EARNINGS: {earnings_data['next_earnings_date']} ({earnings_data.get('earnings_time', 'TBD')})**")
                 parts.append(f"Fiscal Quarter: {earnings_data.get('fiscal_quarter', 'N/A')}")
                 if earnings_data.get("eps_estimated"):
                     parts.append(f"EPS Estimate: ${earnings_data['eps_estimated']:.2f}")
             else:
                 parts.append("Next earnings date: Not yet announced")
 
+            # Beat rate WITH SAMPLE SIZE
             if earnings_data.get("beat_rate") is not None:
-                parts.append(f"Historical Beat Rate: {earnings_data['beat_rate']*100:.0f}%")
+                beat_rate = earnings_data['beat_rate'] * 100
+                quarters_analyzed = earnings_data.get('quarters_analyzed', 8)
+                parts.append(f"Historical Beat Rate: {beat_rate:.0f}% (last {quarters_analyzed} quarters)")
+                parts.append(f"  → Sample: {quarters_analyzed} earnings reports analyzed")
 
-            parts.append(f"Source: {earnings_data.get('source', 'FMP API')}")
+            parts.append(f"Source: {earnings_data.get('source', 'FMP Earnings Calendar API')}")
+            parts.append("")
+            parts.append("⚠️ Use EXACT date from data. Do not invent or estimate earnings dates.")
             parts.append("")
 
         # =====================================================================
@@ -1261,7 +1247,7 @@ class SynthesisHandlerV2(LoggerMixin):
             parts.append("")
 
         # =====================================================================
-        # SECTION 10: OUTPUT INSTRUCTIONS
+        # OUTPUT INSTRUCTIONS
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1270,23 +1256,29 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
             f"Generate a comprehensive investment report in {target_language.upper()}.",
             "",
-            "Required sections in order:",
-            "1. Technical Analysis - Use metrics above",
-            "2. Market Position - Include sector ranking methodology",
-            "3. Risk Analysis - Include VaR, ATR, volatility",
-            "4. Sentiment Analysis - Include sentiment score interpretation",
-            "5. Fundamental Analysis - Include peer comparison table",
-            "6. Fair Value Assessment - Compare current price to Graham/DCF values",
-            "7. Scenario Analysis - Bull/Base/Bear with probabilities",
-            "8. News & Catalysts - With inline citations + Sources section",
-            "9. Executive Summary - Key highlights from each section",
-            "10. Final Recommendation - For NEW and EXISTING investors",
+            "CRITICAL: Use INPUT → OUTPUT format for each section:",
+            "- Show actual data values (RSI=X, ADX=Y, ATR=$Z)",
+            "- Then provide analysis based on those values",
+            "- DO NOT invent any composite scores or ratings",
             "",
-            "CRITICAL REMINDERS:",
-            f"- Recommendation is {rec.get('action', 'HOLD')} - DO NOT contradict",
-            "- Use EXACT values from trading plan and scenarios",
+            "Required sections in order:",
+            "1. Technical Analysis - Show: RSI, MACD, ADX, MAs with values → interpretation",
+            "2. Market Position - Show: RS (21d/63d/126d), Sector vs Industry (GICS distinction)",
+            "3. Risk Analysis - Show: ATR, VaR, Volatility → stop-loss calculation with formula",
+            "4. Sentiment Analysis - Show: Score, sample size, source, time period",
+            "5. Fundamental Analysis - Show: Valuation metrics, peer table (use correct industry peers)",
+            "6. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
+            "7. Scenario Analysis - Show: Bull/Base/Bear with price targets and triggers",
+            "8. News & Catalysts - With inline citations + Sources section",
+            "9. Executive Summary - Key DATA POINTS from each section",
+            "10. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
+            "",
+            "REMINDERS:",
+            "- NO scoring, NO ratings - only raw data and interpretation",
+            "- Stop-loss MUST show calculation: 'Stop = Entry - (2×ATR=$X) = $Y'",
+            "- Sector is GICS (11 sectors), Industry is sub-classification",
             "- Cite web sources inline",
-            "- Include holder-specific rules (reduce/exit triggers)",
+            "- Include holder-specific rules (reduce/exit triggers with logic)",
         ])
 
         return "\n".join(parts)
@@ -1296,13 +1288,14 @@ class SynthesisHandlerV2(LoggerMixin):
     # =========================================================================
 
     def _format_technical_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format technical raw data as structured metrics."""
-        lines = []
+        """Format technical raw data as structured INPUT metrics for LLM."""
+        lines = ["### TECHNICAL INPUTS (Use these exact values in analysis):"]
+        lines.append("")
 
         # Price data
         if raw.get("price_data"):
             pd = raw["price_data"]
-            lines.append("### Price Data:")
+            lines.append("**Price Data:**")
             lines.append(f"- Current Price: ${pd.get('close', 'N/A')}")
             lines.append(f"- Day Change: {pd.get('change_percent', 'N/A')}%")
             lines.append(f"- 52W High: ${pd.get('high_52w', 'N/A')}")
@@ -1312,44 +1305,73 @@ class SynthesisHandlerV2(LoggerMixin):
         # Moving Averages
         if raw.get("moving_averages"):
             ma = raw["moving_averages"]
-            lines.append("### Moving Averages:")
+            lines.append("**Moving Averages:**")
             lines.append(f"- SMA20: ${ma.get('sma20', 'N/A')}")
             lines.append(f"- SMA50: ${ma.get('sma50', 'N/A')}")
             lines.append(f"- SMA200: ${ma.get('sma200', 'N/A')}")
             lines.append(f"- Price vs SMA200: {'Above' if ma.get('above_sma200') else 'Below'}")
             lines.append("")
 
-        # Momentum Indicators
+        # Momentum Indicators - CRITICAL for analysis
         if raw.get("momentum"):
             m = raw["momentum"]
-            lines.append("### Momentum Indicators:")
-            lines.append(f"- RSI(14): {m.get('rsi', 'N/A')}")
-            lines.append(f"- MACD: {m.get('macd', 'N/A')}")
-            lines.append(f"- MACD Signal: {m.get('macd_signal', 'N/A')}")
-            lines.append(f"- MACD Histogram: {m.get('macd_histogram', 'N/A')}")
+            rsi = m.get('rsi', 0)
+            macd = m.get('macd', 0)
+            macd_signal = m.get('macd_signal', 0)
+            macd_hist = m.get('macd_histogram', 0)
+
+            # Pre-calculate interpretation hints
+            rsi_zone = "Overbought (>70)" if rsi > 70 else "Oversold (<30)" if rsi < 30 else "Neutral (30-70)"
+            macd_trend = "Bullish (MACD > Signal)" if macd > macd_signal else "Bearish (MACD < Signal)"
+
+            lines.append("**Momentum Indicators (CITE THESE VALUES):**")
+            lines.append(f"- RSI(14): {rsi} → Zone: {rsi_zone}")
+            lines.append(f"- MACD: {macd}")
+            lines.append(f"- MACD Signal: {macd_signal}")
+            lines.append(f"- MACD Histogram: {macd_hist} → Trend: {macd_trend}")
             lines.append("")
 
-        # Trend
+        # Trend - ADX is critical
         if raw.get("trend"):
             t = raw["trend"]
-            lines.append("### Trend Indicators:")
-            lines.append(f"- ADX: {t.get('adx', 'N/A')} (Trend Strength: {'Strong' if t.get('adx', 0) > 25 else 'Weak' if t.get('adx', 0) < 15 else 'Moderate'})")
-            lines.append(f"- +DI: {t.get('plus_di', 'N/A')}")
-            lines.append(f"- -DI: {t.get('minus_di', 'N/A')}")
+            adx = t.get('adx', 0)
+            plus_di = t.get('plus_di', 0)
+            minus_di = t.get('minus_di', 0)
+
+            # Pre-calculate interpretation
+            if adx < 15:
+                trend_strength = "WEAK (ADX<15: No clear trend)"
+            elif adx < 25:
+                trend_strength = "MODERATE (ADX 15-25: Developing trend)"
+            else:
+                trend_strength = "STRONG (ADX>25: Established trend)"
+
+            di_direction = "Bullish (+DI > -DI)" if plus_di > minus_di else "Bearish (-DI > +DI)"
+
+            lines.append("**Trend Indicators (CITE THESE VALUES):**")
+            lines.append(f"- ADX: {adx} → {trend_strength}")
+            lines.append(f"- +DI: {plus_di}")
+            lines.append(f"- -DI: {minus_di} → Direction: {di_direction}")
             lines.append("")
 
         # Volume
         if raw.get("volume"):
             v = raw["volume"]
-            lines.append("### Volume:")
-            lines.append(f"- Current Volume: {v.get('volume', 'N/A'):,}" if isinstance(v.get('volume'), (int, float)) else f"- Current Volume: {v.get('volume', 'N/A')}")
-            lines.append(f"- Average Volume: {v.get('avg_volume', 'N/A'):,}" if isinstance(v.get('avg_volume'), (int, float)) else f"- Average Volume: {v.get('avg_volume', 'N/A')}")
-            lines.append(f"- RVOL: {v.get('rvol', 'N/A')}x")
+            vol = v.get('volume', 0)
+            avg_vol = v.get('avg_volume', 0)
+            rvol = v.get('rvol', 0)
+
+            vol_status = "High (RVOL>1.5)" if rvol > 1.5 else "Low (RVOL<0.7)" if rvol < 0.7 else "Normal"
+
+            lines.append("**Volume:**")
+            lines.append(f"- Current Volume: {vol:,}" if isinstance(vol, (int, float)) else f"- Current Volume: {vol}")
+            lines.append(f"- Average Volume: {avg_vol:,}" if isinstance(avg_vol, (int, float)) else f"- Average Volume: {avg_vol}")
+            lines.append(f"- RVOL: {rvol}x → {vol_status}")
             lines.append("")
 
-        # Signals
+        # Signals summary
         if raw.get("signals"):
-            lines.append("### Signals:")
+            lines.append("**Technical Signals:**")
             for signal in raw["signals"][:5]:
                 lines.append(f"- {signal}")
             lines.append("")
@@ -1357,109 +1379,235 @@ class SynthesisHandlerV2(LoggerMixin):
         return lines
 
     def _format_position_raw_data(self, raw: Dict[str, Any], sector_ctx: Dict[str, Any]) -> List[str]:
-        """Format position raw data as structured metrics."""
-        lines = []
+        """Format position raw data with CLEAR Sector vs Industry distinction."""
+        lines = ["### POSITION INPUTS (Use these exact values in analysis):"]
+        lines.append("")
 
-        # RS Data
+        # GICS Classification - CRITICAL DISTINCTION
+        if sector_ctx:
+            sector = sector_ctx.get('stock_sector', 'N/A')
+            industry = sector_ctx.get('stock_industry', 'N/A')
+
+            lines.append("**GICS Classification (IMPORTANT DISTINCTION):**")
+            lines.append(f"- SECTOR (1 of 11 GICS): {sector}")
+            lines.append(f"- INDUSTRY (sub-category): {industry}")
+            lines.append("")
+            lines.append("NOTE: Sector ≠ Industry. GICS has 11 sectors (e.g., Information Technology),")
+            lines.append("each containing multiple industries (e.g., Semiconductors, Software).")
+            lines.append("")
+
+            # Sector ranking with methodology note
+            sector_rank = sector_ctx.get('sector_rank', 'N/A')
+            total_sectors = sector_ctx.get('total_sectors', 11)
+            sector_change = sector_ctx.get('sector_change_percent', 0)
+
+            lines.append("**Sector Performance (1-DAY ONLY):**")
+            lines.append(f"- Sector Rank: #{sector_rank}/{total_sectors}")
+            lines.append(f"- Sector Change (1-day): {sector_change:+.2f}%")
+            lines.append(f"- Status: {sector_ctx.get('sector_status', 'N/A')}")
+            lines.append("")
+            lines.append("⚠️ LIMITATION: This is 1-DAY sector ranking from FMP API.")
+            lines.append("   It is NOT the same as multi-timeframe RS analysis.")
+            lines.append("   For medium-term trends, use the RS data below.")
+            lines.append("")
+
+        # RS Data - Multi-timeframe (MORE RELIABLE)
         if raw:
-            lines.append("### Relative Strength vs SPY:")
-            if raw.get("excess_return_21d") is not None:
-                lines.append(f"- 21-day Excess Return: {raw['excess_return_21d']:+.2f}%")
-            if raw.get("excess_return_63d") is not None:
-                lines.append(f"- 63-day Excess Return: {raw['excess_return_63d']:+.2f}%")
-            if raw.get("excess_return_126d") is not None:
-                lines.append(f"- 126-day Excess Return: {raw['excess_return_126d']:+.2f}%")
+            rs_21d = raw.get('excess_return_21d')
+            rs_63d = raw.get('excess_return_63d')
+            rs_126d = raw.get('excess_return_126d')
+
+            # Determine overall RS trend
+            rs_values = [v for v in [rs_21d, rs_63d, rs_126d] if v is not None]
+            if rs_values:
+                avg_rs = sum(rs_values) / len(rs_values)
+                if avg_rs > 5:
+                    rs_assessment = "OUTPERFORMING (avg RS > 5%)"
+                elif avg_rs > 0:
+                    rs_assessment = "SLIGHTLY OUTPERFORMING (avg RS 0-5%)"
+                elif avg_rs > -5:
+                    rs_assessment = "IN LINE (avg RS -5% to 0%)"
+                else:
+                    rs_assessment = "UNDERPERFORMING (avg RS < -5%)"
+            else:
+                rs_assessment = "N/A"
+
+            lines.append("**Relative Strength vs SPY (MULTI-TIMEFRAME - MORE RELIABLE):**")
+            if rs_21d is not None:
+                lines.append(f"- 21-day RS: {rs_21d:+.2f}%")
+            if rs_63d is not None:
+                lines.append(f"- 63-day RS: {rs_63d:+.2f}%")
+            if rs_126d is not None:
+                lines.append(f"- 126-day RS: {rs_126d:+.2f}%")
+            lines.append(f"- Assessment: {rs_assessment}")
+
             if raw.get("rs_rating"):
                 lines.append(f"- RS Rating: {raw['rs_rating']}")
             if raw.get("classification"):
                 lines.append(f"- Classification: {raw['classification']}")
             lines.append("")
-
-        # Sector Context
-        if sector_ctx:
-            lines.append("### Sector Context:")
-            lines.append(f"- Sector: {sector_ctx.get('stock_sector', 'N/A')}")
-            lines.append(f"- Industry: {sector_ctx.get('stock_industry', 'N/A')}")
-            lines.append(f"- Sector Rank: #{sector_ctx.get('sector_rank', 'N/A')}/{sector_ctx.get('total_sectors', 11)}")
-            lines.append(f"- Sector Change (1-day): {sector_ctx.get('sector_change_percent', 0):+.2f}%")
-            lines.append(f"- Sector Status: {sector_ctx.get('sector_status', 'N/A')}")
-            lines.append("")
-            lines.append("NOTE: Sector ranking is 1-DAY performance from FMP Sector Performance API.")
-            lines.append("This is different from multi-timeframe Relative Strength analysis.")
+            lines.append("NOTE: Multi-timeframe RS (21/63/126 days) is more reliable than 1-day sector rank.")
             lines.append("")
 
         return lines
 
     def _format_risk_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format risk raw data as structured metrics."""
-        lines = []
-
-        lines.append(f"### Current Price: ${raw.get('current_price', 'N/A')}")
+        """Format risk raw data with CLEAR stop-loss calculation logic."""
+        lines = ["### RISK INPUTS (Use these for stop-loss calculations):"]
         lines.append("")
+
+        current_price = raw.get('current_price', 0)
+        lines.append(f"**Current Price: ${current_price}**")
+        lines.append("")
+
+        # ATR - CRITICAL for stop-loss
+        atr_value = 0
+        atr_pct = 0
+        if raw.get("atr"):
+            a = raw["atr"]
+            atr_value = a.get('value', 0)
+            atr_pct = a.get('percent', 0)
+
+            lines.append("**ATR (Average True Range) - USE FOR STOP-LOSS:**")
+            lines.append(f"- ATR Value: ${atr_value}")
+            lines.append(f"- ATR %: {atr_pct}%")
+            lines.append("")
+
+            # Pre-calculate stop-loss examples
+            if current_price and atr_value:
+                stop_1atr = round(current_price - atr_value, 2)
+                stop_2atr = round(current_price - (2 * atr_value), 2)
+                stop_1atr_pct = round((atr_value / current_price) * 100, 1)
+                stop_2atr_pct = round((2 * atr_value / current_price) * 100, 1)
+
+                lines.append("**PRE-CALCULATED STOP-LOSS LEVELS (from current price):**")
+                lines.append(f"- 1× ATR Stop: ${stop_1atr} (risk: {stop_1atr_pct}%)")
+                lines.append(f"  Formula: ${current_price} - ${atr_value} = ${stop_1atr}")
+                lines.append(f"- 2× ATR Stop: ${stop_2atr} (risk: {stop_2atr_pct}%)")
+                lines.append(f"  Formula: ${current_price} - (2 × ${atr_value}) = ${stop_2atr}")
+                lines.append("")
+                lines.append("⚠️ IMPORTANT: These are from CURRENT price. For breakout entries,")
+                lines.append("   recalculate from ENTRY price: Stop = Entry - (2 × ATR)")
+                lines.append("")
 
         # Volatility
         if raw.get("volatility"):
             v = raw["volatility"]
-            lines.append("### Volatility:")
-            lines.append(f"- Daily Volatility: {v.get('daily', 'N/A')}%")
-            lines.append(f"- Annualized Volatility: {v.get('annualized', 'N/A')}%")
-            lines.append(f"- Classification: {v.get('classification', 'N/A')}")
-            lines.append("")
+            daily_vol = v.get('daily', 0)
+            annual_vol = v.get('annualized', 0)
+            vol_class = v.get('classification', 'N/A')
 
-        # ATR
-        if raw.get("atr"):
-            a = raw["atr"]
-            lines.append("### ATR (Average True Range):")
-            lines.append(f"- ATR Value: ${a.get('value', 'N/A')}")
-            lines.append(f"- ATR %: {a.get('percent', 'N/A')}%")
+            lines.append("**Volatility:**")
+            lines.append(f"- Daily Volatility: {daily_vol}%")
+            lines.append(f"- Annualized Volatility: {annual_vol}%")
+            lines.append(f"- Classification: {vol_class}")
+
+            # Volatility context
+            if annual_vol > 50:
+                lines.append("  → HIGH volatility: Consider wider stops, smaller position size")
+            elif annual_vol > 30:
+                lines.append("  → MODERATE volatility: Standard position sizing")
+            else:
+                lines.append("  → LOW volatility: Can use tighter stops")
             lines.append("")
 
         # VaR
         if raw.get("var"):
             v = raw["var"]
-            lines.append("### Value at Risk (VaR):")
-            lines.append(f"- VaR 95% (1-day): {v.get('var_95', 'N/A')}%")
-            lines.append(f"- VaR 99% (1-day): {v.get('var_99', 'N/A')}%")
+            var_95 = v.get('var_95', 0)
+            var_99 = v.get('var_99', 0)
+
+            lines.append("**Value at Risk (VaR) - 1-day risk:**")
+            lines.append(f"- VaR 95%: {var_95}% (5% chance of losing more)")
+            lines.append(f"- VaR 99%: {var_99}% (1% chance of losing more)")
+
+            if current_price and var_95:
+                var_95_dollar = round(current_price * abs(var_95) / 100, 2)
+                lines.append(f"  → At ${current_price}, 95% VaR = ${var_95_dollar} max 1-day loss")
             lines.append("")
 
-        # Stop Loss Recommendations
-        if raw.get("stop_loss"):
-            sl = raw["stop_loss"]
-            lines.append("### Stop Loss Recommendations:")
-            if sl.get("atr_based"):
-                lines.append(f"- ATR-based (2x ATR): ${sl['atr_based'].get('price', 'N/A')} ({sl['atr_based'].get('percent', 'N/A')}%)")
-            if sl.get("percent_based"):
-                lines.append(f"- Percentage-based (5%): ${sl['percent_based'].get('price', 'N/A')}")
-            lines.append("")
+        # Stop Loss Summary
+        lines.append("**STOP-LOSS LOGIC TO USE IN REPORT:**")
+        lines.append("1. For BREAKOUT entries: Stop = Entry - (2 × ATR)")
+        lines.append("2. For STRUCTURE-based: Stop = below recent swing low")
+        lines.append("3. For PERCENTAGE-based: Stop = Entry × (1 - risk%)")
+        lines.append(f"   With ATR=${atr_value}, 2×ATR method gives ~{round(atr_pct * 2, 1)}% risk")
+        lines.append("")
 
         return lines
 
     def _format_sentiment_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format sentiment raw data as structured metrics."""
-        lines = []
+        """Format sentiment raw data with SAMPLE SIZE and SOURCE info."""
+        lines = ["### SENTIMENT INPUTS (CITE sample size and source):"]
+        lines.append("")
 
+        # Overall sentiment score
         if raw.get("sentiment_score") is not None:
             score = raw["sentiment_score"]
-            classification = "Bullish" if score > 0.2 else "Bearish" if score < -0.2 else "Neutral"
-            lines.append(f"### Sentiment Score: {score:.3f} ({classification})")
+            if score > 0.5:
+                classification = "STRONGLY BULLISH (>0.5)"
+            elif score > 0.2:
+                classification = "BULLISH (0.2-0.5)"
+            elif score > -0.2:
+                classification = "NEUTRAL (-0.2 to 0.2)"
+            elif score > -0.5:
+                classification = "BEARISH (-0.5 to -0.2)"
+            else:
+                classification = "STRONGLY BEARISH (<-0.5)"
+
+            lines.append(f"**Overall Sentiment Score: {score:.3f}**")
+            lines.append(f"- Classification: {classification}")
             lines.append("")
 
+        # Social sentiment with sample size
+        total_samples = 0
         if raw.get("social_sentiment"):
             ss = raw["social_sentiment"]
-            lines.append("### Social Sentiment:")
-            lines.append(f"- Score: {ss.get('score', 'N/A')}")
-            lines.append(f"- Posts Analyzed: {ss.get('post_count', 'N/A')}")
+            social_score = ss.get('score', 'N/A')
+            post_count = ss.get('post_count', 0)
+            total_samples += post_count if isinstance(post_count, int) else 0
+
+            lines.append("**Social Media Sentiment:**")
+            lines.append(f"- Score: {social_score}")
+            lines.append(f"- Sample Size: {post_count} posts analyzed")
+            lines.append(f"- Source: {ss.get('source', 'Social Sentiment API')}")
+            lines.append(f"- Time Period: {ss.get('time_period', 'Last 7 days')}")
+
+            if post_count and post_count < 50:
+                lines.append("  ⚠️ LOW sample size - interpret with caution")
             lines.append("")
 
+        # News sentiment with article count
         if raw.get("news_sentiment"):
             ns = raw["news_sentiment"]
-            lines.append("### News Sentiment:")
-            lines.append(f"- Overall: {ns.get('overall', 'N/A')}")
-            lines.append(f"- Articles Analyzed: {ns.get('article_count', 'N/A')}")
+            news_overall = ns.get('overall', 'N/A')
+            article_count = ns.get('article_count', 0)
+            total_samples += article_count if isinstance(article_count, int) else 0
+
+            lines.append("**News Sentiment:**")
+            lines.append(f"- Overall Tone: {news_overall}")
+            lines.append(f"- Sample Size: {article_count} articles analyzed")
+            lines.append(f"- Source: {ns.get('source', 'FMP News API')}")
+            lines.append(f"- Time Period: {ns.get('time_period', 'Last 7 days')}")
+
+            if article_count and article_count < 10:
+                lines.append("  ⚠️ LOW sample size - interpret with caution")
             lines.append("")
 
+        # Summary
+        lines.append("**DATA QUALITY SUMMARY:**")
+        lines.append(f"- Total samples analyzed: {total_samples}")
+        if total_samples < 50:
+            lines.append("- Quality: LOW (< 50 samples) - use as secondary indicator only")
+        elif total_samples < 200:
+            lines.append("- Quality: MODERATE (50-200 samples)")
+        else:
+            lines.append("- Quality: GOOD (> 200 samples)")
+        lines.append("")
+
+        # Key themes
         if raw.get("key_themes"):
-            lines.append("### Key Themes:")
+            lines.append("**Key Themes Detected:**")
             for theme in raw["key_themes"][:5]:
                 lines.append(f"- {theme}")
             lines.append("")
@@ -1467,64 +1615,124 @@ class SynthesisHandlerV2(LoggerMixin):
         return lines
 
     def _format_fundamental_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format fundamental raw data as structured metrics."""
-        lines = []
+        """Format fundamental raw data with VALUATION ASSUMPTIONS."""
+        lines = ["### FUNDAMENTAL INPUTS (Show assumptions for intrinsic values):"]
+        lines.append("")
 
         report = raw.get("fundamental_report", {})
 
         # Valuation
         if report.get("valuation"):
             v = report["valuation"]
-            lines.append("### Valuation Metrics:")
-            lines.append(f"- P/E (TTM): {v.get('pe_ttm', 'N/A')}")
-            lines.append(f"- P/E (FY): {v.get('pe_fy', 'N/A')}")
-            lines.append(f"- P/S (TTM): {v.get('ps_ttm', 'N/A')}")
-            lines.append(f"- P/B (TTM): {v.get('pb_ttm', 'N/A')}")
-            lines.append(f"- EV/EBITDA: {v.get('ev_ebitda', 'N/A')}")
+            pe_ttm = v.get('pe_ttm', 'N/A')
+            ps_ttm = v.get('ps_ttm', 'N/A')
+            pb_ttm = v.get('pb_ttm', 'N/A')
+            ev_ebitda = v.get('ev_ebitda', 'N/A')
+
+            lines.append("**Valuation Metrics:**")
+            lines.append(f"- P/E (TTM): {pe_ttm}")
+            lines.append(f"- P/E (Forward): {v.get('pe_fy', 'N/A')}")
+            lines.append(f"- P/S (TTM): {ps_ttm}")
+            lines.append(f"- P/B (TTM): {pb_ttm}")
+            lines.append(f"- EV/EBITDA: {ev_ebitda}")
+            lines.append("")
+
+            # P/E distortion warning
+            if pe_ttm and pe_ttm != 'N/A':
+                try:
+                    pe_val = float(pe_ttm)
+                    if pe_val > 50:
+                        lines.append("⚠️ P/E > 50 may indicate high growth expectations or earnings distortion")
+                    elif pe_val < 0:
+                        lines.append("⚠️ Negative P/E indicates losses - use P/S or EV/EBITDA instead")
+                except (ValueError, TypeError):
+                    pass
             lines.append("")
 
         # Profitability
         if report.get("profitability"):
             p = report["profitability"]
-            lines.append("### Profitability:")
+            roe = p.get('roe', 0)
+
+            lines.append("**Profitability:**")
             lines.append(f"- Gross Margin: {p.get('gross_margin', 'N/A')}%")
             lines.append(f"- Operating Margin: {p.get('operating_margin', 'N/A')}%")
             lines.append(f"- Net Margin: {p.get('net_margin', 'N/A')}%")
-            lines.append(f"- ROE: {p.get('roe', 'N/A')}%")
+            lines.append(f"- ROE: {roe}%")
             lines.append(f"- ROA: {p.get('roa', 'N/A')}%")
+
+            # ROE distortion warning
+            if roe and isinstance(roe, (int, float)) and roe > 50:
+                lines.append("")
+                lines.append("⚠️ ROE > 50% may be distorted by:")
+                lines.append("   - Share buybacks reducing equity")
+                lines.append("   - High debt leverage")
+                lines.append("   - One-time gains")
             lines.append("")
 
         # Growth
         if report.get("growth"):
             g = report["growth"]
-            lines.append("### Growth Metrics:")
+            lines.append("**Growth Metrics:**")
             lines.append(f"- Revenue Growth (YoY): {g.get('revenue_growth_yoy', 'N/A')}%")
             lines.append(f"- EPS Growth (YoY): {g.get('eps_growth_yoy', 'N/A')}%")
             lines.append(f"- Revenue Growth (5Y CAGR): {g.get('revenue_cagr_5y', 'N/A')}%")
             lines.append(f"- EPS Growth (5Y CAGR): {g.get('eps_cagr_5y', 'N/A')}%")
             lines.append("")
 
-        # Intrinsic Value
+        # Intrinsic Value - WITH ASSUMPTIONS
         if report.get("intrinsic_value"):
             iv = report["intrinsic_value"]
-            lines.append("### Intrinsic Value (Fair Value):")
-            if iv.get("graham_value"):
-                lines.append(f"- Graham Value: ${iv['graham_value']:.2f}")
-            if iv.get("dcf_value"):
-                lines.append(f"- DCF Value: ${iv['dcf_value']:.2f}")
-            if iv.get("current_price"):
-                lines.append(f"- Current Price: ${iv['current_price']:.2f}")
+            graham = iv.get("graham_value")
+            dcf = iv.get("dcf_value")
+            current = iv.get("current_price")
+
+            lines.append("**Intrinsic Value (Fair Value) - MODEL-DEPENDENT:**")
+
+            if graham:
+                lines.append(f"- Graham Value: ${graham:.2f}")
+                lines.append("  Assumptions: Graham formula = √(22.5 × EPS × BVPS)")
+                lines.append(f"  Used EPS: {iv.get('eps_used', 'N/A')}, BVPS: {iv.get('bvps_used', 'N/A')}")
+
+            if dcf:
+                lines.append(f"- DCF Value: ${dcf:.2f}")
+                lines.append(f"  Assumptions: WACC={iv.get('wacc', '10%')}, Terminal Growth={iv.get('terminal_growth', '3%')}")
+                lines.append(f"  FCF Base: {iv.get('fcf_base', 'N/A')}")
+
+            if current:
+                lines.append(f"- Current Price: ${current:.2f}")
+
+            if graham and dcf and current:
+                avg_fair = (graham + dcf) / 2
+                premium_discount = round((current - avg_fair) / avg_fair * 100, 1)
+                if premium_discount > 0:
+                    lines.append(f"  → Trading at {premium_discount}% PREMIUM to avg fair value")
+                else:
+                    lines.append(f"  → Trading at {abs(premium_discount)}% DISCOUNT to avg fair value")
+
             if iv.get("verdict"):
-                lines.append(f"- Verdict: {iv['verdict']}")
+                lines.append(f"- Model Verdict: {iv['verdict']}")
+
+            lines.append("")
+            lines.append("⚠️ IMPORTANT: Intrinsic values are model-dependent.")
+            lines.append("   Different assumptions (WACC ±1%, growth ±1%) can change values significantly.")
+            lines.append("   Use as REFERENCE, not absolute truth.")
             lines.append("")
 
         # Dividend
         if report.get("dividend"):
             d = report["dividend"]
-            lines.append("### Dividend:")
+            lines.append("**Dividend:**")
             lines.append(f"- Dividend Yield: {d.get('yield', 'N/A')}%")
             lines.append(f"- Payout Ratio: {d.get('payout_ratio', 'N/A')}%")
             lines.append("")
+
+        # PEER COMPARISON GUIDANCE
+        lines.append("**PEER COMPARISON GUIDANCE:**")
+        lines.append("For Semiconductors: Compare with AMD, AVGO, TSM, INTC, MRVL, QCOM")
+        lines.append("Do NOT use mega-cap tech (AAPL, MSFT, GOOGL) as semiconductor peers.")
+        lines.append("Note: P/E may be distorted for companies with low/volatile EPS.")
+        lines.append("")
 
         return lines
 
@@ -1538,52 +1746,20 @@ class SynthesisHandlerV2(LoggerMixin):
         scoring: Dict[str, Any],
         available_steps: List[str]
     ) -> str:
-        """Generate markdown report header."""
-        rec = scoring.get("recommendation", {})
-        dist = rec.get("distribution", {})
-
+        """Generate markdown report header - DATA FOCUSED, NO SCORING."""
         header = f"""# Comprehensive Investment Report: {symbol}
 
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Analysis Steps:** {', '.join(available_steps)}
-**Version:** Synthesis V2 (Production)
+**Version:** Synthesis V2 (Data-Driven)
 
 ---
 
-## Investment Score Summary
+*This report presents raw data and analysis. No composite scoring is used to avoid contradictions.*
+*Each section shows INPUT → OUTPUT format for auditability.*
 
-| Metric | Value |
-|--------|-------|
-| **Composite Score** | {scoring.get('composite_score', 'N/A')}/100 |
-| **Recommendation** | {rec.get('action', 'N/A')} {rec.get('emoji', '')} |
-| **Distribution** | BUY {dist.get('buy', 0)}% · HOLD {dist.get('hold', 0)}% · SELL {dist.get('sell', 0)}% |
-| **Confidence** | {rec.get('confidence', 'N/A')}% |
-| **Time Horizon** | {rec.get('time_horizon', 'N/A')} |
-
-### Component Scores
+---
 """
-        components = scoring.get("component_scores", {})
-        header += "\n| Component | Score | Weight | Confidence |\n|-----------|-------|--------|------------|\n"
-        for name, data in components.items():
-            header += f"| {name.title()} | {data.get('score', 'N/A')}/100 | {data.get('weight', 'N/A')} | {data.get('confidence', 'N/A')} |\n"
-
-        key_factors = scoring.get("key_factors", [])
-        if key_factors:
-            header += "\n### Key Factors\n"
-            bullish = [f for f in key_factors if f.get("impact") == "bullish"]
-            bearish = [f for f in key_factors if f.get("impact") == "bearish"]
-
-            if bullish:
-                header += "\n**Bullish:**\n"
-                for f in bullish:
-                    header += f"- {f.get('factor', 'N/A')} ({f.get('component', '')})\n"
-
-            if bearish:
-                header += "\n**Bearish:**\n"
-                for f in bearish:
-                    header += f"- {f.get('factor', 'N/A')} ({f.get('component', '')})\n"
-
-        header += "\n---\n"
         return header
 
     def _generate_report_footer(
@@ -1626,6 +1802,78 @@ Past performance is not indicative of future results. Investments involve risk, 
 ---
 *Report generated by HealerAgent Market Scanner V2*
 """
+
+    # =========================================================================
+    # STEP DATA LOGGING (FOR DEBUGGING/AUDIT)
+    # =========================================================================
+
+    def _log_step_data_summary(
+        self,
+        symbol: str,
+        step_data: Dict[str, Any],
+        earnings_data: Optional[Dict[str, Any]],
+        peer_data: Optional[Dict[str, Any]]
+    ) -> None:
+        """Log summary of step data going into synthesis LLM for audit purposes."""
+        self.logger.info(f"[SynthesisV2] ========== STEP DATA SUMMARY: {symbol} ==========")
+
+        # Technical
+        tech_raw = step_data.get("technical", {}).get("raw_data", {})
+        if tech_raw:
+            momentum = tech_raw.get("momentum", {})
+            trend = tech_raw.get("trend", {})
+            self.logger.info(f"[SynthesisV2] TECHNICAL: RSI={momentum.get('rsi', 'N/A')}, "
+                           f"MACD={momentum.get('macd', 'N/A')}, ADX={trend.get('adx', 'N/A')}")
+
+        # Position
+        pos_raw = step_data.get("position", {}).get("raw_data", {})
+        sector_ctx = step_data.get("position", {}).get("sector_context", {})
+        if pos_raw or sector_ctx:
+            self.logger.info(f"[SynthesisV2] POSITION: RS_21d={pos_raw.get('excess_return_21d', 'N/A')}, "
+                           f"RS_63d={pos_raw.get('excess_return_63d', 'N/A')}, "
+                           f"Sector={sector_ctx.get('stock_sector', 'N/A')}, "
+                           f"Industry={sector_ctx.get('stock_industry', 'N/A')}")
+
+        # Risk
+        risk_raw = step_data.get("risk", {}).get("raw_data", {})
+        if risk_raw:
+            atr = risk_raw.get("atr", {})
+            var_data = risk_raw.get("var", {})
+            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr.get('value', 'N/A')} ({atr.get('percent', 'N/A')}%), "
+                           f"VaR95={var_data.get('var_95', 'N/A')}%, Price=${risk_raw.get('current_price', 'N/A')}")
+
+        # Sentiment
+        sent_raw = step_data.get("sentiment", {}).get("raw_data", {})
+        if sent_raw:
+            social = sent_raw.get("social_sentiment", {})
+            news = sent_raw.get("news_sentiment", {})
+            self.logger.info(f"[SynthesisV2] SENTIMENT: Score={sent_raw.get('sentiment_score', 'N/A')}, "
+                           f"Social_posts={social.get('post_count', 'N/A')}, "
+                           f"News_articles={news.get('article_count', 'N/A')}")
+
+        # Fundamental
+        fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
+        if fund_raw:
+            report = fund_raw.get("fundamental_report", {})
+            valuation = report.get("valuation", {})
+            intrinsic = report.get("intrinsic_value", {})
+            self.logger.info(f"[SynthesisV2] FUNDAMENTAL: P/E={valuation.get('pe_ttm', 'N/A')}, "
+                           f"P/S={valuation.get('ps_ttm', 'N/A')}, "
+                           f"Graham=${intrinsic.get('graham_value', 'N/A')}, "
+                           f"DCF=${intrinsic.get('dcf_value', 'N/A')}")
+
+        # Earnings
+        if earnings_data:
+            self.logger.info(f"[SynthesisV2] EARNINGS: Date={earnings_data.get('next_earnings_date', 'N/A')}, "
+                           f"Beat_rate={earnings_data.get('beat_rate', 'N/A')}")
+
+        # Peers
+        if peer_data:
+            peers = peer_data.get("peers", [])
+            peer_symbols = [p.get("symbol", "") for p in peers[:5]]
+            self.logger.info(f"[SynthesisV2] PEERS: {', '.join(peer_symbols)}")
+
+        self.logger.info(f"[SynthesisV2] ========== END STEP DATA SUMMARY ==========")
 
     # =========================================================================
     # RUN MISSING STEPS
