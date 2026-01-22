@@ -1,14 +1,14 @@
 """
-Synthesis Handler V2 - Single LLM Call Architecture
+Synthesis Handler V2 - Single LLM Call Architecture (Production Ready)
 
-Key Improvements over V1:
+Key Features:
 1. SINGLE LLM CALL - All data in one context for 100% consistency
-2. BINDING SCORING - LLM must follow the calculated score
-3. CONSISTENT Entry/Stop/Target logic based on trading system
-4. SPECIFIC CATALYST DATES - Earnings calendar with exact dates
-5. PEER COMPARISON - Comparison table with 3-5 peers
-6. QUALITY WEB ENRICHMENT - Deduplicated, date-filtered, inline citations
-7. CLEAR SECTOR RANKING - Methodology explanation
+2. RAW DATA METRICS - Uses structured data, not truncated LLM text
+3. DYNAMIC PEER COMPARISON - FMP stock_peers API instead of hardcoded mapping
+4. INVESTOR-FOCUSED SECTIONS - Scenario Analysis, Fair Value Assessment
+5. BINDING SCORING - LLM must follow the calculated score
+6. SPECIFIC CATALYST DATES - Earnings calendar with exact dates
+7. HOLDER-SPECIFIC RULES - Exit/reduce triggers for existing positions
 
 Usage:
     from src.handlers.synthesis_handler_v2 import synthesis_handler_v2
@@ -23,8 +23,7 @@ import logging
 import os
 import httpx
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List, AsyncGenerator, Tuple
-from collections import OrderedDict
+from typing import Dict, Any, Optional, List, AsyncGenerator
 
 from src.utils.logger.custom_logging import LoggerMixin
 from src.helpers.scanner_cache_helper import (
@@ -40,69 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# CONFIGURATION
-# =============================================================================
-
-# Peer mapping by sector/industry
-PEER_MAPPING = {
-    # Semiconductors
-    "NVDA": ["AMD", "AVGO", "TSM", "INTC", "QCOM"],
-    "AMD": ["NVDA", "INTC", "QCOM", "AVGO", "TSM"],
-    "INTC": ["AMD", "NVDA", "QCOM", "TXN", "ADI"],
-    "TSM": ["NVDA", "AMD", "INTC", "ASML", "AVGO"],
-    "AVGO": ["NVDA", "QCOM", "TXN", "ADI", "MRVL"],
-
-    # Big Tech
-    "AAPL": ["MSFT", "GOOGL", "META", "AMZN"],
-    "MSFT": ["AAPL", "GOOGL", "AMZN", "ORCL"],
-    "GOOGL": ["META", "MSFT", "AMZN", "AAPL"],
-    "META": ["GOOGL", "SNAP", "PINS", "MSFT"],
-    "AMZN": ["MSFT", "GOOGL", "WMT", "BABA"],
-
-    # EV / Auto
-    "TSLA": ["RIVN", "NIO", "F", "GM", "LCID"],
-    "RIVN": ["TSLA", "LCID", "NIO", "F", "GM"],
-
-    # Financials
-    "JPM": ["BAC", "WFC", "C", "GS", "MS"],
-    "BAC": ["JPM", "WFC", "C", "USB", "PNC"],
-
-    # Healthcare
-    "JNJ": ["PFE", "MRK", "ABBV", "LLY", "UNH"],
-    "PFE": ["JNJ", "MRK", "ABBV", "BMY", "LLY"],
-
-    # Energy
-    "XOM": ["CVX", "COP", "SLB", "EOG", "OXY"],
-    "CVX": ["XOM", "COP", "SLB", "EOG", "PXD"],
-}
-
-# Default peers by sector (when symbol not in mapping)
-DEFAULT_SECTOR_PEERS = {
-    "Technology": ["AAPL", "MSFT", "GOOGL", "META"],
-    "Healthcare": ["JNJ", "PFE", "UNH", "MRK"],
-    "Financial Services": ["JPM", "BAC", "WFC", "GS"],
-    "Consumer Cyclical": ["AMZN", "TSLA", "HD", "NKE"],
-    "Communication Services": ["GOOGL", "META", "NFLX", "DIS"],
-    "Energy": ["XOM", "CVX", "COP", "SLB"],
-    "Industrials": ["CAT", "BA", "UNP", "HON"],
-    "Consumer Defensive": ["WMT", "PG", "KO", "PEP"],
-    "Basic Materials": ["LIN", "APD", "ECL", "NEM"],
-    "Real Estate": ["PLD", "AMT", "EQIX", "SPG"],
-    "Utilities": ["NEE", "DUK", "SO", "D"],
-}
-
-# Trading system thresholds
-TRADING_SYSTEM_THRESHOLDS = {
-    "strong_buy": {"min_score": 75, "system": "aggressive_breakout", "risk_pct": 7},
-    "buy": {"min_score": 65, "system": "breakout", "risk_pct": 5},
-    "hold": {"min_score": 45, "system": "wait_and_watch", "risk_pct": 0},
-    "sell": {"min_score": 30, "system": "mean_reversion_exit", "risk_pct": 3},
-    "strong_sell": {"min_score": 0, "system": "avoid", "risk_pct": 0},
-}
-
-
-# =============================================================================
-# CONSOLIDATED SYSTEM PROMPT
+# SYSTEM PROMPT (ENGLISH ONLY - Production)
 # =============================================================================
 
 CONSOLIDATED_SYSTEM_PROMPT = """You are a senior investment analyst creating a comprehensive investment report.
@@ -121,127 +58,117 @@ Entry, Stop-Loss, and Targets MUST be mathematically consistent:
 **If Score >= 65 (BUY/STRONG BUY) - Use BREAKOUT SYSTEM:**
 - Entry: ABOVE current price (breakout confirmation)
 - Stop: Based on ATR or swing low FROM ENTRY PRICE
-- Explain: "Mua khi giá xác nhận xu hướng tăng, không bắt đáy"
+- Calculate risk % from ENTRY price, not current price
 
 **If Score 45-64 (HOLD) - Use WAIT & WATCH:**
 - NO entry recommendation (watchlist only)
 - Define CONDITIONS for future entry
-- Explain: "Chờ tín hiệu xác nhận trước khi mở vị thế"
+- Provide specific price levels for upgrade/downgrade
 
 **If Score < 45 (SELL) - Use EXIT/AVOID:**
-- For holders: Exit strategy
+- For holders: Exit strategy with specific levels
 - For new investors: AVOID
-- Explain reasoning
+- Explain reasoning with data
 
 ### 3. STOP-LOSS CALCULATION (CRITICAL)
 Stop-loss percentage MUST be calculated FROM ENTRY PRICE, not current price:
-- If Entry = $185 and Stop = $169, then risk = (185-169)/185 = 8.6%
+- Example: If Entry = $185 and Stop = $169, then risk = (185-169)/185 = 8.6%
 - NEVER say "5% from current price" if entry is different from current price
 
 ### 4. CATALYST DATES (CRITICAL)
 - Include SPECIFIC dates for earnings from provided data
 - Format: "Earnings: Feb 25, 2026 (AMC)" - use EXACT date from data
-- If no date available, state "Chưa công bố" not "dự kiến sắp tới"
+- If no date available, state "Not yet announced"
 - Source: FMP Earnings Calendar API
 
 ### 5. PEER COMPARISON
-- Include a mini comparison table when peer data is provided
-- Show P/E, P/S, Growth metrics vs peers
-- ADD WARNING: "Lưu ý: P/E có thể bị méo do EPS thấp/biến động (đặc biệt AMD, INTC)"
-- Consider adding Forward P/E or EV/Sales note if P/E looks distorted
+- Include comparison table when peer data is provided
+- Show P/E, P/S, Revenue Growth, Market Cap
+- ADD NOTE: "P/E may be distorted for companies with low/volatile EPS"
+- Compare target's valuation position vs peers
 
-### 6. TECHNICAL SCORE CONSISTENCY (NEW - CRITICAL)
-Technical score MUST match the narrative. Guidelines:
-- ADX < 15 (weak trend) → Technical score should be 50-65 max, not 75+
-- ADX 15-25 (moderate trend) → Technical score 60-75
-- ADX > 25 (strong trend) → Technical score can be 70-85
-- If MACD bearish + ADX < 15 → Technical should be < 60
-- Explain WHY the score despite weak indicators if giving high score
+### 6. TECHNICAL SCORE CONSISTENCY
+Technical score MUST match the indicators:
+- ADX < 15 (weak trend): Technical score should be 50-65 max
+- ADX 15-25 (moderate trend): Technical score 60-75
+- ADX > 25 (strong trend): Technical score can be 70-85
+- If MACD bearish + ADX < 15: Technical should be < 60
+- Explain score rationale if indicators seem contradictory
 
-### 7. TRADING PLAN FOR HOLDERS (NEW - CRITICAL)
-Always include rules for people ALREADY holding the stock:
-- "Nếu giá thủng vùng $X → giảm 50% vị thế"
-- "Nếu breakout fail (giá quay về dưới $Y) → thoát hoàn toàn"
-- "Trailing stop: di chuyển stop lên theo ATR khi giá tăng"
+### 7. TRADING PLAN FOR HOLDERS (CRITICAL)
+Always include specific rules for people ALREADY holding the stock:
+- Reduce trigger: specific price level to reduce 50% position
+- Exit trigger: specific price level to exit completely
+- Trailing stop: how to adjust stop as price moves
+- Add trigger: when it's OK to add to position (if applicable)
 
-### 8. SECTOR RANKING CLARITY
-When mentioning sector rank, explain the methodology:
-- "Ngành Công nghệ #10/11 theo FMP Sector Performance (biến động 1 ngày)"
-- "Lưu ý: Đây là ranking 1 NGÀY, khác với RS đa khung thời gian"
+### 8. SECTOR RANKING METHODOLOGY
+When mentioning sector rank:
+- State the ranking system: "FMP Sector Performance (1-day ranking)"
+- Note the limitation: "This is 1-DAY ranking, different from multi-timeframe RS"
+- Provide context: is sector leading, lagging, or neutral?
 
-### 9. WEB CITATIONS (MANDATORY - ChatGPT Style)
+### 9. WEB CITATIONS (MANDATORY)
+When using web search data:
+- INLINE citations: "Statement [Source Name](URL)"
+- Every claim from web search needs a citation
+- Include "## Sources" section at end with numbered list
 
-**CRITICAL**: You MUST include clickable source links in TWO ways:
+### 10. SCENARIO ANALYSIS (REQUIRED)
+Include Bull/Base/Bear scenarios with:
+- Price targets for each scenario
+- Probability estimates
+- Key triggers for each scenario
 
-#### A. INLINE CITATIONS (Throughout your response)
-When referencing information from web search, ALWAYS include the source as a clickable markdown link INLINE.
+### 11. FAIR VALUE ASSESSMENT (REQUIRED)
+Compare current price to intrinsic value:
+- Graham Value (if available)
+- DCF Value (if available)
+- State: Premium/Discount to fair value
+- Margin of safety calculation
 
-**Format**: Statement + [Source Name](URL)
+## OUTPUT FORMAT (STRUCTURED)
 
-**Examples**:
-- "NVIDIA đạt doanh thu kỷ lục $35.1 tỷ trong Q3 2024. [NVIDIA Investor Relations](https://investor.nvidia.com/...)"
-- "Theo [Reuters](https://reuters.com/...), chip H200 đang gặp vấn đề về chuỗi cung ứng."
-- "TSMC dành 70% công suất CoWoS-L cho NVIDIA. [TechPowerUp](https://www.techpowerup.com/...)"
+Generate report with these sections IN ORDER:
 
-**DO NOT** write statements without source links. Every claim from web search needs a citation.
+### PART 1: DATA ANALYSIS (5 Steps)
+1. **Technical Analysis** - Trend, momentum, key levels, signals
+2. **Market Position** - RS vs benchmark, sector context
+3. **Risk Analysis** - Volatility, VaR, risk metrics
+4. **Sentiment Analysis** - Sentiment score, news themes
+5. **Fundamental Analysis** - Valuation, growth, peer comparison
 
-#### B. SOURCES SECTION (At the end of News section)
-After the news analysis, include a "## 📚 Sources" section listing all sources used.
+### PART 2: INVESTOR-FOCUSED ANALYSIS
+6. **Fair Value Assessment** - Intrinsic value vs current price
+7. **Scenario Analysis** - Bull/Base/Bear with probabilities
 
-**Example Format**:
-```
-## 📚 Sources
+### PART 3: NEWS & CATALYSTS
+8. **News & Catalysts** - Latest news with inline citations + Sources section
 
-1. [NVIDIA Announces Financial Results for Q3 2026](https://investor.nvidia.com/news/...)
-2. [TSMC Reserves 70% of CoWoS-L Capacity for NVIDIA](https://www.techpowerup.com/...)
-3. [AMD launches MI325X to rival Nvidia's Blackwell](https://www.cnbc.com/...)
-```
+### PART 4: CONCLUSION & ACTION
+9. **Executive Summary** - Key highlights from each step
+10. **Final Recommendation** - Action strategy for:
+    - NEW investors (no position)
+    - EXISTING holders (have position)
+    - Conditions to upgrade/downgrade recommendation
 
-**WARNING**: Responses without inline source citations AND source section will be considered INCOMPLETE.
-
-## OUTPUT FORMAT (RESTRUCTURED)
-
-Generate report in this EXACT order:
-
-### PART 1: DATA ANALYSIS (5 Steps - Present findings first)
-1. **Phân tích Kỹ thuật** - Trend, momentum, key levels, signals
-2. **Vị thế Thị trường** - RS vs SPY, sector context with methodology
-3. **Phân tích Rủi ro** - Volatility, VaR, risk metrics
-4. **Tâm lý Thị trường** - Sentiment score, news themes
-5. **Phân tích Cơ bản** - Valuation, growth, peer comparison
-
-### PART 2: NEWS & CATALYSTS (With Citations)
-6. **Tin tức & Chất xúc tác** - Latest news WITH inline citations + Sources section
-
-### PART 3: CONCLUSION & ACTION (Highlights + Strategy)
-7. **Tóm tắt Điều hành** - Key highlights from each step
-8. **Khuyến nghị Cuối cùng** - Action strategy for:
-   - Nhà đầu tư MỚI (chưa có vị thế)
-   - Nhà đầu tư đang NẮM GIỮ (có vị thế rồi)
-   - Điều kiện nâng/hạ khuyến nghị
-
-This structure ensures:
-- Data presented first → Reader understands context
-- Conclusion AFTER all data → Consistent with evidence
-- Action for BOTH new and existing investors
+RESPOND IN THE LANGUAGE SPECIFIED BY target_language PARAMETER.
 """
 
 
 # =============================================================================
-# SYNTHESIS HANDLER V2
+# SYNTHESIS HANDLER V2 CLASS
 # =============================================================================
 
 class SynthesisHandlerV2(LoggerMixin):
     """
     Consolidated single-LLM-call synthesis handler.
 
-    Key improvements:
-    - Single LLM call for 100% consistency
-    - Binding scoring system
-    - Consistent Entry/Stop/Target logic
-    - Peer comparison
-    - Specific catalyst dates
-    - Quality web enrichment
+    Production-ready with:
+    - Raw data metrics instead of truncated LLM text
+    - Dynamic FMP stock_peers API
+    - Investor-focused sections
+    - Holder-specific trading rules
     """
 
     def __init__(self):
@@ -277,8 +204,7 @@ class SynthesisHandlerV2(LoggerMixin):
         """
         Main synthesis method with single consolidated LLM call.
 
-        Yields:
-            Dict with type: "progress", "content", "data", "error", "done"
+        Uses RAW DATA metrics from each step instead of truncated LLM content.
         """
         symbol = symbol.upper().strip()
         start_time = datetime.now()
@@ -293,12 +219,10 @@ class SynthesisHandlerV2(LoggerMixin):
                 "message": f"Gathering analysis data for {symbol}..."
             }
 
-            # Get cached step data
             cache_status = await get_all_scanner_results(symbol)
             step_data = cache_status.get("data", {})
             missing = cache_status.get("missing", [])
 
-            # Run missing steps if needed
             if missing and run_missing_steps:
                 yield {
                     "type": "progress",
@@ -320,7 +244,6 @@ class SynthesisHandlerV2(LoggerMixin):
                 for step_name, result in missing_results.items():
                     step_data[step_name] = result
 
-            # Check minimum data
             if len(step_data) < 2:
                 yield {
                     "type": "error",
@@ -351,29 +274,26 @@ class SynthesisHandlerV2(LoggerMixin):
             yield {
                 "type": "progress",
                 "step": "enrichment",
-                "message": "Fetching earnings calendar, peer data, and news..."
+                "message": "Fetching earnings, peers, and news..."
             }
 
-            # Parallel fetch: earnings, peers, web search
+            # Parallel fetch: earnings, peers (FMP API), web search
             earnings_task = self._fetch_earnings_calendar(symbol)
-            peers_task = self._fetch_peer_comparison(symbol, step_data)
+            peers_task = self._fetch_peer_comparison_dynamic(symbol)  # NEW: Dynamic FMP API
 
-            web_data = None
+            web_task = None
             if include_web_search:
                 web_task = self._fetch_web_enrichment(symbol, step_data, scoring_result)
-            else:
-                web_task = asyncio.sleep(0)  # Dummy task
 
-            results = await asyncio.gather(
-                earnings_task,
-                peers_task,
-                web_task,
-                return_exceptions=True
-            )
+            tasks = [earnings_task, peers_task]
+            if web_task:
+                tasks.append(web_task)
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
             earnings_data = results[0] if not isinstance(results[0], Exception) else None
             peer_data = results[1] if not isinstance(results[1], Exception) else None
-            web_data = results[2] if include_web_search and not isinstance(results[2], Exception) else None
+            web_data = results[2] if len(results) > 2 and not isinstance(results[2], Exception) else None
 
             # =================================================================
             # PHASE 4: Generate report header
@@ -391,16 +311,16 @@ class SynthesisHandlerV2(LoggerMixin):
             }
 
             # =================================================================
-            # PHASE 5: Single consolidated LLM call
+            # PHASE 5: Build consolidated prompt with RAW DATA
             # =================================================================
             yield {
                 "type": "progress",
                 "step": "synthesis",
-                "message": "Generating comprehensive report (single LLM call)..."
+                "message": "Generating comprehensive report..."
             }
 
-            # Build consolidated prompt with ALL data
-            consolidated_prompt = self._build_consolidated_prompt(
+            # Build prompt using RAW DATA metrics (not truncated content)
+            consolidated_prompt = self._build_consolidated_prompt_v2(
                 symbol=symbol,
                 step_data=step_data,
                 scoring=scoring_result,
@@ -410,22 +330,30 @@ class SynthesisHandlerV2(LoggerMixin):
                 target_language=target_language
             )
 
-            # Calculate trading plan parameters
+            # Calculate trading plan
             trading_plan = self._calculate_trading_plan(
                 symbol=symbol,
                 step_data=step_data,
                 scoring=scoring_result
             )
 
-            # Add trading plan to prompt
+            # Calculate scenario analysis
+            scenario_analysis = self._calculate_scenario_analysis(
+                symbol=symbol,
+                step_data=step_data,
+                scoring=scoring_result
+            )
+
+            # Add trading plan and scenarios to prompt
             consolidated_prompt += f"\n\n{self._format_trading_plan_section(trading_plan)}"
+            consolidated_prompt += f"\n\n{self._format_scenario_section(scenario_analysis)}"
 
             messages = [
                 {"role": "system", "content": CONSOLIDATED_SYSTEM_PROMPT},
                 {"role": "user", "content": consolidated_prompt}
             ]
 
-            # Stream the consolidated response
+            # Stream response
             full_content = []
             async for chunk in self.llm_provider.stream_response(
                 model_name=model_name,
@@ -466,26 +394,16 @@ class SynthesisHandlerV2(LoggerMixin):
             }
 
     # =========================================================================
-    # DATA FETCHING METHODS
+    # DATA FETCHING - EARNINGS CALENDAR
     # =========================================================================
 
     async def _fetch_earnings_calendar(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Fetch earnings calendar with next earnings date.
 
-        Uses TWO endpoints:
-        1. /api/v3/earning_calendar - For UPCOMING earnings (next date)
-        2. /stable/earnings - For HISTORICAL earnings (beat rate)
-
-        Returns:
-            {
-                "next_earnings_date": "2026-02-25",
-                "earnings_time": "AMC",
-                "fiscal_quarter": "Q4 FY26",
-                "historical": [...],
-                "beat_rate": 0.75,
-                "source": "FMP Earnings Calendar API"
-            }
+        Uses TWO FMP endpoints:
+        1. /api/v3/earning_calendar - UPCOMING earnings
+        2. /stable/earnings - HISTORICAL earnings (beat rate)
         """
         if not self.fmp_api_key:
             self.logger.warning("[Earnings] No FMP API key available")
@@ -495,11 +413,9 @@ class SynthesisHandlerV2(LoggerMixin):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 today = datetime.now().date()
                 from_date = today.strftime("%Y-%m-%d")
-                to_date = (today + timedelta(days=120)).strftime("%Y-%m-%d")  # Look 4 months ahead
+                to_date = (today + timedelta(days=120)).strftime("%Y-%m-%d")
 
-                # =============================================================
-                # STEP 1: Fetch UPCOMING earnings from earning_calendar
-                # =============================================================
+                # Fetch UPCOMING earnings
                 calendar_url = "https://financialmodelingprep.com/api/v3/earning_calendar"
                 calendar_params = {
                     "from": from_date,
@@ -513,21 +429,17 @@ class SynthesisHandlerV2(LoggerMixin):
                 if calendar_response.status_code == 200:
                     calendar_data = calendar_response.json()
                     if isinstance(calendar_data, list):
-                        # Find this symbol's next earnings
                         for item in calendar_data:
                             if item.get("symbol", "").upper() == symbol.upper():
                                 next_earnings = {
                                     "date": item.get("date"),
-                                    "time": item.get("time", "TBD"),  # BMO, AMC, or TBD
+                                    "time": item.get("time", "TBD"),
                                     "eps_estimated": item.get("epsEstimated"),
                                     "revenue_estimated": item.get("revenueEstimated")
                                 }
-                                self.logger.info(f"[Earnings] Found upcoming: {symbol} on {next_earnings['date']} ({next_earnings['time']})")
                                 break
 
-                # =============================================================
-                # STEP 2: Fetch HISTORICAL earnings for beat rate
-                # =============================================================
+                # Fetch HISTORICAL earnings for beat rate
                 historical_url = "https://financialmodelingprep.com/stable/earnings"
                 historical_params = {"symbol": symbol, "apikey": self.fmp_api_key}
 
@@ -539,7 +451,6 @@ class SynthesisHandlerV2(LoggerMixin):
                 if historical_response.status_code == 200:
                     historical_data = historical_response.json()
                     if isinstance(historical_data, list) and historical_data:
-                        # Sort by date descending and get recent history
                         sorted_history = sorted(
                             historical_data,
                             key=lambda x: x.get("date", ""),
@@ -547,7 +458,6 @@ class SynthesisHandlerV2(LoggerMixin):
                         )
                         historical = sorted_history[:8]
 
-                        # Calculate beat rate
                         beats = sum(1 for h in historical
                                    if h.get("epsActual") and h.get("epsEstimated")
                                    and h["epsActual"] > h["epsEstimated"])
@@ -555,10 +465,7 @@ class SynthesisHandlerV2(LoggerMixin):
                                     if h.get("epsActual") and h.get("epsEstimated")])
                         beat_rate = round(beats / total, 2) if total > 0 else None
 
-                # =============================================================
-                # STEP 3: Build result
-                # =============================================================
-                result = {
+                return {
                     "next_earnings_date": next_earnings.get("date") if next_earnings else None,
                     "earnings_time": next_earnings.get("time", "TBD") if next_earnings else "TBD",
                     "eps_estimated": next_earnings.get("eps_estimated") if next_earnings else None,
@@ -566,18 +473,8 @@ class SynthesisHandlerV2(LoggerMixin):
                     "fiscal_quarter": self._determine_fiscal_quarter(next_earnings.get("date") if next_earnings else None),
                     "historical": historical[:4],
                     "beat_rate": beat_rate,
-                    "source": "FMP Earnings Calendar API (earning_calendar + stable/earnings)"
+                    "source": "FMP Earnings Calendar API"
                 }
-
-                if result["next_earnings_date"]:
-                    self.logger.info(
-                        f"[Earnings] {symbol}: Next={result['next_earnings_date']} ({result['earnings_time']}), "
-                        f"Beat Rate={result['beat_rate']}"
-                    )
-                else:
-                    self.logger.warning(f"[Earnings] {symbol}: No upcoming earnings found in next 120 days")
-
-                return result
 
         except Exception as e:
             self.logger.error(f"[Earnings] Error fetching for {symbol}: {e}")
@@ -587,141 +484,158 @@ class SynthesisHandlerV2(LoggerMixin):
         """Determine fiscal quarter from date."""
         if not date_str:
             return "N/A"
-
         try:
             date = datetime.strptime(date_str, "%Y-%m-%d")
             month = date.month
             year = date.year
-
             if month in [1, 2, 3]:
                 return f"Q4 FY{year}"
             elif month in [4, 5, 6]:
-                return f"Q1 FY{year}"
+                return f"Q1 FY{year+1}"
             elif month in [7, 8, 9]:
-                return f"Q2 FY{year}"
+                return f"Q2 FY{year+1}"
             else:
-                return f"Q3 FY{year}"
+                return f"Q3 FY{year+1}"
         except:
             return "N/A"
 
-    async def _fetch_peer_comparison(
-        self,
-        symbol: str,
-        step_data: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch peer comparison data.
+    # =========================================================================
+    # DATA FETCHING - DYNAMIC PEER COMPARISON (FMP API)
+    # =========================================================================
 
-        Returns:
-            {
-                "symbol": "NVDA",
-                "sector": "Technology",
-                "peers": [
-                    {"symbol": "AMD", "pe_ttm": 120.5, "ps": 8.2, "revenue_growth": 45%},
-                    ...
-                ],
-                "target_metrics": {"pe_ttm": 43.67, ...}
-            }
+    async def _fetch_peer_comparison_dynamic(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetch peer comparison using FMP stock_peers API (dynamic, not hardcoded).
+
+        Endpoint: GET /api/v4/stock_peers?symbol=NVDA
         """
         if not self.fmp_api_key:
             return None
 
         try:
-            # Determine peers
-            peers = PEER_MAPPING.get(symbol, [])
-
-            if not peers:
-                # Try to get from sector in position data
-                position_content = step_data.get("position", {}).get("content", "")
-                for sector, sector_peers in DEFAULT_SECTOR_PEERS.items():
-                    if sector.lower() in position_content.lower():
-                        peers = [p for p in sector_peers if p != symbol][:4]
-                        break
-
-            if not peers:
-                self.logger.info(f"[Peers] No peers found for {symbol}")
-                return None
-
-            # Fetch metrics for target and peers in parallel
-            all_symbols = [symbol] + peers[:4]
-
             async with httpx.AsyncClient(timeout=20.0) as client:
+                # Step 1: Get peers from FMP API
+                peers_url = f"https://financialmodelingprep.com/api/v4/stock_peers"
+                peers_params = {"symbol": symbol, "apikey": self.fmp_api_key}
+
+                peers_response = await client.get(peers_url, params=peers_params)
+
+                peers = []
+                if peers_response.status_code == 200:
+                    peers_data = peers_response.json()
+                    if isinstance(peers_data, list) and peers_data:
+                        # API returns [{"symbol": "NVDA", "peersList": ["AMD", "INTC", ...]}]
+                        peers = peers_data[0].get("peersList", [])[:5]  # Max 5 peers
+                        self.logger.info(f"[Peers] FMP API returned peers for {symbol}: {peers}")
+
+                if not peers:
+                    self.logger.warning(f"[Peers] No peers found from FMP API for {symbol}")
+                    return None
+
+                # Step 2: Fetch metrics for target and peers
+                all_symbols = [symbol] + peers
+
                 tasks = []
                 for sym in all_symbols:
-                    tasks.append(self._fetch_single_peer_metrics(client, sym))
+                    tasks.append(self._fetch_single_company_metrics(client, sym))
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # Parse results
-            peer_metrics = []
-            target_metrics = None
+                # Parse results
+                peer_metrics = []
+                target_metrics = None
 
-            for i, result in enumerate(results):
-                if isinstance(result, Exception) or result is None:
-                    continue
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception) or result is None:
+                        continue
+                    if all_symbols[i] == symbol:
+                        target_metrics = result
+                    else:
+                        peer_metrics.append(result)
 
-                if all_symbols[i] == symbol:
-                    target_metrics = result
-                else:
-                    peer_metrics.append(result)
+                if not target_metrics:
+                    return None
 
-            if not target_metrics or not peer_metrics:
-                return None
-
-            return {
-                "symbol": symbol,
-                "sector": target_metrics.get("sector", "N/A"),
-                "peers": peer_metrics,
-                "target_metrics": target_metrics
-            }
+                return {
+                    "symbol": symbol,
+                    "sector": target_metrics.get("sector", "N/A"),
+                    "industry": target_metrics.get("industry", "N/A"),
+                    "peers": peer_metrics,
+                    "target_metrics": target_metrics,
+                    "source": "FMP stock_peers API + key-metrics-ttm"
+                }
 
         except Exception as e:
             self.logger.error(f"[Peers] Error fetching for {symbol}: {e}")
             return None
 
-    async def _fetch_single_peer_metrics(
+    async def _fetch_single_company_metrics(
         self,
         client: httpx.AsyncClient,
         symbol: str
     ) -> Optional[Dict[str, Any]]:
-        """Fetch metrics for a single symbol."""
+        """Fetch comprehensive metrics for a single symbol."""
         try:
             # Fetch key-metrics-ttm
-            url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}"
+            metrics_url = f"https://financialmodelingprep.com/api/v3/key-metrics-ttm/{symbol}"
             params = {"apikey": self.fmp_api_key}
 
-            response = await client.get(url, params=params)
+            metrics_response = await client.get(metrics_url, params=params)
 
-            if response.status_code != 200:
+            if metrics_response.status_code != 200:
                 return None
 
-            data = response.json()
-
-            if not isinstance(data, list) or not data:
+            metrics_data = metrics_response.json()
+            if not isinstance(metrics_data, list) or not metrics_data:
                 return None
 
-            metrics = data[0]
+            metrics = metrics_data[0]
 
-            # Also get profile for sector
+            # Fetch profile for sector/industry
             profile_url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}"
             profile_response = await client.get(profile_url, params=params)
-            profile_data = profile_response.json() if profile_response.status_code == 200 else []
-            profile = profile_data[0] if profile_data else {}
+            profile = {}
+            if profile_response.status_code == 200:
+                profile_data = profile_response.json()
+                profile = profile_data[0] if profile_data else {}
+
+            # Fetch ratios for additional metrics
+            ratios_url = f"https://financialmodelingprep.com/api/v3/ratios-ttm/{symbol}"
+            ratios_response = await client.get(ratios_url, params=params)
+            ratios = {}
+            if ratios_response.status_code == 200:
+                ratios_data = ratios_response.json()
+                ratios = ratios_data[0] if ratios_data else {}
 
             return {
                 "symbol": symbol,
+                "company_name": profile.get("companyName", symbol),
                 "sector": profile.get("sector", "N/A"),
+                "industry": profile.get("industry", "N/A"),
+                "current_price": profile.get("price"),
+                "market_cap": profile.get("mktCap", 0),
+                # Valuation metrics
                 "pe_ttm": round(metrics.get("peRatioTTM", 0), 2) if metrics.get("peRatioTTM") else None,
+                "pe_forward": round(ratios.get("priceEarningsToGrowthRatioTTM", 0), 2) if ratios.get("priceEarningsToGrowthRatioTTM") else None,
                 "ps_ttm": round(metrics.get("priceToSalesRatioTTM", 0), 2) if metrics.get("priceToSalesRatioTTM") else None,
                 "pb_ttm": round(metrics.get("pbRatioTTM", 0), 2) if metrics.get("pbRatioTTM") else None,
+                "ev_ebitda": round(metrics.get("enterpriseValueOverEBITDATTM", 0), 2) if metrics.get("enterpriseValueOverEBITDATTM") else None,
+                # Profitability
                 "roe_ttm": round(metrics.get("roeTTM", 0) * 100, 1) if metrics.get("roeTTM") else None,
-                "revenue_growth": round(metrics.get("revenueGrowthTTM", 0) * 100, 1) if metrics.get("revenueGrowthTTM") else None,
-                "market_cap": profile.get("mktCap", 0)
+                "net_margin": round(metrics.get("netIncomePerShareTTM", 0) / metrics.get("revenuePerShareTTM", 1) * 100, 1) if metrics.get("revenuePerShareTTM") else None,
+                # Growth (from ratios)
+                "revenue_growth": round(ratios.get("revenueGrowthTTM", 0) * 100, 1) if ratios.get("revenueGrowthTTM") else None,
+                # Dividend
+                "dividend_yield": round(metrics.get("dividendYieldTTM", 0) * 100, 2) if metrics.get("dividendYieldTTM") else None,
             }
 
         except Exception as e:
             self.logger.debug(f"[Peers] Error fetching metrics for {symbol}: {e}")
             return None
+
+    # =========================================================================
+    # DATA FETCHING - WEB ENRICHMENT
+    # =========================================================================
 
     async def _fetch_web_enrichment(
         self,
@@ -729,20 +643,10 @@ class SynthesisHandlerV2(LoggerMixin):
         step_data: Dict[str, Any],
         scoring: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """
-        Fetch web search results with smart queries and deduplication.
-
-        Returns:
-            {
-                "news": [...],
-                "citations": [...],  # Deduplicated
-                "search_date": "2026-01-21"
-            }
-        """
+        """Fetch web search results with smart queries and deduplication."""
         try:
             web_search = WebSearchTool()
 
-            # Build date-aware smart queries
             current_date = datetime.now()
             month_year = current_date.strftime("%B %Y")
 
@@ -754,17 +658,16 @@ class SynthesisHandlerV2(LoggerMixin):
                 },
                 {
                     "category": "earnings",
-                    "query": f"{symbol} earnings date guidance Q4 2026",
+                    "query": f"{symbol} earnings guidance analyst estimates 2026",
                     "max_results": 3
                 },
                 {
                     "category": "analyst",
-                    "query": f"{symbol} analyst price target upgrade downgrade {month_year}",
+                    "query": f"{symbol} analyst rating price target {month_year}",
                     "max_results": 3
                 }
             ]
 
-            # Execute searches
             all_citations = []
             all_answers = []
 
@@ -777,11 +680,9 @@ class SynthesisHandlerV2(LoggerMixin):
                     )
 
                     if result.status == "success" and result.data:
-                        # Collect citations
                         for citation in result.data.get("citations", []):
                             all_citations.append(citation)
 
-                        # Collect answers
                         if result.data.get("answer"):
                             all_answers.append({
                                 "category": query_info["category"],
@@ -790,26 +691,19 @@ class SynthesisHandlerV2(LoggerMixin):
                 except Exception as e:
                     self.logger.warning(f"[Web] Search failed for {query_info['category']}: {e}")
 
-            # Deduplicate citations by URL
+            # Deduplicate by URL
             seen_urls = set()
             unique_citations = []
             for citation in all_citations:
                 url = citation.get("url", "")
-                # Extract base URL for dedup
                 base_url = url.split("?")[0] if url else ""
                 if base_url and base_url not in seen_urls:
                     seen_urls.add(base_url)
                     unique_citations.append(citation)
 
-            # Filter for freshness (last 30 days preferred)
-            fresh_citations = []
-            for citation in unique_citations[:8]:
-                # Keep citation, mark as fresh/stale if date available
-                fresh_citations.append(citation)
-
             return {
                 "news": all_answers,
-                "citations": fresh_citations[:6],  # Max 6 unique sources
+                "citations": unique_citations[:8],
                 "search_date": current_date.strftime("%Y-%m-%d")
             }
 
@@ -827,41 +721,21 @@ class SynthesisHandlerV2(LoggerMixin):
         step_data: Dict[str, Any],
         scoring: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Calculate consistent trading plan based on score and technical data.
-
-        Includes HOLDER-specific rules (exit/reduce triggers).
-
-        Returns:
-            {
-                "trading_system": "breakout" | "wait_and_watch" | "exit",
-                "current_price": 178.07,
-                "entry_zone": {"low": 185, "high": 190},
-                "stop_loss": {"price": 169, "pct_from_entry": 8.6},
-                "targets": [{"price": 205, "pct_gain": 10}, ...],
-                "risk_reward_ratio": 2.5,
-                "position_sizing_note": "...",
-                "holder_rules": {...}  # NEW: Rules for existing holders
-            }
-        """
+        """Calculate consistent trading plan with holder-specific rules."""
         composite_score = scoring.get("composite_score", 50)
-        recommendation = scoring.get("recommendation", {}).get("action", "HOLD")
 
-        # Extract technical data
-        risk_data = step_data.get("risk", {}).get("raw_data", {})
-        tech_data = step_data.get("technical", {}).get("raw_data", {})
+        # Extract data from raw_data
+        risk_raw = step_data.get("risk", {}).get("raw_data", {})
 
-        # Get current price and ATR
-        current_price = risk_data.get("current_price", 0)
-        atr = risk_data.get("atr", {}).get("value", 0)
-        atr_pct = risk_data.get("atr", {}).get("percent", 2.5)
+        current_price = risk_raw.get("current_price", 0)
+        atr = risk_raw.get("atr", {}).get("value", 0) if isinstance(risk_raw.get("atr"), dict) else 0
 
-        # Calculate key support/resistance levels for holder rules
-        support_1 = round(current_price * 0.95, 2)  # ~5% below current
-        support_2 = round(current_price * 0.90, 2)  # ~10% below current
-        resistance_1 = round(current_price * 1.05, 2)  # ~5% above current
+        # Support/Resistance levels
+        support_1 = round(current_price * 0.95, 2) if current_price else 0
+        support_2 = round(current_price * 0.90, 2) if current_price else 0
+        resistance_1 = round(current_price * 1.05, 2) if current_price else 0
+        resistance_2 = round(current_price * 1.10, 2) if current_price else 0
 
-        # Default plan
         plan = {
             "trading_system": "wait_and_watch",
             "current_price": current_price,
@@ -879,150 +753,283 @@ class SynthesisHandlerV2(LoggerMixin):
             }
         }
 
-        # Determine trading system based on score
         if composite_score >= 65:
             # BREAKOUT SYSTEM
             plan["trading_system"] = "breakout"
 
-            # Entry above current price (breakout confirmation)
-            entry_low = round(current_price * 1.03, 2)  # 3% above current
-            entry_high = round(current_price * 1.07, 2)  # 7% above current
+            entry_low = round(current_price * 1.03, 2)
+            entry_high = round(current_price * 1.07, 2)
             plan["entry_zone"] = {"low": entry_low, "high": entry_high}
 
-            # Stop loss using ATR from entry (2x ATR below entry)
             avg_entry = (entry_low + entry_high) / 2
             stop_price = round(avg_entry - (2 * atr if atr > 0 else avg_entry * 0.08), 2)
-            stop_pct = round(((avg_entry - stop_price) / avg_entry) * 100, 1)
+            stop_pct = round(((avg_entry - stop_price) / avg_entry) * 100, 1) if avg_entry > 0 else 8.0
             plan["stop_loss"] = {"price": stop_price, "pct_from_entry": stop_pct}
 
-            # Targets: 1:2 and 1:3 R:R
             risk_per_share = avg_entry - stop_price
             target_1 = round(avg_entry + (risk_per_share * 2), 2)
             target_2 = round(avg_entry + (risk_per_share * 3), 2)
 
             plan["targets"] = [
-                {"price": target_1, "pct_gain": round(((target_1 - avg_entry) / avg_entry) * 100, 1)},
-                {"price": target_2, "pct_gain": round(((target_2 - avg_entry) / avg_entry) * 100, 1)}
+                {"price": target_1, "pct_gain": round(((target_1 - avg_entry) / avg_entry) * 100, 1) if avg_entry > 0 else 0},
+                {"price": target_2, "pct_gain": round(((target_2 - avg_entry) / avg_entry) * 100, 1) if avg_entry > 0 else 0}
             ]
-
             plan["risk_reward_ratio"] = 2.0
-            plan["position_sizing_note"] = f"Risk {stop_pct}% per position. For 2% account risk, position size = (Account * 0.02) / (Entry * {stop_pct/100:.3f})"
+            plan["position_sizing_note"] = f"Risk {stop_pct}% per position. For 2% account risk: position size = (Account * 0.02) / (Entry * {stop_pct/100:.3f})"
 
-            # Holder rules for BUY scenario
             plan["holder_rules"] = {
-                "reduce_trigger": None,  # No reduce needed for BUY
+                "reduce_trigger": None,
                 "exit_trigger": stop_price,
-                "trailing_stop": f"Di chuyển stop lên theo ATR khi giá tăng. ATR hiện tại = ${atr:.2f}" if atr else None,
-                "add_trigger": round(target_1 * 0.98, 2),  # Add on pullback to target 1
-                "description": "Xu hướng tích cực. Giữ vị thế, có thể thêm khi giá pullback về vùng hỗ trợ."
+                "trailing_stop": f"Move stop up by ATR (${atr:.2f}) as price rises" if atr else "Move stop up as price rises",
+                "add_trigger": round(target_1 * 0.98, 2),
+                "description": "Positive trend. Hold position, can add on pullback to support."
             }
 
         elif composite_score >= 45:
-            # WAIT & WATCH - No entry for new investors
+            # WAIT & WATCH
             plan["trading_system"] = "wait_and_watch"
-            plan["entry_zone"] = None
-            plan["stop_loss"] = None
-            plan["targets"] = []
             plan["position_sizing_note"] = "Watchlist only. Wait for score > 65 or clear technical breakout."
 
-            # Holder rules for HOLD scenario (CRITICAL)
             plan["holder_rules"] = {
                 "reduce_trigger": support_1,
                 "exit_trigger": support_2,
-                "trailing_stop": f"Nếu giá tăng vượt ${resistance_1:.2f}, di chuyển stop lên ${current_price:.2f}",
-                "add_trigger": None,  # Don't add in HOLD mode
-                "description": (
-                    f"Tín hiệu trái chiều. Holder nên:\n"
-                    f"  • Giảm 50% vị thế nếu giá thủng ${support_1:.2f}\n"
-                    f"  • Thoát hoàn toàn nếu giá thủng ${support_2:.2f}\n"
-                    f"  • KHÔNG thêm vị thế mới cho đến khi score > 65"
-                )
+                "trailing_stop": f"If price rises above ${resistance_1:.2f}, move stop to ${current_price:.2f}",
+                "add_trigger": None,
+                "description": f"Mixed signals. Holders: Reduce 50% if price breaks ${support_1:.2f}, exit fully below ${support_2:.2f}. Do NOT add until score > 65."
             }
 
         else:
             # EXIT / AVOID
             plan["trading_system"] = "exit_or_avoid"
+            plan["position_sizing_note"] = "Reduce or exit position. Do not add new capital."
 
-            # For holders: exit strategy
-            if current_price > 0:
-                exit_price = round(current_price * 0.95, 2)  # Exit on 5% bounce
-                plan["exit_zone"] = {"price": exit_price}
-                plan["position_sizing_note"] = "Reduce or exit position. Do not add new capital."
-
-            # Holder rules for SELL scenario
             plan["holder_rules"] = {
-                "reduce_trigger": current_price,  # Reduce NOW
+                "reduce_trigger": current_price,
                 "exit_trigger": support_1,
                 "trailing_stop": None,
                 "add_trigger": None,
-                "description": (
-                    f"Tín hiệu tiêu cực. Holder nên:\n"
-                    f"  • Giảm ít nhất 50% vị thế NGAY\n"
-                    f"  • Thoát hoàn toàn nếu giá thủng ${support_1:.2f}\n"
-                    f"  • Nếu muốn giữ: đặt stop loss chặt tại ${support_1:.2f}"
-                )
+                "description": f"Negative signals. Holders: Reduce at least 50% NOW, exit fully below ${support_1:.2f}."
             }
 
         return plan
 
     def _format_trading_plan_section(self, plan: Dict[str, Any]) -> str:
-        """Format trading plan as prompt section with holder rules."""
+        """Format trading plan as prompt section."""
         lines = [
-            "## PRE-CALCULATED TRADING PLAN (USE THIS EXACTLY)",
+            "## PRE-CALCULATED TRADING PLAN (USE THESE EXACT VALUES)",
             "",
             f"Trading System: {plan['trading_system'].upper().replace('_', ' ')}",
             f"Current Price: ${plan['current_price']:.2f}" if plan['current_price'] else "Current Price: N/A",
         ]
 
-        # New investor entry rules
         lines.append("")
-        lines.append("### FOR NEW INVESTORS (Chưa có vị thế):")
+        lines.append("### FOR NEW INVESTORS:")
         if plan.get("entry_zone"):
-            lines.append(f"Entry Zone: ${plan['entry_zone']['low']:.2f} - ${plan['entry_zone']['high']:.2f} (BREAKOUT CONFIRMATION REQUIRED)")
+            lines.append(f"- Entry Zone: ${plan['entry_zone']['low']:.2f} - ${plan['entry_zone']['high']:.2f} (BREAKOUT CONFIRMATION REQUIRED)")
         else:
-            lines.append("Entry Zone: KHÔNG VÀO LỆNH - Watchlist only until conditions met")
+            lines.append("- Entry Zone: NO ENTRY - Watchlist only")
 
         if plan.get("stop_loss"):
-            lines.append(f"Stop Loss: ${plan['stop_loss']['price']:.2f} ({plan['stop_loss']['pct_from_entry']}% below ENTRY, not current price)")
+            lines.append(f"- Stop Loss: ${plan['stop_loss']['price']:.2f} ({plan['stop_loss']['pct_from_entry']}% below ENTRY price)")
 
         if plan.get("targets"):
             for i, target in enumerate(plan["targets"], 1):
-                lines.append(f"Target {i}: ${target['price']:.2f} (+{target['pct_gain']}%)")
+                lines.append(f"- Target {i}: ${target['price']:.2f} (+{target['pct_gain']}%)")
 
         if plan.get("risk_reward_ratio"):
-            lines.append(f"Risk:Reward Ratio: 1:{plan['risk_reward_ratio']}")
+            lines.append(f"- Risk:Reward: 1:{plan['risk_reward_ratio']}")
 
-        if plan.get("position_sizing_note"):
-            lines.append(f"Position Sizing: {plan['position_sizing_note']}")
-
-        # Holder rules (CRITICAL NEW SECTION)
         holder_rules = plan.get("holder_rules", {})
         if holder_rules:
             lines.append("")
-            lines.append("### FOR EXISTING HOLDERS (Đã có vị thế) - CRITICAL:")
-
+            lines.append("### FOR EXISTING HOLDERS:")
             if holder_rules.get("description"):
-                lines.append(holder_rules["description"])
-
+                lines.append(f"- Strategy: {holder_rules['description']}")
             if holder_rules.get("reduce_trigger"):
-                lines.append(f"• Giảm 50% vị thế: Nếu giá thủng ${holder_rules['reduce_trigger']:.2f}")
-
+                lines.append(f"- Reduce 50%: If price breaks ${holder_rules['reduce_trigger']:.2f}")
             if holder_rules.get("exit_trigger"):
-                lines.append(f"• Thoát hoàn toàn: Nếu giá thủng ${holder_rules['exit_trigger']:.2f}")
-
+                lines.append(f"- Exit fully: If price breaks ${holder_rules['exit_trigger']:.2f}")
             if holder_rules.get("trailing_stop"):
-                lines.append(f"• Trailing Stop: {holder_rules['trailing_stop']}")
-
-            if holder_rules.get("add_trigger"):
-                lines.append(f"• Thêm vị thế: Có thể add nếu giá pullback về ${holder_rules['add_trigger']:.2f}")
+                lines.append(f"- Trailing Stop: {holder_rules['trailing_stop']}")
 
         return "\n".join(lines)
 
     # =========================================================================
-    # PROMPT BUILDING
+    # SCENARIO ANALYSIS CALCULATION
     # =========================================================================
 
-    def _build_consolidated_prompt(
+    def _calculate_scenario_analysis(
+        self,
+        symbol: str,
+        step_data: Dict[str, Any],
+        scoring: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Calculate Bull/Base/Bear scenarios with price targets and probabilities."""
+        risk_raw = step_data.get("risk", {}).get("raw_data", {})
+        fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
+
+        current_price = risk_raw.get("current_price", 0)
+        atr = risk_raw.get("atr", {}).get("value", 0) if isinstance(risk_raw.get("atr"), dict) else 0
+        volatility = risk_raw.get("volatility", {}).get("annualized", 0) if isinstance(risk_raw.get("volatility"), dict) else 0
+
+        # Get intrinsic values if available
+        intrinsic = fund_raw.get("fundamental_report", {}).get("intrinsic_value", {}) if fund_raw else {}
+        graham_value = intrinsic.get("graham_value")
+        dcf_value = intrinsic.get("dcf_value")
+
+        composite_score = scoring.get("composite_score", 50)
+
+        # Calculate scenario targets based on volatility and score
+        if current_price > 0:
+            # Bull case: +20-30% depending on score
+            bull_multiplier = 1.25 if composite_score >= 65 else 1.20
+            bull_target = round(current_price * bull_multiplier, 2)
+
+            # Base case: +5-10%
+            base_target = round(current_price * 1.08, 2)
+
+            # Bear case: -15-25%
+            bear_multiplier = 0.80 if composite_score < 45 else 0.85
+            bear_target = round(current_price * bear_multiplier, 2)
+        else:
+            bull_target = base_target = bear_target = 0
+
+        # Probability based on composite score
+        if composite_score >= 70:
+            bull_prob, base_prob, bear_prob = 40, 45, 15
+        elif composite_score >= 55:
+            bull_prob, base_prob, bear_prob = 30, 50, 20
+        elif composite_score >= 45:
+            bull_prob, base_prob, bear_prob = 25, 45, 30
+        else:
+            bull_prob, base_prob, bear_prob = 15, 40, 45
+
+        return {
+            "current_price": current_price,
+            "bull": {
+                "target": bull_target,
+                "return_pct": round((bull_target - current_price) / current_price * 100, 1) if current_price else 0,
+                "probability": bull_prob,
+                "triggers": ["Earnings beat + raised guidance", "Sector rotation into stock", "New product/contract announcement"]
+            },
+            "base": {
+                "target": base_target,
+                "return_pct": round((base_target - current_price) / current_price * 100, 1) if current_price else 0,
+                "probability": base_prob,
+                "triggers": ["In-line earnings", "Stable macro environment", "No major surprises"]
+            },
+            "bear": {
+                "target": bear_target,
+                "return_pct": round((bear_target - current_price) / current_price * 100, 1) if current_price else 0,
+                "probability": bear_prob,
+                "triggers": ["Earnings miss", "Macro deterioration", "Competition pressure", "Guidance cut"]
+            },
+            "fair_value": {
+                "graham_value": graham_value,
+                "dcf_value": dcf_value,
+                "premium_discount": self._calculate_premium_discount(current_price, graham_value, dcf_value)
+            },
+            "time_horizon": "1-3 months"
+        }
+
+    def _calculate_premium_discount(
+        self,
+        current_price: float,
+        graham_value: Optional[float],
+        dcf_value: Optional[float]
+    ) -> Dict[str, Any]:
+        """Calculate premium/discount to fair value."""
+        result = {"assessment": "N/A", "details": {}}
+
+        if not current_price:
+            return result
+
+        fair_values = []
+        if graham_value and graham_value > 0:
+            graham_diff = round((current_price - graham_value) / graham_value * 100, 1)
+            result["details"]["graham"] = {
+                "value": graham_value,
+                "diff_pct": graham_diff,
+                "status": "Premium" if graham_diff > 0 else "Discount"
+            }
+            fair_values.append(graham_value)
+
+        if dcf_value and dcf_value > 0:
+            dcf_diff = round((current_price - dcf_value) / dcf_value * 100, 1)
+            result["details"]["dcf"] = {
+                "value": dcf_value,
+                "diff_pct": dcf_diff,
+                "status": "Premium" if dcf_diff > 0 else "Discount"
+            }
+            fair_values.append(dcf_value)
+
+        if fair_values:
+            avg_fair_value = sum(fair_values) / len(fair_values)
+            avg_diff = round((current_price - avg_fair_value) / avg_fair_value * 100, 1)
+
+            if avg_diff > 20:
+                result["assessment"] = "Significantly Overvalued"
+            elif avg_diff > 5:
+                result["assessment"] = "Moderately Overvalued"
+            elif avg_diff > -5:
+                result["assessment"] = "Fairly Valued"
+            elif avg_diff > -20:
+                result["assessment"] = "Moderately Undervalued"
+            else:
+                result["assessment"] = "Significantly Undervalued"
+
+            result["avg_fair_value"] = round(avg_fair_value, 2)
+            result["avg_diff_pct"] = avg_diff
+
+        return result
+
+    def _format_scenario_section(self, scenarios: Dict[str, Any]) -> str:
+        """Format scenario analysis as prompt section."""
+        lines = [
+            "## PRE-CALCULATED SCENARIO ANALYSIS (USE THESE VALUES)",
+            "",
+            f"Current Price: ${scenarios['current_price']:.2f}" if scenarios['current_price'] else "Current Price: N/A",
+            f"Time Horizon: {scenarios['time_horizon']}",
+            "",
+            "### SCENARIOS:",
+            "",
+            f"BULL CASE ({scenarios['bull']['probability']}% probability):",
+            f"- Target: ${scenarios['bull']['target']:.2f} ({scenarios['bull']['return_pct']:+.1f}%)",
+            f"- Triggers: {', '.join(scenarios['bull']['triggers'][:2])}",
+            "",
+            f"BASE CASE ({scenarios['base']['probability']}% probability):",
+            f"- Target: ${scenarios['base']['target']:.2f} ({scenarios['base']['return_pct']:+.1f}%)",
+            f"- Triggers: {', '.join(scenarios['base']['triggers'][:2])}",
+            "",
+            f"BEAR CASE ({scenarios['bear']['probability']}% probability):",
+            f"- Target: ${scenarios['bear']['target']:.2f} ({scenarios['bear']['return_pct']:+.1f}%)",
+            f"- Triggers: {', '.join(scenarios['bear']['triggers'][:2])}",
+        ]
+
+        fair_value = scenarios.get("fair_value", {})
+        if fair_value.get("assessment") != "N/A":
+            lines.extend([
+                "",
+                "### FAIR VALUE ASSESSMENT:",
+                f"- Assessment: {fair_value['assessment']}",
+            ])
+            if fair_value.get("avg_fair_value"):
+                lines.append(f"- Average Fair Value: ${fair_value['avg_fair_value']:.2f}")
+                lines.append(f"- Premium/Discount: {fair_value['avg_diff_pct']:+.1f}%")
+
+            details = fair_value.get("details", {})
+            if details.get("graham"):
+                lines.append(f"- Graham Value: ${details['graham']['value']:.2f} ({details['graham']['status']} {abs(details['graham']['diff_pct']):.1f}%)")
+            if details.get("dcf"):
+                lines.append(f"- DCF Value: ${details['dcf']['value']:.2f} ({details['dcf']['status']} {abs(details['dcf']['diff_pct']):.1f}%)")
+
+        return "\n".join(lines)
+
+    # =========================================================================
+    # CONSOLIDATED PROMPT BUILDER (USES RAW DATA)
+    # =========================================================================
+
+    def _build_consolidated_prompt_v2(
         self,
         symbol: str,
         step_data: Dict[str, Any],
@@ -1032,16 +1039,18 @@ class SynthesisHandlerV2(LoggerMixin):
         web_data: Optional[Dict[str, Any]],
         target_language: str
     ) -> str:
-        """Build comprehensive prompt with all data."""
-
+        """
+        Build comprehensive prompt using RAW DATA metrics instead of truncated LLM content.
+        """
         parts = [
-            f"# COMPREHENSIVE INVESTMENT ANALYSIS REQUEST: {symbol}",
+            f"# COMPREHENSIVE INVESTMENT ANALYSIS: {symbol}",
             f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"Target Language: {target_language.upper()}",
             "",
         ]
 
         # =====================================================================
-        # SECTION 1: BINDING SCORING (CRITICAL)
+        # SECTION 1: BINDING SCORING
         # =====================================================================
         rec = scoring.get("recommendation", {})
         dist = rec.get("distribution", {})
@@ -1052,7 +1061,7 @@ class SynthesisHandlerV2(LoggerMixin):
             "=" * 60,
             "",
             f"Composite Score: {scoring.get('composite_score', 'N/A')}/100",
-            f"Recommendation: {rec.get('action', 'HOLD')} (THIS IS BINDING)",
+            f"Recommendation: {rec.get('action', 'HOLD')} (BINDING)",
             f"Distribution: BUY {dist.get('buy', 0)}% | HOLD {dist.get('hold', 0)}% | SELL {dist.get('sell', 0)}%",
             f"Confidence: {rec.get('confidence', 'N/A')}%",
             f"Time Horizon: {rec.get('time_horizon', 'N/A')}",
@@ -1060,10 +1069,10 @@ class SynthesisHandlerV2(LoggerMixin):
         ])
 
         # Component scores
-        parts.append("### Component Scores")
+        parts.append("### Component Scores:")
         components = scoring.get("component_scores", {})
         for name, data in components.items():
-            parts.append(f"- {name.title()}: {data.get('score', 'N/A')}/100 ({data.get('confidence', 'N/A')} confidence)")
+            parts.append(f"- {name.title()}: {data.get('score', 'N/A')}/100 (weight: {data.get('weight', 'N/A')}, confidence: {data.get('confidence', 'N/A')})")
         parts.append("")
 
         # Key factors
@@ -1071,14 +1080,13 @@ class SynthesisHandlerV2(LoggerMixin):
         if key_factors:
             bullish = [f["factor"] for f in key_factors if f.get("impact") == "bullish"]
             bearish = [f["factor"] for f in key_factors if f.get("impact") == "bearish"]
-
-            parts.append("### Key Factors")
+            parts.append("### Key Factors:")
             parts.append(f"Bullish: {', '.join(bullish) if bullish else 'None'}")
             parts.append(f"Bearish: {', '.join(bearish) if bearish else 'None'}")
             parts.append("")
 
         # =====================================================================
-        # SECTION 2: TECHNICAL & POSITION DATA
+        # SECTION 2: TECHNICAL DATA (RAW METRICS)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1087,50 +1095,33 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        tech_content = step_data.get("technical", {}).get("content", "")
-        if tech_content:
-            parts.append(tech_content[:4000])
+        tech_raw = step_data.get("technical", {}).get("raw_data", {})
+        if tech_raw:
+            parts.extend(self._format_technical_raw_data(tech_raw))
         else:
             parts.append("Technical data not available.")
         parts.append("")
 
-        # Position data with sector ranking explanation
+        # =====================================================================
+        # SECTION 3: POSITION DATA (RAW METRICS)
+        # =====================================================================
         parts.extend([
+            "=" * 60,
             "## MARKET POSITION DATA",
+            "=" * 60,
             "",
         ])
 
-        pos_content = step_data.get("position", {}).get("content", "")
         pos_raw = step_data.get("position", {}).get("raw_data", {})
-
-        if pos_content:
-            parts.append(pos_content[:3000])
-
-        # Add sector ranking methodology
-        pos_data = step_data.get("position", {})
-        sector_context = pos_data.get("sector_context", {})
-        if sector_context:
-            sector_rank = sector_context.get("sector_rank")
-            total_sectors = sector_context.get("total_sectors", 11)
-            sector_change = sector_context.get("sector_change_percent", 0)
-            sector_status = sector_context.get("sector_status", "N/A")
-            stock_sector = sector_context.get("stock_sector", "N/A")
-
-            parts.extend([
-                "",
-                "### Sector Ranking Methodology",
-                f"- Sector: {stock_sector}",
-                f"- Ranking System: Daily performance ranking (FMP Sector Performance API)",
-                f"- Ranking: #{sector_rank}/{total_sectors} sectors today",
-                f"- Today's Change: {sector_change:+.2f}%" if sector_change else "- Today's Change: N/A",
-                f"- Status: {sector_status}",
-                f"- Note: Sector rank is 1-DAY data; RS analysis uses multi-timeframe (21d, 63d, 126d)",
-                f"- Interpretation: Lower rank number = better performing sector today",
-            ])
+        sector_context = step_data.get("position", {}).get("sector_context", {})
+        if pos_raw or sector_context:
+            parts.extend(self._format_position_raw_data(pos_raw, sector_context))
+        else:
+            parts.append("Position data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 3: RISK & SENTIMENT DATA
+        # SECTION 4: RISK DATA (RAW METRICS)
         # =====================================================================
         parts.extend([
             "=" * 60,
@@ -1139,150 +1130,405 @@ class SynthesisHandlerV2(LoggerMixin):
             "",
         ])
 
-        risk_content = step_data.get("risk", {}).get("content", "")
-        if risk_content:
-            parts.append(risk_content[:3000])
+        risk_raw = step_data.get("risk", {}).get("raw_data", {})
+        if risk_raw:
+            parts.extend(self._format_risk_raw_data(risk_raw))
+        else:
+            parts.append("Risk data not available.")
         parts.append("")
 
+        # =====================================================================
+        # SECTION 5: SENTIMENT DATA (RAW METRICS)
+        # =====================================================================
         parts.extend([
+            "=" * 60,
             "## SENTIMENT DATA",
+            "=" * 60,
             "",
         ])
 
-        sent_content = step_data.get("sentiment", {}).get("content", "")
-        if sent_content:
-            parts.append(sent_content[:2500])
+        sent_raw = step_data.get("sentiment", {}).get("raw_data", {})
+        if sent_raw:
+            parts.extend(self._format_sentiment_raw_data(sent_raw))
+        else:
+            parts.append("Sentiment data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 4: FUNDAMENTAL DATA
+        # SECTION 6: FUNDAMENTAL DATA (RAW METRICS)
         # =====================================================================
         parts.extend([
             "=" * 60,
-            "## FUNDAMENTAL ANALYSIS DATA",
+            "## FUNDAMENTAL DATA",
             "=" * 60,
             "",
         ])
 
-        fund_content = step_data.get("fundamental", {}).get("content", "")
-        if fund_content:
-            parts.append(fund_content[:4000])
+        fund_raw = step_data.get("fundamental", {}).get("raw_data", {})
+        if fund_raw:
+            parts.extend(self._format_fundamental_raw_data(fund_raw))
+        else:
+            parts.append("Fundamental data not available.")
         parts.append("")
 
         # =====================================================================
-        # SECTION 5: PEER COMPARISON (NEW)
+        # SECTION 7: PEER COMPARISON (DYNAMIC FMP API)
         # =====================================================================
         if peer_data and peer_data.get("peers"):
             parts.extend([
                 "=" * 60,
-                "## PEER COMPARISON DATA (INCLUDE TABLE IN REPORT)",
+                "## PEER COMPARISON (FMP stock_peers API)",
                 "=" * 60,
                 "",
-                f"Target: {symbol} ({peer_data.get('sector', 'N/A')})",
+                f"Target: {symbol} | Sector: {peer_data.get('sector', 'N/A')} | Industry: {peer_data.get('industry', 'N/A')}",
                 "",
-                "| Symbol | P/E (TTM) | P/S (TTM) | Revenue Growth | Market Cap |",
-                "|--------|-----------|-----------|----------------|------------|",
+                "| Symbol | P/E (TTM) | P/S (TTM) | EV/EBITDA | ROE % | Rev Growth % | Market Cap |",
+                "|--------|-----------|-----------|-----------|-------|--------------|------------|",
             ])
 
-            # Add target row
             target = peer_data.get("target_metrics", {})
             parts.append(
-                f"| **{symbol}** | {target.get('pe_ttm', 'N/A')} | {target.get('ps_ttm', 'N/A')} | "
-                f"{target.get('revenue_growth', 'N/A')}% | ${target.get('market_cap', 0)/1e9:.1f}B |"
+                f"| **{symbol}** | {target.get('pe_ttm') or 'N/A'} | {target.get('ps_ttm') or 'N/A'} | "
+                f"{target.get('ev_ebitda') or 'N/A'} | {target.get('roe_ttm') or 'N/A'} | "
+                f"{target.get('revenue_growth') or 'N/A'} | ${target.get('market_cap', 0)/1e9:.1f}B |"
             )
 
-            # Add peer rows
-            for peer in peer_data.get("peers", [])[:4]:
+            for peer in peer_data.get("peers", [])[:5]:
                 parts.append(
-                    f"| {peer.get('symbol', 'N/A')} | {peer.get('pe_ttm', 'N/A')} | {peer.get('ps_ttm', 'N/A')} | "
-                    f"{peer.get('revenue_growth', 'N/A')}% | ${peer.get('market_cap', 0)/1e9:.1f}B |"
+                    f"| {peer.get('symbol', 'N/A')} | {peer.get('pe_ttm') or 'N/A'} | {peer.get('ps_ttm') or 'N/A'} | "
+                    f"{peer.get('ev_ebitda') or 'N/A'} | {peer.get('roe_ttm') or 'N/A'} | "
+                    f"{peer.get('revenue_growth') or 'N/A'} | ${peer.get('market_cap', 0)/1e9:.1f}B |"
                 )
 
-            parts.append("")
-            parts.append("Use this table in the Fundamental section. Comment on how target compares to peers.")
-            parts.append("")
+            parts.extend([
+                "",
+                "NOTE: P/E ratios may be distorted for companies with low or volatile EPS.",
+                f"Source: {peer_data.get('source', 'FMP API')}",
+                "",
+            ])
 
         # =====================================================================
-        # SECTION 6: EARNINGS CALENDAR (NEW - SPECIFIC DATES)
+        # SECTION 8: EARNINGS CALENDAR
         # =====================================================================
         if earnings_data:
             parts.extend([
                 "=" * 60,
-                "## EARNINGS CALENDAR (USE EXACT DATES)",
+                "## EARNINGS CALENDAR (FMP API)",
                 "=" * 60,
                 "",
             ])
 
             if earnings_data.get("next_earnings_date"):
-                parts.append(f"NEXT EARNINGS DATE: {earnings_data['next_earnings_date']} ({earnings_data.get('earnings_time', 'TBD')})")
+                parts.append(f"NEXT EARNINGS: {earnings_data['next_earnings_date']} ({earnings_data.get('earnings_time', 'TBD')})")
                 parts.append(f"Fiscal Quarter: {earnings_data.get('fiscal_quarter', 'N/A')}")
+                if earnings_data.get("eps_estimated"):
+                    parts.append(f"EPS Estimate: ${earnings_data['eps_estimated']:.2f}")
             else:
                 parts.append("Next earnings date: Not yet announced")
 
             if earnings_data.get("beat_rate") is not None:
-                parts.append(f"Historical EPS Beat Rate: {earnings_data['beat_rate']*100:.0f}%")
+                parts.append(f"Historical Beat Rate: {earnings_data['beat_rate']*100:.0f}%")
 
-            parts.append("")
-            parts.append("IMPORTANT: Use this EXACT date in the Catalysts section. Do not write 'dự kiến sắp tới'.")
+            parts.append(f"Source: {earnings_data.get('source', 'FMP API')}")
             parts.append("")
 
         # =====================================================================
-        # SECTION 7: WEB SEARCH RESULTS (WITH CITATION INSTRUCTION)
+        # SECTION 9: WEB SEARCH RESULTS
         # =====================================================================
         if web_data and web_data.get("citations"):
             parts.extend([
                 "=" * 60,
-                "## WEB SEARCH RESULTS (CITE INLINE)",
+                "## WEB SEARCH RESULTS (Use Inline Citations)",
                 "=" * 60,
                 "",
             ])
 
-            # Add answers
             for item in web_data.get("news", []):
                 parts.append(f"### {item['category'].upper()}")
                 parts.append(item["answer"][:1500])
                 parts.append("")
 
-            # Add citations for reference
-            parts.append("### Available Sources (USE INLINE CITATIONS)")
-            for i, citation in enumerate(web_data.get("citations", [])[:6], 1):
+            parts.append("### Available Sources (CITE INLINE):")
+            for i, citation in enumerate(web_data.get("citations", [])[:8], 1):
                 title = citation.get("title", "Untitled")[:60]
                 url = citation.get("url", "")
                 parts.append(f"[{i}] [{title}]({url})")
 
             parts.append("")
-            parts.append("INSTRUCTION: When making claims from web search, cite source INLINE like this: '...sell-off due to geopolitics [Barrons](url)'")
+            parts.append("INSTRUCTION: Cite sources INLINE when making claims, e.g., 'Stock fell 5% [Source Name](URL)'")
+            parts.append("Include a '## Sources' section at the end with all sources used.")
             parts.append("")
 
         # =====================================================================
-        # SECTION 8: OUTPUT INSTRUCTIONS
+        # SECTION 10: OUTPUT INSTRUCTIONS
         # =====================================================================
         parts.extend([
             "=" * 60,
-            "## YOUR TASK",
+            "## OUTPUT INSTRUCTIONS",
             "=" * 60,
             "",
-            f"Generate a complete investment report in {target_language.upper()} with these sections:",
+            f"Generate a comprehensive investment report in {target_language.upper()}.",
             "",
-            "1. **Tóm tắt Điều hành (Executive Summary)** - 3-4 paragraphs",
-            "2. **Phân tích Kỹ thuật & Vị thế Thị trường** - Include sector rank methodology",
-            "3. **Phân tích Rủi ro & Tâm lý** - Include specific risk metrics",
-            "4. **Đánh giá Giá trị Cơ bản** - Include peer comparison table",
-            "5. **Tin tức & Chất xúc tác** - Include EXACT earnings date, inline citations",
-            "6. **Khuyến nghị Cuối cùng** - MUST match scoring, consistent Entry/Stop/Target",
+            "Required sections in order:",
+            "1. Technical Analysis - Use metrics above",
+            "2. Market Position - Include sector ranking methodology",
+            "3. Risk Analysis - Include VaR, ATR, volatility",
+            "4. Sentiment Analysis - Include sentiment score interpretation",
+            "5. Fundamental Analysis - Include peer comparison table",
+            "6. Fair Value Assessment - Compare current price to Graham/DCF values",
+            "7. Scenario Analysis - Bull/Base/Bear with probabilities",
+            "8. News & Catalysts - With inline citations + Sources section",
+            "9. Executive Summary - Key highlights from each section",
+            "10. Final Recommendation - For NEW and EXISTING investors",
             "",
-            "REMEMBER:",
-            f"- Recommendation is {rec.get('action', 'HOLD')} - DO NOT contradict this",
-            "- Entry/Stop/Target must be mathematically consistent (stop % calculated from entry, not current price)",
-            "- Include peer comparison table if data provided",
-            f"- Use exact earnings date: {earnings_data.get('next_earnings_date', 'N/A') if earnings_data else 'N/A'}",
-            "- Cite web sources inline with claims",
+            "CRITICAL REMINDERS:",
+            f"- Recommendation is {rec.get('action', 'HOLD')} - DO NOT contradict",
+            "- Use EXACT values from trading plan and scenarios",
+            "- Cite web sources inline",
+            "- Include holder-specific rules (reduce/exit triggers)",
         ])
 
         return "\n".join(parts)
 
     # =========================================================================
-    # REPORT GENERATION HELPERS
+    # RAW DATA FORMATTERS
+    # =========================================================================
+
+    def _format_technical_raw_data(self, raw: Dict[str, Any]) -> List[str]:
+        """Format technical raw data as structured metrics."""
+        lines = []
+
+        # Price data
+        if raw.get("price_data"):
+            pd = raw["price_data"]
+            lines.append("### Price Data:")
+            lines.append(f"- Current Price: ${pd.get('close', 'N/A')}")
+            lines.append(f"- Day Change: {pd.get('change_percent', 'N/A')}%")
+            lines.append(f"- 52W High: ${pd.get('high_52w', 'N/A')}")
+            lines.append(f"- 52W Low: ${pd.get('low_52w', 'N/A')}")
+            lines.append("")
+
+        # Moving Averages
+        if raw.get("moving_averages"):
+            ma = raw["moving_averages"]
+            lines.append("### Moving Averages:")
+            lines.append(f"- SMA20: ${ma.get('sma20', 'N/A')}")
+            lines.append(f"- SMA50: ${ma.get('sma50', 'N/A')}")
+            lines.append(f"- SMA200: ${ma.get('sma200', 'N/A')}")
+            lines.append(f"- Price vs SMA200: {'Above' if ma.get('above_sma200') else 'Below'}")
+            lines.append("")
+
+        # Momentum Indicators
+        if raw.get("momentum"):
+            m = raw["momentum"]
+            lines.append("### Momentum Indicators:")
+            lines.append(f"- RSI(14): {m.get('rsi', 'N/A')}")
+            lines.append(f"- MACD: {m.get('macd', 'N/A')}")
+            lines.append(f"- MACD Signal: {m.get('macd_signal', 'N/A')}")
+            lines.append(f"- MACD Histogram: {m.get('macd_histogram', 'N/A')}")
+            lines.append("")
+
+        # Trend
+        if raw.get("trend"):
+            t = raw["trend"]
+            lines.append("### Trend Indicators:")
+            lines.append(f"- ADX: {t.get('adx', 'N/A')} (Trend Strength: {'Strong' if t.get('adx', 0) > 25 else 'Weak' if t.get('adx', 0) < 15 else 'Moderate'})")
+            lines.append(f"- +DI: {t.get('plus_di', 'N/A')}")
+            lines.append(f"- -DI: {t.get('minus_di', 'N/A')}")
+            lines.append("")
+
+        # Volume
+        if raw.get("volume"):
+            v = raw["volume"]
+            lines.append("### Volume:")
+            lines.append(f"- Current Volume: {v.get('volume', 'N/A'):,}" if isinstance(v.get('volume'), (int, float)) else f"- Current Volume: {v.get('volume', 'N/A')}")
+            lines.append(f"- Average Volume: {v.get('avg_volume', 'N/A'):,}" if isinstance(v.get('avg_volume'), (int, float)) else f"- Average Volume: {v.get('avg_volume', 'N/A')}")
+            lines.append(f"- RVOL: {v.get('rvol', 'N/A')}x")
+            lines.append("")
+
+        # Signals
+        if raw.get("signals"):
+            lines.append("### Signals:")
+            for signal in raw["signals"][:5]:
+                lines.append(f"- {signal}")
+            lines.append("")
+
+        return lines
+
+    def _format_position_raw_data(self, raw: Dict[str, Any], sector_ctx: Dict[str, Any]) -> List[str]:
+        """Format position raw data as structured metrics."""
+        lines = []
+
+        # RS Data
+        if raw:
+            lines.append("### Relative Strength vs SPY:")
+            if raw.get("excess_return_21d") is not None:
+                lines.append(f"- 21-day Excess Return: {raw['excess_return_21d']:+.2f}%")
+            if raw.get("excess_return_63d") is not None:
+                lines.append(f"- 63-day Excess Return: {raw['excess_return_63d']:+.2f}%")
+            if raw.get("excess_return_126d") is not None:
+                lines.append(f"- 126-day Excess Return: {raw['excess_return_126d']:+.2f}%")
+            if raw.get("rs_rating"):
+                lines.append(f"- RS Rating: {raw['rs_rating']}")
+            if raw.get("classification"):
+                lines.append(f"- Classification: {raw['classification']}")
+            lines.append("")
+
+        # Sector Context
+        if sector_ctx:
+            lines.append("### Sector Context:")
+            lines.append(f"- Sector: {sector_ctx.get('stock_sector', 'N/A')}")
+            lines.append(f"- Industry: {sector_ctx.get('stock_industry', 'N/A')}")
+            lines.append(f"- Sector Rank: #{sector_ctx.get('sector_rank', 'N/A')}/{sector_ctx.get('total_sectors', 11)}")
+            lines.append(f"- Sector Change (1-day): {sector_ctx.get('sector_change_percent', 0):+.2f}%")
+            lines.append(f"- Sector Status: {sector_ctx.get('sector_status', 'N/A')}")
+            lines.append("")
+            lines.append("NOTE: Sector ranking is 1-DAY performance from FMP Sector Performance API.")
+            lines.append("This is different from multi-timeframe Relative Strength analysis.")
+            lines.append("")
+
+        return lines
+
+    def _format_risk_raw_data(self, raw: Dict[str, Any]) -> List[str]:
+        """Format risk raw data as structured metrics."""
+        lines = []
+
+        lines.append(f"### Current Price: ${raw.get('current_price', 'N/A')}")
+        lines.append("")
+
+        # Volatility
+        if raw.get("volatility"):
+            v = raw["volatility"]
+            lines.append("### Volatility:")
+            lines.append(f"- Daily Volatility: {v.get('daily', 'N/A')}%")
+            lines.append(f"- Annualized Volatility: {v.get('annualized', 'N/A')}%")
+            lines.append(f"- Classification: {v.get('classification', 'N/A')}")
+            lines.append("")
+
+        # ATR
+        if raw.get("atr"):
+            a = raw["atr"]
+            lines.append("### ATR (Average True Range):")
+            lines.append(f"- ATR Value: ${a.get('value', 'N/A')}")
+            lines.append(f"- ATR %: {a.get('percent', 'N/A')}%")
+            lines.append("")
+
+        # VaR
+        if raw.get("var"):
+            v = raw["var"]
+            lines.append("### Value at Risk (VaR):")
+            lines.append(f"- VaR 95% (1-day): {v.get('var_95', 'N/A')}%")
+            lines.append(f"- VaR 99% (1-day): {v.get('var_99', 'N/A')}%")
+            lines.append("")
+
+        # Stop Loss Recommendations
+        if raw.get("stop_loss"):
+            sl = raw["stop_loss"]
+            lines.append("### Stop Loss Recommendations:")
+            if sl.get("atr_based"):
+                lines.append(f"- ATR-based (2x ATR): ${sl['atr_based'].get('price', 'N/A')} ({sl['atr_based'].get('percent', 'N/A')}%)")
+            if sl.get("percent_based"):
+                lines.append(f"- Percentage-based (5%): ${sl['percent_based'].get('price', 'N/A')}")
+            lines.append("")
+
+        return lines
+
+    def _format_sentiment_raw_data(self, raw: Dict[str, Any]) -> List[str]:
+        """Format sentiment raw data as structured metrics."""
+        lines = []
+
+        if raw.get("sentiment_score") is not None:
+            score = raw["sentiment_score"]
+            classification = "Bullish" if score > 0.2 else "Bearish" if score < -0.2 else "Neutral"
+            lines.append(f"### Sentiment Score: {score:.3f} ({classification})")
+            lines.append("")
+
+        if raw.get("social_sentiment"):
+            ss = raw["social_sentiment"]
+            lines.append("### Social Sentiment:")
+            lines.append(f"- Score: {ss.get('score', 'N/A')}")
+            lines.append(f"- Posts Analyzed: {ss.get('post_count', 'N/A')}")
+            lines.append("")
+
+        if raw.get("news_sentiment"):
+            ns = raw["news_sentiment"]
+            lines.append("### News Sentiment:")
+            lines.append(f"- Overall: {ns.get('overall', 'N/A')}")
+            lines.append(f"- Articles Analyzed: {ns.get('article_count', 'N/A')}")
+            lines.append("")
+
+        if raw.get("key_themes"):
+            lines.append("### Key Themes:")
+            for theme in raw["key_themes"][:5]:
+                lines.append(f"- {theme}")
+            lines.append("")
+
+        return lines
+
+    def _format_fundamental_raw_data(self, raw: Dict[str, Any]) -> List[str]:
+        """Format fundamental raw data as structured metrics."""
+        lines = []
+
+        report = raw.get("fundamental_report", {})
+
+        # Valuation
+        if report.get("valuation"):
+            v = report["valuation"]
+            lines.append("### Valuation Metrics:")
+            lines.append(f"- P/E (TTM): {v.get('pe_ttm', 'N/A')}")
+            lines.append(f"- P/E (FY): {v.get('pe_fy', 'N/A')}")
+            lines.append(f"- P/S (TTM): {v.get('ps_ttm', 'N/A')}")
+            lines.append(f"- P/B (TTM): {v.get('pb_ttm', 'N/A')}")
+            lines.append(f"- EV/EBITDA: {v.get('ev_ebitda', 'N/A')}")
+            lines.append("")
+
+        # Profitability
+        if report.get("profitability"):
+            p = report["profitability"]
+            lines.append("### Profitability:")
+            lines.append(f"- Gross Margin: {p.get('gross_margin', 'N/A')}%")
+            lines.append(f"- Operating Margin: {p.get('operating_margin', 'N/A')}%")
+            lines.append(f"- Net Margin: {p.get('net_margin', 'N/A')}%")
+            lines.append(f"- ROE: {p.get('roe', 'N/A')}%")
+            lines.append(f"- ROA: {p.get('roa', 'N/A')}%")
+            lines.append("")
+
+        # Growth
+        if report.get("growth"):
+            g = report["growth"]
+            lines.append("### Growth Metrics:")
+            lines.append(f"- Revenue Growth (YoY): {g.get('revenue_growth_yoy', 'N/A')}%")
+            lines.append(f"- EPS Growth (YoY): {g.get('eps_growth_yoy', 'N/A')}%")
+            lines.append(f"- Revenue Growth (5Y CAGR): {g.get('revenue_cagr_5y', 'N/A')}%")
+            lines.append(f"- EPS Growth (5Y CAGR): {g.get('eps_cagr_5y', 'N/A')}%")
+            lines.append("")
+
+        # Intrinsic Value
+        if report.get("intrinsic_value"):
+            iv = report["intrinsic_value"]
+            lines.append("### Intrinsic Value (Fair Value):")
+            if iv.get("graham_value"):
+                lines.append(f"- Graham Value: ${iv['graham_value']:.2f}")
+            if iv.get("dcf_value"):
+                lines.append(f"- DCF Value: ${iv['dcf_value']:.2f}")
+            if iv.get("current_price"):
+                lines.append(f"- Current Price: ${iv['current_price']:.2f}")
+            if iv.get("verdict"):
+                lines.append(f"- Verdict: {iv['verdict']}")
+            lines.append("")
+
+        # Dividend
+        if report.get("dividend"):
+            d = report["dividend"]
+            lines.append("### Dividend:")
+            lines.append(f"- Dividend Yield: {d.get('yield', 'N/A')}%")
+            lines.append(f"- Payout Ratio: {d.get('payout_ratio', 'N/A')}%")
+            lines.append("")
+
+        return lines
+
+    # =========================================================================
+    # REPORT HEADER/FOOTER
     # =========================================================================
 
     def _generate_report_header(
@@ -1299,7 +1545,7 @@ class SynthesisHandlerV2(LoggerMixin):
 
 **Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **Analysis Steps:** {', '.join(available_steps)}
-**Version:** Synthesis V2 (Single LLM Call)
+**Version:** Synthesis V2 (Production)
 
 ---
 
@@ -1315,13 +1561,11 @@ class SynthesisHandlerV2(LoggerMixin):
 
 ### Component Scores
 """
-        # Add component scores table
         components = scoring.get("component_scores", {})
         header += "\n| Component | Score | Weight | Confidence |\n|-----------|-------|--------|------------|\n"
         for name, data in components.items():
             header += f"| {name.title()} | {data.get('score', 'N/A')}/100 | {data.get('weight', 'N/A')} | {data.get('confidence', 'N/A')} |\n"
 
-        # Add key factors
         key_factors = scoring.get("key_factors", [])
         if key_factors:
             header += "\n### Key Factors\n"
@@ -1357,14 +1601,13 @@ class SynthesisHandlerV2(LoggerMixin):
             else:
                 freshness_lines.append(f"- {step_name}: Not available")
 
-        footer = f"""
+        return f"""
 ---
 
 ## Disclaimer
 
 This report is generated by AI analysis and should not be considered as financial advice.
 Always conduct your own research and consult with a qualified financial advisor before making investment decisions.
-
 Past performance is not indicative of future results. Investments involve risk, including the possible loss of principal.
 
 ---
@@ -1373,19 +1616,18 @@ Past performance is not indicative of future results. Investments involve risk, 
 
 - **Symbol:** {symbol}
 - **Generation Time:** {elapsed_seconds:.1f} seconds
-- **Architecture:** Single LLM Call (V2) - 100% consistency guaranteed
-- **LLM Calls:** 1 (consolidated)
+- **Architecture:** Single LLM Call (V2 Production)
+- **Data Source:** FMP API (earnings, peers, metrics)
 
 ### Data Freshness
 {chr(10).join(freshness_lines)}
 
 ---
-*Report generated by HealerAgent Market Scanner v2.0 (Synthesis V2)*
+*Report generated by HealerAgent Market Scanner V2*
 """
-        return footer
 
     # =========================================================================
-    # RUN MISSING STEPS (inherited from V1)
+    # RUN MISSING STEPS
     # =========================================================================
 
     async def _run_missing_steps(
@@ -1496,7 +1738,7 @@ Past performance is not indicative of future results. Investments involve risk, 
         return {
             "content": content,
             "raw_data": raw_data.get("raw_data"),
-            "sector_context": raw_data.get("sector_context"),  # Include sector_context
+            "sector_context": raw_data.get("sector_context"),
             "cached_at": datetime.now().isoformat()
         }
 
