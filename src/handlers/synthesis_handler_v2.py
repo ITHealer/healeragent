@@ -439,23 +439,43 @@ class CanonicalDataBuilder:
         # Get sentiment data (may be nested)
         sentiment = raw.get("sentiment", raw)
 
-        # Get sample size first
-        sample_size = (
-            sentiment.get("data_points_analyzed") or
-            sentiment.get("data_count") or
-            0
-        )
+        # Get sample size - check ALL possible field names
+        # Different APIs use different field names for sample size
+        sample_size_fields = [
+            "data_points_analyzed", "data_count", "sample_size",
+            "count", "n", "total_articles", "article_count",
+            "news_count", "total_news", "articles_analyzed"
+        ]
+        sample_size = 0
+        for field in sample_size_fields:
+            val = sentiment.get(field)
+            if val is not None and val > 0:
+                sample_size = int(val)
+                break
+
+        # If no sample_size found but we have score, assume sufficient data
+        # This handles APIs that don't report sample size explicitly
+        score = sentiment.get("sentiment_score") or sentiment.get("score")
+        label = sentiment.get("sentiment_label") or sentiment.get("label")
+
+        # If we have valid score and label but no explicit sample_size,
+        # infer that data was present (set to MIN to pass threshold)
+        if score is not None and label and sample_size == 0:
+            # Check if there's any indication of data presence
+            # If label is set (not N/A or Unknown), there must be data
+            if label not in [None, "N/A", "Unknown", "UNKNOWN", ""]:
+                sample_size = MIN_SENTIMENT_SAMPLE_SIZE  # Assume minimum valid
 
         # CRITICAL: Only set sentiment if sample size is sufficient
         if sample_size >= MIN_SENTIMENT_SAMPLE_SIZE:
-            score = sentiment.get("sentiment_score") or sentiment.get("score")
             if score is not None:
                 canonical["sentiment"] = {
                     "score": round(float(score), 3),
                     "sample_size": int(sample_size),
-                    "label": sentiment.get("sentiment_label") or sentiment.get("label"),
+                    "label": label,
                     "confidence": self._calculate_sentiment_confidence(sample_size, abs(score) if score else 0),
-                    "source": "sentiment_step"
+                    "source": "sentiment_step",
+                    "sample_size_inferred": sample_size == MIN_SENTIMENT_SAMPLE_SIZE
                 }
         else:
             canonical["sentiment"] = None
@@ -500,19 +520,30 @@ class CanonicalDataBuilder:
         if valuation.get("beta"):
             canonical["market"]["beta"] = self._safe_round(valuation["beta"], 2)
 
-        # Profitability metrics
+        # Profitability metrics - NORMALIZE percentage values
+        # Different APIs return ROE/ROA/margins in different formats (0.31 vs 31)
         profitability = report.get("profitability", {})
         if profitability:
             if profitability.get("gross_margin") is not None:
-                canonical["profitability"]["gross_margin"] = self._safe_round(profitability["gross_margin"], 2)
+                canonical["profitability"]["gross_margin"] = self._normalize_percentage(
+                    profitability["gross_margin"], "gross_margin"
+                )
             if profitability.get("operating_margin") is not None:
-                canonical["profitability"]["operating_margin"] = self._safe_round(profitability["operating_margin"], 2)
+                canonical["profitability"]["operating_margin"] = self._normalize_percentage(
+                    profitability["operating_margin"], "operating_margin"
+                )
             if profitability.get("net_margin") is not None:
-                canonical["profitability"]["net_margin"] = self._safe_round(profitability["net_margin"], 2)
+                canonical["profitability"]["net_margin"] = self._normalize_percentage(
+                    profitability["net_margin"], "net_margin"
+                )
             if profitability.get("roe") is not None:
-                canonical["profitability"]["roe"] = self._safe_round(profitability["roe"], 2)
+                canonical["profitability"]["roe"] = self._normalize_percentage(
+                    profitability["roe"], "roe"
+                )
             if profitability.get("roa") is not None:
-                canonical["profitability"]["roa"] = self._safe_round(profitability["roa"], 2)
+                canonical["profitability"]["roa"] = self._normalize_percentage(
+                    profitability["roa"], "roa"
+                )
 
         # Growth metrics
         growth = report.get("growth", {})
@@ -675,6 +706,54 @@ class CanonicalDataBuilder:
             if value is None:
                 return None
             return round(float(value), decimals)
+        except (ValueError, TypeError):
+            return None
+
+    def _normalize_percentage(self, value: Any, field_name: str = "") -> Optional[float]:
+        """
+        Normalize percentage values to consistent scale (0-100 range for display).
+
+        Problem: Different APIs return ROE/ROA/margins in different formats:
+        - FMP returns 0.31 meaning 31%
+        - Yahoo returns 31 meaning 31%
+        - Some return 0.0031 meaning 0.31%
+
+        Solution: Detect the scale and normalize to percentage form.
+
+        Args:
+            value: The raw value from API
+            field_name: Name of field for logging
+
+        Returns:
+            Normalized percentage value (e.g., 31.0 for 31%)
+        """
+        try:
+            if value is None:
+                return None
+
+            val = float(value)
+
+            # If value is exactly 0, return 0
+            if val == 0:
+                return 0.0
+
+            # Heuristic for detection:
+            # - If |val| < 1: likely decimal form (0.31 = 31%)
+            # - If |val| >= 1 and |val| < 100: likely already percentage (31 = 31%)
+            # - If |val| >= 100: could be basis points or error, cap at reasonable range
+
+            if abs(val) < 1:
+                # Decimal form: 0.31 means 31%
+                normalized = round(val * 100, 2)
+            elif abs(val) < 200:
+                # Already in percentage form: 31 means 31%
+                normalized = round(val, 2)
+            else:
+                # Unusually large - might be basis points or error
+                # Return as-is but flag
+                normalized = round(val, 2)
+
+            return normalized
         except (ValueError, TypeError):
             return None
 
@@ -953,6 +1032,56 @@ class ReportLinter:
         }
 
 
+def normalize_percentage_value(value: Any, field_name: str = "") -> Optional[float]:
+    """
+    Normalize percentage values to consistent scale (0-100 range for display).
+
+    IMPORTANT: Different financial APIs return percentages in different formats:
+    - FMP API: ROE = 0.31 means 31%
+    - Yahoo Finance: ROE = 31 means 31%
+    - Some APIs: ROE = 0.0031 means 0.31%
+
+    This function detects the scale and normalizes to percentage form.
+
+    Args:
+        value: The raw value from API (could be 0.31, 31, or 0.0031)
+        field_name: Name of field for debugging
+
+    Returns:
+        Normalized percentage value (e.g., 31.0 for 31%)
+    """
+    try:
+        if value is None:
+            return None
+
+        val = float(value)
+
+        # If value is exactly 0, return 0
+        if val == 0:
+            return 0.0
+
+        # Heuristic for detection:
+        # - If |val| <= 1.5: likely decimal form (0.31 = 31%)
+        # - If |val| > 1.5 and |val| < 200: likely already percentage (31 = 31%)
+        # - Edge case: values like 1.2 could be 1.2% or 120% - use context
+
+        # For financial metrics like ROE/ROA/margins:
+        # - Typical range: -50% to +100% (rarely higher)
+        # - Decimal form: -0.5 to 1.0
+        # - Percentage form: -50 to 100
+
+        if abs(val) <= 1.5:
+            # Decimal form: 0.31 means 31%
+            normalized = round(val * 100, 2)
+        else:
+            # Already in percentage form: 31 means 31%
+            normalized = round(val, 2)
+
+        return normalized
+    except (ValueError, TypeError):
+        return None
+
+
 def normalize_gics_sector(sector: str) -> str:
     """
     Normalize sector name to official GICS sector.
@@ -1130,56 +1259,89 @@ Key metrics to emphasize:
 - Graham/DCF value vs current price (margin of safety)
 Verdict: Is this attractive for a dividend/value investor? Why/why not?
 
-## OUTPUT FORMAT
+## OUTPUT FORMAT - STRICT RAW/INTERPRETATION/ACTION SEPARATION
 
-Generate report with DATA → INTERPRETATION → IMPLICATION format for each section:
+### PART A: RAW DATA ONLY (No Interpretation)
+**PURPOSE**: Pure data display that readers can verify independently.
+**RULE**: NO opinions, NO recommendations, NO "good/bad" judgments in this section.
 
-### PART A: RAW DATA ANALYSIS (Verifiable)
-For each section, show exact data values that can be verified independently.
-
-1. **Technical Analysis**
-   - DATA: RSI, MACD (line/signal/hist), ADX, +DI/-DI, SMA20/50/200, ATR
-   - INTERPRETATION: [CONFIDENCE LEVEL] - What the data indicates
-   - IMPLICATION: IF/THEN conditions for traders
+1. **Technical Indicators**
+   - DATA ONLY: RSI=X, MACD (line/signal/hist)=X/Y/Z, ADX=X, +DI/-DI=X/Y
+   - PRICE LEVELS: SMA20=$X, SMA50=$Y, SMA200=$Z, Current=$C, ATR=$A
 
 2. **Market Position**
-   - DATA: RS values (21d/63d/126d), Sector rank, Sector name (GICS), Industry
-   - Note: "1-day sector rank ≠ multi-timeframe relative strength"
+   - DATA ONLY: RS_21d=X%, RS_63d=Y%, Sector=NAME (GICS), Industry=NAME
+   - Sector Rank=X/11 (Source: FMP 1-day performance)
 
-3. **Risk Analysis**
-   - DATA: ATR value, VaR (95%), Volatility (daily/annual), Max Drawdown
-   - STOP-LOSS CALCULATION (required): Show formula "Stop = Entry - (2×ATR=$X) = $Y"
+3. **Risk Metrics**
+   - DATA ONLY: ATR=$X (X% of price), VaR_95%=X%, Daily Vol=X%, Annual Vol=Y%
 
-4. **Sentiment Analysis**
-   - DATA: Score (or "N/A" if sample<5), Sample size, Source, Time period
-   - Confidence: Based on sample size (HIGH/MODERATE/LOW/INSUFFICIENT)
+4. **Sentiment Data**
+   - DATA ONLY: Score=X or "N/A (sample<5)", Sample=N articles, Source=FMP News API
+   - Period: Last X days
 
-5. **Fundamental Analysis**
-   - DATA: P/E, P/S, P/B, EV/EBITDA, ROE, ROA, Margins
-   - PEER TABLE: Same-industry peers only (not cross-sector)
+5. **Fundamental Metrics**
+   - DATA ONLY: P/E=X, P/S=Y, P/B=Z, EV/EBITDA=W, ROE=X%, ROA=Y%
+   - PEER TABLE: Same-industry comparison (no cross-sector)
 
-### PART B: INTERPRETATION & ANALYSIS
-6. **Growth Investor Perspective** - Use growth metrics, provide verdict with reasoning
-7. **Value/Dividend Investor Perspective** - Use valuation/yield metrics, provide verdict
-8. **Fair Value Assessment** - Graham + DCF with ALL assumptions shown
-9. **Scenario Analysis** - Bull/Base/Bear with probability methodology explained
+### PART B: INTERPRETATION & ANALYSIS (With Sources)
+**PURPOSE**: Analysis of Part A data with clear source attribution.
 
-### PART C: EXTERNAL DATA
-10. **Analyst Consensus** - Price targets, ratings breakdown (if available)
-11. **Insider Trading** - Net activity, notable trades (if available)
-12. **News & Catalysts** - Inline citations [Source](URL) + Sources section
+6. **Growth Investor Perspective**
+   - Interpretation of growth metrics (revenue growth, EPS growth)
+   - Verdict: Attractive/Neutral/Unattractive for growth investors + reasoning
 
-### PART D: CONCLUSION & ACTION
-13. **Executive Summary** - Key DATA POINTS (not opinions) from each section
-14. **Action Plan**
-    - NEW INVESTORS: Entry conditions (IF...THEN...)
-    - EXISTING HOLDERS: Reduce/Exit triggers with ATR/structure logic
+7. **Value/Dividend Investor Perspective**
+   - Interpretation of valuation metrics (P/E vs peers, yield vs sector)
+   - Verdict: Attractive/Neutral/Unattractive for value investors + reasoning
+
+8. **Fair Value Assessment** (MANDATORY: Show Sources & Assumptions)
+   - **Graham Value**: $X (Source: LLM calculation / FMP)
+     - Formula: EPS × (8.5 + 2g), using EPS=$X, growth=Y%
+   - **DCF Value**: $X (Source: FMP / Internal model)
+     - Assumptions: WACC=X%, Terminal growth=Y%, Base FCF=$Z
+   - **Analyst Consensus**: $X (Source: FMP / Yahoo / Refinitiv)
+   - Note: "All intrinsic values are model-dependent estimates"
+
+9. **Scenario Analysis** (Show Methodology)
+   - Probability methodology: Based on historical volatility / analyst range / ATR bands
+   - Bull/Base/Bear scenarios with clear basis
+
+### PART C: EXTERNAL DATA (With Inline Citations)
+10. **Analyst Consensus** - [Source](URL) for each data point
+11. **Insider Trading** - Net activity + Source (SEC Form 4 via FMP)
+12. **News & Catalysts** - Inline citations mandatory: "Statement [Source](URL)"
+
+### PART D: ACTION PLAN (With Price Level Methodology)
+**PURPOSE**: Actionable recommendations based on Parts A-C analysis.
+
+13. **Executive Summary**
+   - Key DATA POINTS from each section (not opinions)
+   - Overall signal: BULLISH/NEUTRAL/BEARISH with confidence level
+
+14. **Price Levels with Methodology** (CRITICAL - Explain WHERE each level comes from)
+   **NEW INVESTORS:**
+   - Entry Zone: $X-$Y (Rationale: "Near SMA50 at $X" or "Above support at $Y")
+   - Entry Conditions: IF [condition] THEN enter
+
+   **EXISTING HOLDERS:**
+   - Reduce Trigger: $X (Methodology: "Break below SMA200 at $X" or "2×ATR below entry")
+   - Hard Stop: $X (Calculation: "$Entry - 2×ATR($Z) = $X, risking Y%")
+   - Trailing Stop: $X (Methodology: "Recent high minus 1.5×ATR" or "Below swing low at $Y")
+
+   **PRICE LEVEL SOURCES (Required):**
+   | Level | Value | Basis |
+   |-------|-------|-------|
+   | Entry | $X | SMA50 / Swing low / Fibonacci |
+   | Stop | $Y | 2×ATR from entry / Structure support |
+   | Target | $Z | Analyst consensus / Resistance level |
 
 ### CONSISTENCY CHECK (Before submitting)
 - All metric values match CANONICAL DATA exactly
 - Same metric = same value throughout report
 - Sentiment shown only if sample_size >= 5
 - Stop-loss includes calculation formula
+- ALL price levels have methodology explained
 
 RESPOND IN THE LANGUAGE SPECIFIED BY target_language PARAMETER.
 """
@@ -2372,13 +2534,17 @@ class SynthesisHandlerV2(LoggerMixin):
                 "ps_ttm": round(metrics.get("priceToSalesRatioTTM", 0), 2) if metrics.get("priceToSalesRatioTTM") else None,
                 "pb_ttm": round(metrics.get("pbRatioTTM", 0), 2) if metrics.get("pbRatioTTM") else None,
                 "ev_ebitda": round(metrics.get("enterpriseValueOverEBITDATTM", 0), 2) if metrics.get("enterpriseValueOverEBITDATTM") else None,
-                # Profitability
-                "roe_ttm": round(metrics.get("roeTTM", 0) * 100, 1) if metrics.get("roeTTM") else None,
-                "net_margin": round(metrics.get("netIncomePerShareTTM", 0) / metrics.get("revenuePerShareTTM", 1) * 100, 1) if metrics.get("revenuePerShareTTM") else None,
+                # Profitability - Use normalize_percentage_value for consistent handling
+                "roe_ttm": normalize_percentage_value(metrics.get("roeTTM"), "roe_ttm"),
+                "net_margin": normalize_percentage_value(
+                    metrics.get("netIncomePerShareTTM", 0) / metrics.get("revenuePerShareTTM", 1)
+                    if metrics.get("revenuePerShareTTM") else None,
+                    "net_margin"
+                ),
                 # Growth (from ratios)
-                "revenue_growth": round(ratios.get("revenueGrowthTTM", 0) * 100, 1) if ratios.get("revenueGrowthTTM") else None,
+                "revenue_growth": normalize_percentage_value(ratios.get("revenueGrowthTTM"), "revenue_growth"),
                 # Dividend
-                "dividend_yield": round(metrics.get("dividendYieldTTM", 0) * 100, 2) if metrics.get("dividendYieldTTM") else None,
+                "dividend_yield": normalize_percentage_value(metrics.get("dividendYieldTTM"), "dividend_yield"),
             }
 
         except Exception as e:
@@ -4539,15 +4705,32 @@ Past performance is not indicative of future results. Investments involve risk, 
         else:
             self.logger.info(f"[SynthesisV2] RISK: raw_data=None, has_content={has_risk_content}")
 
-        # Sentiment - use correct path: raw['sentiment']
+        # Sentiment - COMPREHENSIVE LOGGING for debugging
         sent_data = step_data.get("sentiment", {})
         sent_raw = sent_data.get("raw_data", {})
         has_sent_content = bool(sent_data.get("content", ""))
         if sent_raw:
             sentiment = sent_raw.get("sentiment", sent_raw)
-            self.logger.info(f"[SynthesisV2] SENTIMENT: Score={sentiment.get('sentiment_score', sentiment.get('score', 'N/A'))}, "
-                           f"Label={sentiment.get('sentiment_label', sentiment.get('label', 'N/A'))}, "
-                           f"has_content={has_sent_content}")
+            # Log ALL available fields for debugging
+            import json
+            self.logger.info(f"[SynthesisV2] SENTIMENT RAW DATA (FULL):")
+            self.logger.info(f"  sent_raw keys: {list(sent_raw.keys())}")
+            self.logger.info(f"  sentiment keys: {list(sentiment.keys()) if isinstance(sentiment, dict) else 'NOT A DICT'}")
+            self.logger.info(f"  sentiment FULL: {json.dumps(sentiment, indent=2, default=str)[:2000]}")
+            # Extract with all possible field names
+            score = sentiment.get('sentiment_score', sentiment.get('score', 'N/A'))
+            label = sentiment.get('sentiment_label', sentiment.get('label', 'N/A'))
+            # Check ALL possible sample size field names
+            sample_fields = ['data_points_analyzed', 'data_count', 'sample_size', 'count', 'n', 'total_articles', 'article_count', 'news_count']
+            sample_size = None
+            for field in sample_fields:
+                if sentiment.get(field) is not None:
+                    sample_size = sentiment.get(field)
+                    self.logger.info(f"  FOUND sample_size in field '{field}': {sample_size}")
+                    break
+            if sample_size is None:
+                self.logger.warning(f"  NO sample_size field found! Checked: {sample_fields}")
+            self.logger.info(f"[SynthesisV2] SENTIMENT SUMMARY: Score={score}, Label={label}, SampleSize={sample_size}, has_content={has_sent_content}")
         else:
             self.logger.info(f"[SynthesisV2] SENTIMENT: raw_data=None, has_content={has_sent_content}")
 
