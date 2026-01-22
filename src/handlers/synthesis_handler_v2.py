@@ -138,33 +138,92 @@ Stop-loss percentage MUST be calculated FROM ENTRY PRICE, not current price:
 - If Entry = $185 and Stop = $169, then risk = (185-169)/185 = 8.6%
 - NEVER say "5% from current price" if entry is different from current price
 
-### 4. CATALYST DATES
-- Include SPECIFIC dates for earnings, events
-- Format: "Earnings: Feb 25, 2026 (AMC)" not "dự kiến sắp tới"
+### 4. CATALYST DATES (CRITICAL)
+- Include SPECIFIC dates for earnings from provided data
+- Format: "Earnings: Feb 25, 2026 (AMC)" - use EXACT date from data
+- If no date available, state "Chưa công bố" not "dự kiến sắp tới"
+- Source: FMP Earnings Calendar API
 
 ### 5. PEER COMPARISON
 - Include a mini comparison table when peer data is provided
 - Show P/E, P/S, Growth metrics vs peers
+- ADD WARNING: "Lưu ý: P/E có thể bị méo do EPS thấp/biến động (đặc biệt AMD, INTC)"
+- Consider adding Forward P/E or EV/Sales note if P/E looks distorted
 
-### 6. WEB CITATIONS
-- Cite sources INLINE with the claim: "...bán tháo do địa chính trị [Barrons](URL)"
-- Do NOT just list sources at the end without connecting to claims
+### 6. TECHNICAL SCORE CONSISTENCY (NEW - CRITICAL)
+Technical score MUST match the narrative. Guidelines:
+- ADX < 15 (weak trend) → Technical score should be 50-65 max, not 75+
+- ADX 15-25 (moderate trend) → Technical score 60-75
+- ADX > 25 (strong trend) → Technical score can be 70-85
+- If MACD bearish + ADX < 15 → Technical should be < 60
+- Explain WHY the score despite weak indicators if giving high score
 
-### 7. SECTOR RANKING CLARITY
-- When mentioning sector rank, explain the methodology
-- Example: "Ngành #10/11 theo Sức mạnh Tương đối 21 ngày vs SPY"
+### 7. TRADING PLAN FOR HOLDERS (NEW - CRITICAL)
+Always include rules for people ALREADY holding the stock:
+- "Nếu giá thủng vùng $X → giảm 50% vị thế"
+- "Nếu breakout fail (giá quay về dưới $Y) → thoát hoàn toàn"
+- "Trailing stop: di chuyển stop lên theo ATR khi giá tăng"
 
-## OUTPUT FORMAT
+### 8. SECTOR RANKING CLARITY
+When mentioning sector rank, explain the methodology:
+- "Ngành Công nghệ #10/11 theo FMP Sector Performance (biến động 1 ngày)"
+- "Lưu ý: Đây là ranking 1 NGÀY, khác với RS đa khung thời gian"
 
-You must generate ALL sections in order:
-1. Executive Summary (Tóm tắt Điều hành)
-2. Technical & Position Analysis (Phân tích Kỹ thuật & Vị thế)
-3. Risk & Sentiment Analysis (Phân tích Rủi ro & Tâm lý)
-4. Fundamental Analysis (Phân tích Cơ bản)
-5. Latest News & Catalysts (Tin tức & Chất xúc tác)
-6. Final Recommendation (Khuyến nghị Cuối cùng)
+### 9. WEB CITATIONS (MANDATORY - ChatGPT Style)
 
-Each section should be detailed with specific data points from the analysis.
+**CRITICAL**: You MUST include clickable source links in TWO ways:
+
+#### A. INLINE CITATIONS (Throughout your response)
+When referencing information from web search, ALWAYS include the source as a clickable markdown link INLINE.
+
+**Format**: Statement + [Source Name](URL)
+
+**Examples**:
+- "NVIDIA đạt doanh thu kỷ lục $35.1 tỷ trong Q3 2024. [NVIDIA Investor Relations](https://investor.nvidia.com/...)"
+- "Theo [Reuters](https://reuters.com/...), chip H200 đang gặp vấn đề về chuỗi cung ứng."
+- "TSMC dành 70% công suất CoWoS-L cho NVIDIA. [TechPowerUp](https://www.techpowerup.com/...)"
+
+**DO NOT** write statements without source links. Every claim from web search needs a citation.
+
+#### B. SOURCES SECTION (At the end of News section)
+After the news analysis, include a "## 📚 Sources" section listing all sources used.
+
+**Example Format**:
+```
+## 📚 Sources
+
+1. [NVIDIA Announces Financial Results for Q3 2026](https://investor.nvidia.com/news/...)
+2. [TSMC Reserves 70% of CoWoS-L Capacity for NVIDIA](https://www.techpowerup.com/...)
+3. [AMD launches MI325X to rival Nvidia's Blackwell](https://www.cnbc.com/...)
+```
+
+**WARNING**: Responses without inline source citations AND source section will be considered INCOMPLETE.
+
+## OUTPUT FORMAT (RESTRUCTURED)
+
+Generate report in this EXACT order:
+
+### PART 1: DATA ANALYSIS (5 Steps - Present findings first)
+1. **Phân tích Kỹ thuật** - Trend, momentum, key levels, signals
+2. **Vị thế Thị trường** - RS vs SPY, sector context with methodology
+3. **Phân tích Rủi ro** - Volatility, VaR, risk metrics
+4. **Tâm lý Thị trường** - Sentiment score, news themes
+5. **Phân tích Cơ bản** - Valuation, growth, peer comparison
+
+### PART 2: NEWS & CATALYSTS (With Citations)
+6. **Tin tức & Chất xúc tác** - Latest news WITH inline citations + Sources section
+
+### PART 3: CONCLUSION & ACTION (Highlights + Strategy)
+7. **Tóm tắt Điều hành** - Key highlights from each step
+8. **Khuyến nghị Cuối cùng** - Action strategy for:
+   - Nhà đầu tư MỚI (chưa có vị thế)
+   - Nhà đầu tư đang NẮM GIỮ (có vị thế rồi)
+   - Điều kiện nâng/hạ khuyến nghị
+
+This structure ensures:
+- Data presented first → Reader understands context
+- Conclusion AFTER all data → Consistent with evidence
+- Action for BOTH new and existing investors
 """
 
 
@@ -414,13 +473,18 @@ class SynthesisHandlerV2(LoggerMixin):
         """
         Fetch earnings calendar with next earnings date.
 
+        Uses TWO endpoints:
+        1. /api/v3/earning_calendar - For UPCOMING earnings (next date)
+        2. /stable/earnings - For HISTORICAL earnings (beat rate)
+
         Returns:
             {
                 "next_earnings_date": "2026-02-25",
                 "earnings_time": "AMC",
                 "fiscal_quarter": "Q4 FY26",
                 "historical": [...],
-                "beat_rate": 0.75
+                "beat_rate": 0.75,
+                "source": "FMP Earnings Calendar API"
             }
         """
         if not self.fmp_api_key:
@@ -428,57 +492,91 @@ class SynthesisHandlerV2(LoggerMixin):
             return None
 
         try:
-            # Fetch from FMP stable/earnings endpoint
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # Get historical earnings
-                url = "https://financialmodelingprep.com/stable/earnings"
-                params = {"symbol": symbol, "apikey": self.fmp_api_key}
-
-                response = await client.get(url, params=params)
-
-                if response.status_code != 200:
-                    self.logger.warning(f"[Earnings] HTTP {response.status_code}")
-                    return None
-
-                data = response.json()
-
-                if not isinstance(data, list) or not data:
-                    return None
-
-                # Sort by date descending
-                sorted_data = sorted(data, key=lambda x: x.get("date", ""), reverse=True)
-
-                # Find next earnings date (future date)
                 today = datetime.now().date()
-                next_earnings = None
-                historical = []
+                from_date = today.strftime("%Y-%m-%d")
+                to_date = (today + timedelta(days=120)).strftime("%Y-%m-%d")  # Look 4 months ahead
 
-                for item in sorted_data:
-                    try:
-                        earnings_date = datetime.strptime(item.get("date", ""), "%Y-%m-%d").date()
-                        if earnings_date > today and not next_earnings:
-                            next_earnings = item
-                        else:
-                            historical.append(item)
-                    except:
-                        historical.append(item)
-
-                # Calculate beat rate
-                beats = sum(1 for h in historical[:8]
-                           if h.get("epsActual") and h.get("epsEstimated")
-                           and h["epsActual"] > h["epsEstimated"])
-                total = len([h for h in historical[:8] if h.get("epsActual") and h.get("epsEstimated")])
-                beat_rate = beats / total if total > 0 else None
-
-                result = {
-                    "next_earnings_date": next_earnings.get("date") if next_earnings else None,
-                    "earnings_time": "AMC",  # Default, FMP doesn't always provide this
-                    "fiscal_quarter": self._determine_fiscal_quarter(next_earnings.get("date") if next_earnings else None),
-                    "historical": historical[:4],
-                    "beat_rate": round(beat_rate, 2) if beat_rate else None
+                # =============================================================
+                # STEP 1: Fetch UPCOMING earnings from earning_calendar
+                # =============================================================
+                calendar_url = "https://financialmodelingprep.com/api/v3/earning_calendar"
+                calendar_params = {
+                    "from": from_date,
+                    "to": to_date,
+                    "apikey": self.fmp_api_key
                 }
 
-                self.logger.info(f"[Earnings] Found earnings data for {symbol}: next={result['next_earnings_date']}")
+                next_earnings = None
+                calendar_response = await client.get(calendar_url, params=calendar_params)
+
+                if calendar_response.status_code == 200:
+                    calendar_data = calendar_response.json()
+                    if isinstance(calendar_data, list):
+                        # Find this symbol's next earnings
+                        for item in calendar_data:
+                            if item.get("symbol", "").upper() == symbol.upper():
+                                next_earnings = {
+                                    "date": item.get("date"),
+                                    "time": item.get("time", "TBD"),  # BMO, AMC, or TBD
+                                    "eps_estimated": item.get("epsEstimated"),
+                                    "revenue_estimated": item.get("revenueEstimated")
+                                }
+                                self.logger.info(f"[Earnings] Found upcoming: {symbol} on {next_earnings['date']} ({next_earnings['time']})")
+                                break
+
+                # =============================================================
+                # STEP 2: Fetch HISTORICAL earnings for beat rate
+                # =============================================================
+                historical_url = "https://financialmodelingprep.com/stable/earnings"
+                historical_params = {"symbol": symbol, "apikey": self.fmp_api_key}
+
+                historical = []
+                beat_rate = None
+
+                historical_response = await client.get(historical_url, params=historical_params)
+
+                if historical_response.status_code == 200:
+                    historical_data = historical_response.json()
+                    if isinstance(historical_data, list) and historical_data:
+                        # Sort by date descending and get recent history
+                        sorted_history = sorted(
+                            historical_data,
+                            key=lambda x: x.get("date", ""),
+                            reverse=True
+                        )
+                        historical = sorted_history[:8]
+
+                        # Calculate beat rate
+                        beats = sum(1 for h in historical
+                                   if h.get("epsActual") and h.get("epsEstimated")
+                                   and h["epsActual"] > h["epsEstimated"])
+                        total = len([h for h in historical
+                                    if h.get("epsActual") and h.get("epsEstimated")])
+                        beat_rate = round(beats / total, 2) if total > 0 else None
+
+                # =============================================================
+                # STEP 3: Build result
+                # =============================================================
+                result = {
+                    "next_earnings_date": next_earnings.get("date") if next_earnings else None,
+                    "earnings_time": next_earnings.get("time", "TBD") if next_earnings else "TBD",
+                    "eps_estimated": next_earnings.get("eps_estimated") if next_earnings else None,
+                    "revenue_estimated": next_earnings.get("revenue_estimated") if next_earnings else None,
+                    "fiscal_quarter": self._determine_fiscal_quarter(next_earnings.get("date") if next_earnings else None),
+                    "historical": historical[:4],
+                    "beat_rate": beat_rate,
+                    "source": "FMP Earnings Calendar API (earning_calendar + stable/earnings)"
+                }
+
+                if result["next_earnings_date"]:
+                    self.logger.info(
+                        f"[Earnings] {symbol}: Next={result['next_earnings_date']} ({result['earnings_time']}), "
+                        f"Beat Rate={result['beat_rate']}"
+                    )
+                else:
+                    self.logger.warning(f"[Earnings] {symbol}: No upcoming earnings found in next 120 days")
+
                 return result
 
         except Exception as e:
@@ -732,15 +830,18 @@ class SynthesisHandlerV2(LoggerMixin):
         """
         Calculate consistent trading plan based on score and technical data.
 
+        Includes HOLDER-specific rules (exit/reduce triggers).
+
         Returns:
             {
                 "trading_system": "breakout" | "wait_and_watch" | "exit",
                 "current_price": 178.07,
-                "entry_zone": {"low": 185, "high": 190},  # or None for HOLD
+                "entry_zone": {"low": 185, "high": 190},
                 "stop_loss": {"price": 169, "pct_from_entry": 8.6},
                 "targets": [{"price": 205, "pct_gain": 10}, ...],
                 "risk_reward_ratio": 2.5,
-                "position_sizing_note": "..."
+                "position_sizing_note": "...",
+                "holder_rules": {...}  # NEW: Rules for existing holders
             }
         """
         composite_score = scoring.get("composite_score", 50)
@@ -755,6 +856,11 @@ class SynthesisHandlerV2(LoggerMixin):
         atr = risk_data.get("atr", {}).get("value", 0)
         atr_pct = risk_data.get("atr", {}).get("percent", 2.5)
 
+        # Calculate key support/resistance levels for holder rules
+        support_1 = round(current_price * 0.95, 2)  # ~5% below current
+        support_2 = round(current_price * 0.90, 2)  # ~10% below current
+        resistance_1 = round(current_price * 1.05, 2)  # ~5% above current
+
         # Default plan
         plan = {
             "trading_system": "wait_and_watch",
@@ -763,7 +869,14 @@ class SynthesisHandlerV2(LoggerMixin):
             "stop_loss": None,
             "targets": [],
             "risk_reward_ratio": None,
-            "position_sizing_note": ""
+            "position_sizing_note": "",
+            "holder_rules": {
+                "reduce_trigger": None,
+                "exit_trigger": None,
+                "trailing_stop": None,
+                "add_trigger": None,
+                "description": ""
+            }
         }
 
         # Determine trading system based on score
@@ -795,13 +908,36 @@ class SynthesisHandlerV2(LoggerMixin):
             plan["risk_reward_ratio"] = 2.0
             plan["position_sizing_note"] = f"Risk {stop_pct}% per position. For 2% account risk, position size = (Account * 0.02) / (Entry * {stop_pct/100:.3f})"
 
+            # Holder rules for BUY scenario
+            plan["holder_rules"] = {
+                "reduce_trigger": None,  # No reduce needed for BUY
+                "exit_trigger": stop_price,
+                "trailing_stop": f"Di chuyển stop lên theo ATR khi giá tăng. ATR hiện tại = ${atr:.2f}" if atr else None,
+                "add_trigger": round(target_1 * 0.98, 2),  # Add on pullback to target 1
+                "description": "Xu hướng tích cực. Giữ vị thế, có thể thêm khi giá pullback về vùng hỗ trợ."
+            }
+
         elif composite_score >= 45:
-            # WAIT & WATCH - No entry
+            # WAIT & WATCH - No entry for new investors
             plan["trading_system"] = "wait_and_watch"
             plan["entry_zone"] = None
             plan["stop_loss"] = None
             plan["targets"] = []
             plan["position_sizing_note"] = "Watchlist only. Wait for score > 65 or clear technical breakout."
+
+            # Holder rules for HOLD scenario (CRITICAL)
+            plan["holder_rules"] = {
+                "reduce_trigger": support_1,
+                "exit_trigger": support_2,
+                "trailing_stop": f"Nếu giá tăng vượt ${resistance_1:.2f}, di chuyển stop lên ${current_price:.2f}",
+                "add_trigger": None,  # Don't add in HOLD mode
+                "description": (
+                    f"Tín hiệu trái chiều. Holder nên:\n"
+                    f"  • Giảm 50% vị thế nếu giá thủng ${support_1:.2f}\n"
+                    f"  • Thoát hoàn toàn nếu giá thủng ${support_2:.2f}\n"
+                    f"  • KHÔNG thêm vị thế mới cho đến khi score > 65"
+                )
+            }
 
         else:
             # EXIT / AVOID
@@ -813,10 +949,24 @@ class SynthesisHandlerV2(LoggerMixin):
                 plan["exit_zone"] = {"price": exit_price}
                 plan["position_sizing_note"] = "Reduce or exit position. Do not add new capital."
 
+            # Holder rules for SELL scenario
+            plan["holder_rules"] = {
+                "reduce_trigger": current_price,  # Reduce NOW
+                "exit_trigger": support_1,
+                "trailing_stop": None,
+                "add_trigger": None,
+                "description": (
+                    f"Tín hiệu tiêu cực. Holder nên:\n"
+                    f"  • Giảm ít nhất 50% vị thế NGAY\n"
+                    f"  • Thoát hoàn toàn nếu giá thủng ${support_1:.2f}\n"
+                    f"  • Nếu muốn giữ: đặt stop loss chặt tại ${support_1:.2f}"
+                )
+            }
+
         return plan
 
     def _format_trading_plan_section(self, plan: Dict[str, Any]) -> str:
-        """Format trading plan as prompt section."""
+        """Format trading plan as prompt section with holder rules."""
         lines = [
             "## PRE-CALCULATED TRADING PLAN (USE THIS EXACTLY)",
             "",
@@ -824,13 +974,16 @@ class SynthesisHandlerV2(LoggerMixin):
             f"Current Price: ${plan['current_price']:.2f}" if plan['current_price'] else "Current Price: N/A",
         ]
 
+        # New investor entry rules
+        lines.append("")
+        lines.append("### FOR NEW INVESTORS (Chưa có vị thế):")
         if plan.get("entry_zone"):
             lines.append(f"Entry Zone: ${plan['entry_zone']['low']:.2f} - ${plan['entry_zone']['high']:.2f} (BREAKOUT CONFIRMATION REQUIRED)")
         else:
-            lines.append("Entry Zone: NONE - Watchlist only until conditions met")
+            lines.append("Entry Zone: KHÔNG VÀO LỆNH - Watchlist only until conditions met")
 
         if plan.get("stop_loss"):
-            lines.append(f"Stop Loss: ${plan['stop_loss']['price']:.2f} ({plan['stop_loss']['pct_from_entry']}% below entry)")
+            lines.append(f"Stop Loss: ${plan['stop_loss']['price']:.2f} ({plan['stop_loss']['pct_from_entry']}% below ENTRY, not current price)")
 
         if plan.get("targets"):
             for i, target in enumerate(plan["targets"], 1):
@@ -841,6 +994,27 @@ class SynthesisHandlerV2(LoggerMixin):
 
         if plan.get("position_sizing_note"):
             lines.append(f"Position Sizing: {plan['position_sizing_note']}")
+
+        # Holder rules (CRITICAL NEW SECTION)
+        holder_rules = plan.get("holder_rules", {})
+        if holder_rules:
+            lines.append("")
+            lines.append("### FOR EXISTING HOLDERS (Đã có vị thế) - CRITICAL:")
+
+            if holder_rules.get("description"):
+                lines.append(holder_rules["description"])
+
+            if holder_rules.get("reduce_trigger"):
+                lines.append(f"• Giảm 50% vị thế: Nếu giá thủng ${holder_rules['reduce_trigger']:.2f}")
+
+            if holder_rules.get("exit_trigger"):
+                lines.append(f"• Thoát hoàn toàn: Nếu giá thủng ${holder_rules['exit_trigger']:.2f}")
+
+            if holder_rules.get("trailing_stop"):
+                lines.append(f"• Trailing Stop: {holder_rules['trailing_stop']}")
+
+            if holder_rules.get("add_trigger"):
+                lines.append(f"• Thêm vị thế: Có thể add nếu giá pullback về ${holder_rules['add_trigger']:.2f}")
 
         return "\n".join(lines)
 
