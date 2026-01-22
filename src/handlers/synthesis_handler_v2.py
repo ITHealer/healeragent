@@ -282,8 +282,12 @@ class CanonicalDataBuilder:
 
     def _extract_from_risk(self, canonical: Dict, risk_data: Dict) -> None:
         """Extract canonical values from risk step."""
+        if not risk_data or not isinstance(risk_data, dict):
+            canonical["_warnings"].append("No risk_data provided")
+            return
+
         raw = risk_data.get("raw_data", {})
-        if not raw:
+        if not raw or not isinstance(raw, dict):
             canonical["_warnings"].append("No raw_data in risk step")
             return
 
@@ -326,8 +330,12 @@ class CanonicalDataBuilder:
 
     def _extract_from_technical(self, canonical: Dict, tech_data: Dict) -> None:
         """Extract canonical values from technical step."""
+        if not tech_data or not isinstance(tech_data, dict):
+            canonical["_warnings"].append("No tech_data provided")
+            return
+
         raw = tech_data.get("raw_data", {})
-        if not raw:
+        if not raw or not isinstance(raw, dict):
             canonical["_warnings"].append("No raw_data in technical step")
             return
 
@@ -377,8 +385,12 @@ class CanonicalDataBuilder:
 
     def _extract_from_position(self, canonical: Dict, pos_data: Dict) -> None:
         """Extract canonical values from position step."""
-        raw = pos_data.get("raw_data", {})
-        sector_ctx = pos_data.get("sector_context", {})
+        if not pos_data or not isinstance(pos_data, dict):
+            canonical["_warnings"].append("No pos_data provided")
+            return
+
+        raw = pos_data.get("raw_data", {}) or {}
+        sector_ctx = pos_data.get("sector_context", {}) or {}
 
         if not raw and not sector_ctx:
             canonical["_warnings"].append("No data in position step")
@@ -413,8 +425,12 @@ class CanonicalDataBuilder:
 
     def _extract_from_sentiment(self, canonical: Dict, sent_data: Dict) -> None:
         """Extract canonical values from sentiment step."""
+        if not sent_data or not isinstance(sent_data, dict):
+            canonical["_warnings"].append("No sent_data provided")
+            return
+
         raw = sent_data.get("raw_data", {})
-        if not raw:
+        if not raw or not isinstance(raw, dict):
             canonical["_warnings"].append("No raw_data in sentiment step")
             return
 
@@ -449,8 +465,12 @@ class CanonicalDataBuilder:
 
     def _extract_from_fundamental(self, canonical: Dict, fund_data: Dict) -> None:
         """Extract canonical values from fundamental step."""
+        if not fund_data or not isinstance(fund_data, dict):
+            canonical["_warnings"].append("No fund_data provided")
+            return
+
         raw = fund_data.get("raw_data", {})
-        if not raw:
+        if not raw or not isinstance(raw, dict):
             canonical["_warnings"].append("No raw_data in fundamental step")
             return
 
@@ -539,7 +559,13 @@ class CanonicalDataBuilder:
 
         # Collect prices from all sources
         for step_name, data in step_data.items():
+            if not data or not isinstance(data, dict):
+                continue
+
             raw = data.get("raw_data", {})
+            if not raw or not isinstance(raw, dict):
+                continue
+
             price = None
 
             if step_name == "risk":
@@ -3560,18 +3586,22 @@ class SynthesisHandlerV2(LoggerMixin):
             "|--------|-----|-----|-----------|-------|------------|",
         ]
 
-        target = peer_data.get("target_metrics", {})
+        target = peer_data.get("target_metrics", {}) or {}
+        target_mcap = target.get('market_cap', 0) or 0
         parts.append(
             f"| **{symbol}** | {target.get('pe_ttm') or 'N/A'} | {target.get('ps_ttm') or 'N/A'} | "
             f"{target.get('ev_ebitda') or 'N/A'} | {target.get('roe_ttm') or 'N/A'} | "
-            f"${target.get('market_cap', 0)/1e9:.1f}B |"
+            f"${target_mcap/1e9:.1f}B |"
         )
 
-        for peer in peer_data.get("peers", [])[:5]:
+        for peer in (peer_data.get("peers", []) or [])[:5]:
+            if not peer or not isinstance(peer, dict):
+                continue
+            peer_mcap = peer.get('market_cap', 0) or 0
             parts.append(
                 f"| {peer.get('symbol', 'N/A')} | {peer.get('pe_ttm') or 'N/A'} | {peer.get('ps_ttm') or 'N/A'} | "
                 f"{peer.get('ev_ebitda') or 'N/A'} | {peer.get('roe_ttm') or 'N/A'} | "
-                f"${peer.get('market_cap', 0)/1e9:.1f}B |"
+                f"${peer_mcap/1e9:.1f}B |"
             )
 
         parts.append("")
