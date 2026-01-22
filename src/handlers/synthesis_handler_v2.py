@@ -1007,17 +1007,18 @@ class SynthesisHandlerV2(LoggerMixin):
         ]
 
         fair_value = scenarios.get("fair_value", {})
-        if fair_value.get("assessment") != "N/A":
+        premium_discount = fair_value.get("premium_discount", {})
+        if premium_discount.get("assessment") and premium_discount.get("assessment") != "N/A":
             lines.extend([
                 "",
                 "### FAIR VALUE ASSESSMENT:",
-                f"- Assessment: {fair_value['assessment']}",
+                f"- Assessment: {premium_discount['assessment']}",
             ])
-            if fair_value.get("avg_fair_value"):
-                lines.append(f"- Average Fair Value: ${fair_value['avg_fair_value']:.2f}")
-                lines.append(f"- Premium/Discount: {fair_value['avg_diff_pct']:+.1f}%")
+            if premium_discount.get("avg_fair_value"):
+                lines.append(f"- Average Fair Value: ${premium_discount['avg_fair_value']:.2f}")
+                lines.append(f"- Premium/Discount: {premium_discount['avg_diff_pct']:+.1f}%")
 
-            details = fair_value.get("details", {})
+            details = premium_discount.get("details", {})
             if details.get("graham"):
                 lines.append(f"- Graham Value: ${details['graham']['value']:.2f} ({details['graham']['status']} {abs(details['graham']['diff_pct']):.1f}%)")
             if details.get("dcf"):
