@@ -441,7 +441,9 @@ class CanonicalDataBuilder:
 
         # Get sample size - check ALL possible field names
         # Different APIs use different field names for sample size
+        # IMPORTANT: "data_points" is used by FMP sentiment API
         sample_size_fields = [
+            "data_points",  # FMP sentiment API uses this field
             "data_points_analyzed", "data_count", "sample_size",
             "count", "n", "total_articles", "article_count",
             "news_count", "total_news", "articles_analyzed"
@@ -1310,7 +1312,12 @@ Verdict: Is this attractive for a dividend/value investor? Why/why not?
 ### PART C: EXTERNAL DATA (With Inline Citations)
 10. **Analyst Consensus** - [Source](URL) for each data point
 11. **Insider Trading** - Net activity + Source (SEC Form 4 via FMP)
-12. **News & Catalysts** - Inline citations mandatory: "Statement [Source](URL)"
+12. **News & Catalysts** (DETAILED - Use Web Search Results)
+    - Extract KEY THEMES from web search results (AI developments, earnings, guidance, etc.)
+    - Include SPECIFIC FACTS and numbers from articles (e.g., "Azure growth of 31%")
+    - Write at least 4-6 bullet points covering different news topics
+    - MANDATORY: Inline citation for each bullet: "Fact [Source](URL)"
+    - Cover: Recent news, analyst commentary, upcoming catalysts, market sentiment
 
 ### PART D: ACTION PLAN (With Price Level Methodology)
 **PURPOSE**: Actionable recommendations based on Parts A-C analysis.
@@ -2561,7 +2568,12 @@ class SynthesisHandlerV2(LoggerMixin):
         step_data: Dict[str, Any],
         scoring: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """Fetch web search results with smart queries and deduplication."""
+        """Fetch web search results with smart queries and deduplication.
+
+        OPTIMIZATION: Uses asyncio.gather() to run all queries in PARALLEL
+        instead of sequential execution. This reduces total time from
+        sum(all_query_times) to max(all_query_times).
+        """
         try:
             web_search = WebSearchTool()
 
@@ -2586,28 +2598,47 @@ class SynthesisHandlerV2(LoggerMixin):
                 }
             ]
 
-            all_citations = []
-            all_answers = []
-
-            for query_info in queries:
+            # PARALLEL EXECUTION: Create async tasks for all queries
+            async def execute_query(query_info: Dict[str, Any]):
+                """Execute a single web search query and return results."""
                 try:
                     result = await web_search.execute(
                         query=query_info["query"],
                         max_results=query_info.get("max_results", 3),
                         use_finance_domains=True
                     )
-
                     if result.status == "success" and result.data:
-                        for citation in result.data.get("citations", []):
-                            all_citations.append(citation)
-
-                        if result.data.get("answer"):
-                            all_answers.append({
-                                "category": query_info["category"],
-                                "answer": result.data.get("answer", "")
-                            })
+                        return {
+                            "category": query_info["category"],
+                            "citations": result.data.get("citations", []),
+                            "answer": result.data.get("answer", "")
+                        }
                 except Exception as e:
                     self.logger.warning(f"[Web] Search failed for {query_info['category']}: {e}")
+                return None
+
+            # Run all queries in PARALLEL using asyncio.gather
+            self.logger.info(f"[Web] Starting {len(queries)} parallel searches for {symbol}")
+            results = await asyncio.gather(
+                *[execute_query(q) for q in queries],
+                return_exceptions=True
+            )
+            self.logger.info(f"[Web] All {len(queries)} searches completed for {symbol}")
+
+            # Process results
+            all_citations = []
+            all_answers = []
+
+            for result in results:
+                if result is None or isinstance(result, Exception):
+                    continue
+                if result.get("citations"):
+                    all_citations.extend(result["citations"])
+                if result.get("answer"):
+                    all_answers.append({
+                        "category": result["category"],
+                        "answer": result["answer"]
+                    })
 
             # Deduplicate by URL
             seen_urls = set()
@@ -3443,7 +3474,7 @@ class SynthesisHandlerV2(LoggerMixin):
             "10. Fair Value Assessment - Show: Graham/DCF with assumptions, note model limitations",
             "11. Scenario Analysis - Show: Bull/Base/Bear with probability methodology explained",
             "12. Seasonal Patterns - Historical monthly/quarterly performance patterns",
-            "13. News & Catalysts - With inline citations (Title + URL) + Sources section",
+            "13. News & Catalysts - DETAILED analysis from web search with 4-6 bullet points + inline citations",
             "14. Executive Summary - Key DATA POINTS from each section",
             "15. Action Plan - Separate for NEW vs EXISTING investors with ATR/structure logic",
             "",
@@ -3879,24 +3910,46 @@ class SynthesisHandlerV2(LoggerMixin):
         return parts
 
     def _format_web_section_v3(self, web_data: Dict) -> List[str]:
-        """Format web search section for V3 prompt."""
+        """Format web search section for V3 prompt with detailed content.
+
+        ENHANCED: Provides more web content for richer news/catalyst analysis.
+        """
         parts = [
             "=" * 60,
-            "## WEB SEARCH RESULTS",
+            "## WEB SEARCH RESULTS - USE THIS FOR NEWS & CATALYSTS SECTION",
             "=" * 60,
+            "",
+            "**INSTRUCTION:** You MUST use the following web search results to write a",
+            "detailed News & Catalysts section. Include:",
+            "- Key themes and developments from each category",
+            "- Specific facts, numbers, and quotes from the search results",
+            "- Inline citations [Source Name](URL) for each major point",
+            "- At least 3-5 bullet points per category if content is available",
             "",
         ]
 
         for item in web_data.get("news", []):
-            parts.append(f"### {item['category'].upper()}")
-            parts.append(item["answer"][:2000])
+            category = item.get('category', 'NEWS').upper()
+            answer = item.get("answer", "")
+            parts.append(f"### {category}")
+            # Increased limit from 2000 to 3500 chars for more content
+            parts.append(answer[:3500])
             parts.append("")
 
-        parts.append("**SOURCES (for inline citation):**")
-        for i, citation in enumerate(web_data.get("citations", [])[:10], 1):
-            parts.append(f"[{i}] {citation.get('title', 'Untitled')} - {citation.get('url', '')}")
-
+        parts.append("### SOURCES (Use these for inline citations)")
+        parts.append("Format: [Source Title](URL)")
         parts.append("")
+        for i, citation in enumerate(web_data.get("citations", [])[:12], 1):
+            title = citation.get('title', 'Untitled')
+            url = citation.get('url', '')
+            # Include snippet if available for more context
+            snippet = citation.get('snippet', '')[:200] if citation.get('snippet') else ''
+            parts.append(f"[{i}] **{title}**")
+            parts.append(f"    URL: {url}")
+            if snippet:
+                parts.append(f"    Preview: {snippet}...")
+            parts.append("")
+
         return parts
 
     # =========================================================================
@@ -4720,8 +4773,8 @@ Past performance is not indicative of future results. Investments involve risk, 
             # Extract with all possible field names
             score = sentiment.get('sentiment_score', sentiment.get('score', 'N/A'))
             label = sentiment.get('sentiment_label', sentiment.get('label', 'N/A'))
-            # Check ALL possible sample size field names
-            sample_fields = ['data_points_analyzed', 'data_count', 'sample_size', 'count', 'n', 'total_articles', 'article_count', 'news_count']
+            # Check ALL possible sample size field names (data_points is used by FMP)
+            sample_fields = ['data_points', 'data_points_analyzed', 'data_count', 'sample_size', 'count', 'n', 'total_articles', 'article_count', 'news_count']
             sample_size = None
             for field in sample_fields:
                 if sentiment.get(field) is not None:
