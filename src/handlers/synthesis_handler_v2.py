@@ -1624,8 +1624,17 @@ class SynthesisHandlerV2(LoggerMixin):
             # Log prompt length for monitoring
             self.logger.info(f"[SynthesisV2] {symbol} - Prompt length: {len(consolidated_prompt)} chars")
 
-            # Stream response
+            # =================================================================
+            # HYBRID ADAPTIVE STREAMING - Phase 2: Buffer with Progress
+            # Stream from LLM into buffer, emit progress events (no content yet)
+            # This prevents UI from showing draft content that may need repair
+            # =================================================================
             full_content = []
+            chunk_count = 0
+            progress_interval = 15  # Emit progress every N chunks
+            last_progress_time = datetime.now()
+            heartbeat_interval_sec = 10  # Emit progress at least every N seconds
+
             async for chunk in self.llm_provider.stream_response(
                 model_name=model_name,
                 messages=messages,
@@ -1633,15 +1642,36 @@ class SynthesisHandlerV2(LoggerMixin):
                 api_key=api_key
             ):
                 full_content.append(chunk)
-                yield {
-                    "type": "content",
-                    "section": "report_body",
-                    "content": chunk
-                }
+                chunk_count += 1
+
+                # Emit progress event periodically (keeps connection alive, shows user we're working)
+                now = datetime.now()
+                time_since_last = (now - last_progress_time).total_seconds()
+
+                if chunk_count % progress_interval == 0 or time_since_last >= heartbeat_interval_sec:
+                    # Estimate progress percentage (rough estimate based on typical report ~100-150 chunks)
+                    # Cap at 90% until validation complete
+                    estimated_progress = min(90, int(chunk_count * 0.7))
+                    yield {
+                        "type": "progress",
+                        "step": "generating",
+                        "message": f"Generating report... ({estimated_progress}%)",
+                        "percent": estimated_progress
+                    }
+                    last_progress_time = now
+                    # Yield control to event loop - prevents blocking other async operations
+                    await asyncio.sleep(0)
 
             # =================================================================
-            # PIPELINE V3 - LAYER 3: Lint Generated Report
+            # HYBRID ADAPTIVE STREAMING - Phase 3: Validation (Lint)
             # =================================================================
+            yield {
+                "type": "progress",
+                "step": "validating",
+                "message": "Validating data consistency...",
+                "percent": 92
+            }
+
             generated_report = "".join(full_content)
             lint_issues = self.report_linter.lint(generated_report, canonical_data)
             lint_summary = self.report_linter.get_summary(lint_issues)
@@ -1650,7 +1680,7 @@ class SynthesisHandlerV2(LoggerMixin):
                            f"(Critical: {lint_summary['critical']}, High: {lint_summary['high']}, "
                            f"Medium: {lint_summary['medium']}, Low: {lint_summary['low']})")
 
-            # Yield lint results for monitoring
+            # Yield lint results for monitoring (data event, not visible to user)
             yield {
                 "type": "data",
                 "section": "lint_results",
@@ -1658,13 +1688,18 @@ class SynthesisHandlerV2(LoggerMixin):
             }
 
             # =================================================================
-            # PIPELINE V3 - LAYER 4: Repair if Needed
+            # HYBRID ADAPTIVE STREAMING - Phase 3b: Repair if Needed
+            # Determine final_report: either original (if pass) or repaired (if fail)
             # =================================================================
+            final_report = generated_report  # Default to generated report
+            repair_info = None
+
             if lint_summary["needs_repair"]:
                 yield {
                     "type": "progress",
                     "step": "repair",
-                    "message": f"Repairing {lint_summary['total_issues']} issues found..."
+                    "message": f"Repairing {lint_summary['total_issues']} issues found...",
+                    "percent": 94
                 }
 
                 repaired_report = await self._repair_report(
@@ -1683,31 +1718,42 @@ class SynthesisHandlerV2(LoggerMixin):
 
                     self.logger.info(f"[SynthesisV2] Post-repair lint: {re_lint_summary['status']}")
 
-                    # Output repaired content
-                    yield {
-                        "type": "content",
-                        "section": "repair_notice",
-                        "content": "\n\n---\n*[Report has been automatically corrected for data consistency]*\n---\n\n"
-                    }
-
-                    yield {
-                        "type": "content",
-                        "section": "repaired_report",
-                        "content": repaired_report
-                    }
-
-                    yield {
-                        "type": "data",
-                        "section": "repair_results",
-                        "data": {
-                            "original_issues": lint_summary["total_issues"],
-                            "remaining_issues": re_lint_summary["total_issues"],
-                            "repair_successful": re_lint_summary["total_issues"] < lint_summary["total_issues"]
-                        }
+                    # Use repaired report as final
+                    final_report = repaired_report
+                    repair_info = {
+                        "original_issues": lint_summary["total_issues"],
+                        "remaining_issues": re_lint_summary["total_issues"],
+                        "repair_successful": re_lint_summary["total_issues"] < lint_summary["total_issues"]
                     }
 
             # =================================================================
-            # PHASE 6: Generate footer
+            # HYBRID ADAPTIVE STREAMING - Phase 4: Delivery (Stream Final ONCE)
+            # This is the ONLY content user sees - either original or repaired
+            # =================================================================
+            yield {
+                "type": "progress",
+                "step": "finalizing",
+                "message": "Finalizing report...",
+                "percent": 98
+            }
+
+            # Stream final report content - this is the ONLY report content user sees
+            yield {
+                "type": "content",
+                "section": "final_report",
+                "content": final_report
+            }
+
+            # If repair was performed, emit repair results data (for monitoring/debugging only)
+            if repair_info:
+                yield {
+                    "type": "data",
+                    "section": "repair_results",
+                    "data": repair_info
+                }
+
+            # =================================================================
+            # PHASE 5: Generate footer
             # =================================================================
             elapsed = (datetime.now() - start_time).total_seconds()
             report_footer = self._generate_report_footer(

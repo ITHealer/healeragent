@@ -618,12 +618,34 @@ async def scanner_synthesis_v2_stream(
     - PEER COMPARISON: Comparison table with 3-5 peers
     - QUALITY WEB ENRICHMENT: Deduplicated, date-filtered, inline citations
     - CLEAR SECTOR RANKING: Methodology explanation
+    - HYBRID ADAPTIVE STREAMING: Buffer-then-stream ensures single final report
 
-    Response Events (SSE):
-    - {"type": "progress", "step": "...", "message": "..."}
-    - {"type": "content", "section": "...", "content": "..."}
+    Response Events (SSE) - Hybrid Adaptive Streaming Protocol:
+
+    Phase 1-3 (Progress events while buffering):
+    - {"type": "progress", "step": "gathering_data|scoring|enrichment|...", "message": "..."}
+    - {"type": "progress", "step": "generating", "message": "...", "percent": 45}
+    - {"type": "progress", "step": "validating", "message": "...", "percent": 92}
+    - {"type": "progress", "step": "repair", "message": "...", "percent": 94}  (only if needed)
+    - {"type": "progress", "step": "finalizing", "message": "...", "percent": 98}
+
+    Data events (monitoring/debugging):
     - {"type": "data", "section": "scoring", "data": {...}}
+    - {"type": "data", "section": "canonical_data", "data": {...}}
+    - {"type": "data", "section": "lint_results", "data": {...}}
+    - {"type": "data", "section": "repair_results", "data": {...}}  (only if repaired)
+
+    Phase 4 (Final content delivery - SINGLE report):
+    - {"type": "content", "section": "header", "content": "..."}
+    - {"type": "content", "section": "final_report", "content": "..."}  <- THE official report
+    - {"type": "content", "section": "footer", "content": "..."}
+
+    Completion:
     - {"type": "done"}
+
+    Note: UI should only display content with section="final_report" as the main report.
+    The "header" and "footer" are supplementary. No "report_body" or "repaired_report"
+    sections are emitted - user always sees exactly ONE report.
     """
     user_id = getattr(request.state, "user_id", None)
 
