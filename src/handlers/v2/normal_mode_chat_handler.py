@@ -1,10 +1,23 @@
 """
 Normal Mode Chat Handler
 
+================================================================================
+LEGACY NOTICE: This handler is ONLY used by the legacy /chat endpoint.
+               The new /chat/v2 endpoint does NOT use NormalModeChatHandler.
+
+For /chat/v2:
+- Uses stream_chat_v2() in chat_assistant.py directly
+- Uses IntentClassifier instead of UnifiedClassifier
+- Uses run_stream_with_all_tools() instead of run_stream()
+- Does NOT use LLMToolRouter for tool selection
+
+See: docs/ARCHITECTURE_CHAT_V2.md for the new architecture.
+================================================================================
+
 Optimized chat handler for Normal Mode queries (90% of traffic).
 Routes queries through a simplified 2-3 LLM call pipeline:
 
-Flow:
+Flow (LEGACY /chat endpoint):
 1. Unified Classification (1 LLM call)
    - Determines query type, tool categories, and if tools are needed
    - Merges what was previously 2 LLM calls into 1
@@ -19,7 +32,7 @@ Total: 2-3 LLM calls (vs 4+ in the old pipeline)
 For complex queries (Deep Research Mode), falls back to the existing
 7-phase ChatHandler pipeline.
 
-Usage:
+Usage (LEGACY /chat endpoint only):
     handler = NormalModeChatHandler()
 
     async for chunk in handler.handle_chat(

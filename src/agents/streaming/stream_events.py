@@ -22,6 +22,10 @@ class StreamEventType(str, Enum):
     # Session events
     START = "start"
 
+    # Response Mode events (for FAST/AUTO/EXPERT routing)
+    MODE_SELECTING = "mode_selecting"    # Starting mode classification
+    MODE_SELECTED = "mode_selected"      # Mode has been selected
+
     # Thinking events (like Claude Extended Thinking)
     THINKING_START = "thinking_start"
     THINKING_DELTA = "thinking_delta"
@@ -272,12 +276,77 @@ class StartEvent(StreamEvent):
 
 
 @dataclass
+class ModeSelectingEvent(StreamEvent):
+    """
+    Mode selection started event
+
+    Emitted when AUTO mode is classifying query complexity.
+    """
+
+    def __init__(
+        self,
+        query: str,
+        user_mode: str = "auto",
+        node_id: str = None,
+        parent_id: str = None
+    ):
+        super().__init__(
+            event_type=StreamEventType.MODE_SELECTING,
+            data={
+                "query": query[:100] if query else "",  # Truncate for privacy
+                "user_mode": user_mode,
+                "status": "selecting"
+            },
+            node_id=node_id or generate_node_id(),
+            parent_id=parent_id
+        )
+
+
+@dataclass
+class ModeSelectedEvent(StreamEvent):
+    """
+    Mode selection complete event
+
+    Emitted when response mode has been determined.
+    Contains the effective mode and reasoning.
+    """
+
+    def __init__(
+        self,
+        effective_mode: str,
+        reason: str,
+        model: str,
+        confidence: float = None,
+        detection_method: str = None,
+        node_id: str = None,
+        parent_id: str = None
+    ):
+        data = {
+            "mode": effective_mode,
+            "reason": reason,
+            "model": model,
+            "status": "selected"
+        }
+        if confidence is not None:
+            data["confidence"] = round(confidence, 2)
+        if detection_method:
+            data["detection_method"] = detection_method
+
+        super().__init__(
+            event_type=StreamEventType.MODE_SELECTED,
+            data=data,
+            node_id=node_id,
+            parent_id=parent_id
+        )
+
+
+@dataclass
 class ThinkingStartEvent(StreamEvent):
     """Start of thinking/reasoning phase"""
-    
+
     def __init__(
-        self, 
-        phase: str, 
+        self,
+        phase: str,
         message: str = "Analyzing query...",
         estimated_steps: int = None,
         node_id: str = None,

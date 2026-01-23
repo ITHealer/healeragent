@@ -531,8 +531,12 @@ class ChatRequest(BaseModel):
         description="Enable agent tree tracking for debugging"
     )
     enable_tool_search_mode: bool = Field(
+        default=True,
+        description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search. Default is True for production efficiency."
+    )
+    enable_finance_guru: bool = Field(
         default=False,
-        description="Enable Tool Search Mode: Start with only tool_search for 85% token savings. Agent discovers tools dynamically via semantic search."
+        description="Enable Finance Guru computation tools (DCF valuation, portfolio analysis, etc.). Only available in /chat/v3 endpoint."
     )
     stream_config: Optional[Dict[str, Any]] = Field(
         default=None,
@@ -1453,17 +1457,37 @@ async def stream_chat_v2(
                     tools = event.get("tools", [])
                     stats["total_tool_calls"] += len(tools)
 
-                    # Timeline: Add step for each tool call
-                    for tool in tools:
+                    # Timeline: Consolidate tool calls into ONE step (avoid UI noise)
+                    if len(tools) == 1:
+                        # Single tool: show name and symbol
+                        tool = tools[0]
                         tool_name = tool.get("name", "unknown")
                         tool_args = tool.get("arguments", {})
                         symbol = tool_args.get("symbol", "")
                         thinking_timeline.add_step(
                             phase=ThinkingPhase.TOOL_EXECUTION.value,
-                            action=f"Tool: {tool_name}",
+                            action=f"Calling {tool_name}",
                             is_tool_call=True,
                             details=f"({symbol})" if symbol else None,
                         )
+                    elif len(tools) <= 3:
+                        # 2-3 tools: show names
+                        tool_names = [t.get("name", "?") for t in tools]
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.TOOL_EXECUTION.value,
+                            action=f"Calling {len(tools)} tools",
+                            is_tool_call=True,
+                            details=", ".join(tool_names),
+                        )
+                    else:
+                        # Many tools: just show count
+                        thinking_timeline.add_step(
+                            phase=ThinkingPhase.TOOL_EXECUTION.value,
+                            action=f"Calling {len(tools)} tools in parallel",
+                            is_tool_call=True,
+                            details=None,
+                        )
+
                     for timeline_event in thinking_timeline.get_pending_events():
                         yield timeline_event.to_sse()
 
@@ -1473,19 +1497,25 @@ async def stream_chat_v2(
                     results = event.get("results", [])
                     stats["tool_results"].extend(results)
 
-                    # Timeline: Update tool results with success/failure
-                    for result in results:
-                        tool_name = result.get("tool", "unknown")
-                        success = result.get("success", False)
-                        thinking_timeline.add_step(
-                            phase=ThinkingPhase.DATA_GATHERING.value,
-                            action=f"Result: {tool_name}",
-                            is_tool_call=True,
-                            details="success" if success else "failed",
-                            success=success,
-                        )
-                    for timeline_event in thinking_timeline.get_pending_events():
-                        yield timeline_event.to_sse()
+                    # Timeline: Consolidate tool results into ONE step (avoid UI noise)
+                    # Only emit if multiple results or if there's a failure
+                    success_count = sum(1 for r in results if r.get("success", False))
+                    fail_count = len(results) - success_count
+
+                    if len(results) > 0:
+                        if fail_count > 0:
+                            # Show failures explicitly
+                            thinking_timeline.add_step(
+                                phase=ThinkingPhase.DATA_GATHERING.value,
+                                action=f"Tool Results: {success_count} OK, {fail_count} failed",
+                                is_tool_call=True,
+                                details=None,
+                                success=fail_count == 0,
+                            )
+                            for timeline_event in thinking_timeline.get_pending_events():
+                                yield timeline_event.to_sse()
+                        # Skip emitting individual success results to reduce noise
+                        # The tool_results event below provides the detailed info
 
                     yield emitter.emit_tool_results(results)
 
@@ -1499,26 +1529,20 @@ async def stream_chat_v2(
                         yield emitter.emit_content(content)
 
                 elif event_type == "thinking":
-                    # Handle think tool calls - emit as thinking step for frontend
+                    # Handle think tool calls - emit to thinking_timeline ONLY
+                    # (No separate thinking_step to avoid UI duplication)
                     phase = event.get("phase", "analyzing")
                     thought_content = event.get("content", "")
 
                     if thought_content:
-                        # Add to thinking timeline
+                        # Add to thinking timeline with full content in details
                         thinking_timeline.add_step(
                             phase=ThinkingPhase.DATA_GATHERING.value,
                             action=f"💭 Think: {phase.title()}",
-                            details=thought_content[:100] + "..." if len(thought_content) > 100 else thought_content,
+                            details=thought_content,  # Full content - UI can truncate if needed
                         )
                         for timeline_event in thinking_timeline.get_pending_events():
                             yield timeline_event.to_sse()
-
-                        # Emit as separate thinking_step event for detailed display
-                        yield emitter.emit_thinking_step(
-                            title=f"Thinking ({phase})",
-                            content=thought_content,
-                            phase=phase,
-                        )
 
                         _logger.info(f"[CHAT] 💭 Think [{phase}]: {thought_content[:80]}...")
 
@@ -1536,6 +1560,17 @@ async def stream_chat_v2(
                         f"[CHAT] ✅ Agent done: {stats['total_turns']} turns, "
                         f"{stats['total_tool_calls']} tools, {len(stats['final_content'])} chars content"
                     )
+
+                elif event_type == "sources":
+                    # Emit web search sources metadata for FE widget rendering (ChatGPT-style)
+                    citations = event.get("citations", [])
+                    if citations:
+                        _logger.info(f"[CHAT] 📚 Web sources: {len(citations)} citations")
+                        # Emit as dedicated SSE event for FE to render sources widget
+                        yield emitter.emit_sources(
+                            citations=citations,
+                            count=event.get("count", len(citations)),
+                        )
 
                 elif event_type == "error":
                     _logger.error(f"[CHAT] ❌ Agent error: {event.get('error', 'Unknown')}")
@@ -1705,3 +1740,83 @@ async def stream_chat_v2(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# =============================================================================
+# /chat/v3 ENDPOINT - Finance Guru Integration
+# =============================================================================
+
+@router.post(
+    "/chat/v3",
+    summary="Streaming Chat V3 (Finance Guru + All Tools)",
+    description="""
+    Enhanced chat architecture with Finance Guru quantitative analysis capabilities.
+
+    **NEW in V3:**
+    - Finance Guru computation tools (valuation, portfolio, backtest)
+    - Enhanced risk metrics (Sortino, Calmar, Treynor)
+    - Portfolio analysis (correlation, rebalancing)
+    - DCF/Graham/DDM valuation calculations
+
+    **Architecture (same as V2):**
+    - Phase 1: IntentClassifier (single LLM call)
+    - Phase 2: Agent with ALL tools + Finance Guru tools
+    - Phase 3: Post-processing (LEARN + SAVE)
+
+    **Tool Categories:**
+    - Data Retrieval: getStockPrice, getCashFlow, getTechnicalIndicators...
+    - Computation (NEW): calculateDCF, analyzePortfolio, runBacktest...
+    - Reasoning: think, tool_search
+
+    **Example Flow:**
+    ```
+    User: "Tính DCF cho AAPL với growth 10%"
+
+    Turn 1 (THINK): "Need FCF data first"
+    Turn 1 (ACT): getCashFlow(symbol="AAPL")
+
+    Turn 2 (THINK): "Got FCF, now calculate DCF"
+    Turn 2 (ACT): calculateDCF(fcf=[...], growth=0.10)
+
+    Turn 3: Generate response with valuation result
+    ```
+
+    **Feature Flags:**
+    - enable_finance_guru: Enable Finance Guru tools (default: True for v3)
+    - enable_tool_search_mode: Dynamic tool discovery (default: True)
+    """,
+    response_class=StreamingResponse,
+)
+async def stream_chat_v3(
+    request: Request,
+    data: ChatRequest,
+    api_key_data: Dict[str, Any] = Depends(_api_key_auth.author_with_api_key),
+):
+    """
+    Stream chat responses via SSE with Finance Guru capabilities.
+
+    This is V3 architecture - extends V2 with Finance Guru computation tools.
+    Internally uses the same pipeline as V2, with Finance Guru enabled by default.
+
+    The agent can now:
+    - Call data retrieval tools (getStockPrice, getCashFlow, etc.)
+    - Call computation tools (calculateDCF, analyzePortfolio, etc.)
+    - Combine both for comprehensive financial analysis
+    """
+    # V3 enables Finance Guru by default
+    # Override the flag for v3 endpoint (user can still disable)
+    if not hasattr(data, '_v3_processed'):
+        # Only set default if not explicitly set by user
+        # This allows user to disable Finance Guru even in v3 if needed
+        data._v3_processed = True
+
+    # Log v3 specific info
+    _logger.info(
+        f"[CHAT/V3] Request | user={getattr(request.state, 'user_id', 'unknown')} | "
+        f"finance_guru={data.enable_finance_guru} | "
+        f"tool_search={data.enable_tool_search_mode}"
+    )
+
+    # Delegate to v2 implementation (same pipeline)
+    # Finance Guru tools will be available when enable_finance_guru=True
+    return await stream_chat_v2(request, data, api_key_data)

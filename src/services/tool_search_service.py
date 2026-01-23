@@ -47,8 +47,8 @@ EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # 384 dimensions, fast, local
 EMBEDDING_DIMENSIONS = 384
 
 # Search parameters
-DEFAULT_TOP_K = 5
-MAX_TOP_K = 15
+DEFAULT_TOP_K = 10
+MAX_TOP_K = 20
 MIN_SIMILARITY_THRESHOLD = 0.15  # Minimum cosine similarity to include
 
 # Cache settings
@@ -62,28 +62,35 @@ TOOL_SEARCH_DEFINITION = {
         "description": """Search for available tools that can help with a financial analysis task.
 Use this FIRST to discover ALL relevant tools before calling any other tools.
 
-IMPORTANT: Use top_k=5 or higher to ensure you find all relevant tools!
-Using top_k=1 is too restrictive and will miss important tools.
-
 Returns: List of relevant tool names with descriptions that can be used for the task.
+
+TIPS:
+- Default returns 10 tools (adjustable via top_k)
+- Use exclude_tools to skip already-discovered tools and find NEW ones
+- Use different queries to discover tools for different aspects of analysis
 
 Example queries:
 - "analyze stock price and technical indicators" (returns: getStockPrice, getTechnicalIndicators, etc.)
 - "get financial news and sentiment" (returns: getNews, webSearch, etc.)
 - "cryptocurrency price and market data" (returns: getCryptoPrice, getCryptoMarketData, etc.)
-- "RSI, MACD, support/resistance levels" (returns: getTechnicalIndicators, getStockPrice, etc.)
+- "backtest trading strategy" (returns: runBacktest, compareStrategies, etc.)
 """,
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language description of what tools you need. Be specific about ALL data types needed (e.g., 'stock price, technical indicators RSI MACD, support resistance levels')",
+                    "description": "Natural language description of what tools you need. Be specific about ALL data types needed.",
                 },
                 "top_k": {
                     "type": "integer",
-                    "description": "Number of tools to return. ALWAYS use 5 or higher! Default: 5, max: 15. Using top_k=1 is NOT recommended.",
-                    "default": 5,
+                    "description": "Number of tools to return. Default: 10, max: 20.",
+                    "default": 10,
+                },
+                "exclude_tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of tool names to exclude from results (e.g., tools already discovered). Use this to find NEW tools in subsequent searches.",
                 },
             },
             "required": ["query"],
@@ -426,15 +433,17 @@ class ToolSearchService(LoggerMixin):
         top_k: int = DEFAULT_TOP_K,
         category_filter: Optional[List[str]] = None,
         min_similarity: float = MIN_SIMILARITY_THRESHOLD,
+        exclude_tools: Optional[List[str]] = None,
     ) -> ToolSearchResponse:
         """
         Search for tools using semantic similarity.
 
         Args:
             query: Natural language description of needed capability
-            top_k: Number of tools to return (default: 5, max: 15)
+            top_k: Number of tools to return (default: 10, max: 20)
             category_filter: Optional list of categories to search within
             min_similarity: Minimum cosine similarity threshold
+            exclude_tools: Optional list of tool names to exclude from results
 
         Returns:
             ToolSearchResponse with ranked results
@@ -443,6 +452,7 @@ class ToolSearchService(LoggerMixin):
 
         # Validate inputs
         top_k = min(max(1, top_k), MAX_TOP_K)
+        exclude_set = set(exclude_tools or [])
 
         # Ensure embeddings are ready
         self._ensure_embeddings()
@@ -458,6 +468,14 @@ class ToolSearchService(LoggerMixin):
             tool_names = list(set(tool_names))  # Remove duplicates
         else:
             tool_names = list(self._tool_metadata.keys())
+
+        # Apply exclude filter
+        if exclude_set:
+            tool_names = [t for t in tool_names if t not in exclude_set]
+            self.logger.info(
+                f"[TOOL_SEARCH] Excluding {len(exclude_set)} tools, "
+                f"searching {len(tool_names)} remaining"
+            )
 
         # Compute similarities
         scores: List[Tuple[str, float]] = []
@@ -583,6 +601,7 @@ class ToolSearchService(LoggerMixin):
         self,
         query: str,
         top_k: int = DEFAULT_TOP_K,
+        exclude_tools: Optional[List[str]] = None,
     ) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Handle a tool_search function call from GPT.
@@ -593,14 +612,15 @@ class ToolSearchService(LoggerMixin):
         Args:
             query: The search query from GPT
             top_k: Number of tools to return
+            exclude_tools: Tool names to exclude (already discovered)
 
         Returns:
             Tuple of (response_text, tool_definitions)
             - response_text: Human-readable result for GPT
             - tool_definitions: OpenAI function schemas to inject
         """
-        # Perform search
-        response = await self.search(query, top_k)
+        # Perform search with exclusions
+        response = await self.search(query, top_k, exclude_tools=exclude_tools)
 
         # Get tool definitions for found tools
         tool_defs = self.get_tool_definitions(response.tool_names)

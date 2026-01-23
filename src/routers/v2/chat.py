@@ -18,6 +18,7 @@ from src.agents.memory.memory_update_agent import MemoryUpdateAgent
 from src.agents.memory.recursive_summary import RecursiveSummaryManager
 from src.handlers.v2.chat_handler import ChatHandler
 from src.utils.constants import APIModelName
+from src.config.mode_config import ResponseMode
 
 
 # ============================================================================
@@ -99,6 +100,14 @@ class ChatRequest(BaseModel):
             "Uses smart summary to preserve important context while reducing token usage."
         )
     )
+    response_mode: str = Field(
+        default=ResponseMode.AUTO,
+        description=(
+            "Response mode for controlling response quality vs speed tradeoff. "
+            "Options: 'auto' (LLM decides), 'fast' (quick responses), 'expert' (thorough analysis)"
+        ),
+        examples=["auto", "fast", "expert"]
+    )
     
 
 class CoreMemoryUpdateRequest(BaseModel):
@@ -136,6 +145,12 @@ Main chat API với full agent capabilities.
 - Memory system (Core Memory + Recursive Summary)
 - Validation with retry on failure
 - Optional Think Tool for complex reasoning
+- **Response Modes**: Fast/Auto/Expert for speed vs quality control
+
+**Response Modes:**
+- `fast`: Quick responses (3-6s), filtered tools, smaller model
+- `auto`: LLM decides based on query complexity (default)
+- `expert`: Thorough analysis (15-45s), all tools, larger model
 
 **Flow:**
 1. Phase 1: Load Context (Core Memory + Summary + Chat History)
@@ -219,9 +234,18 @@ async def chat_complete(
     description="""
 Streaming version of chat API - Returns response as Server-Sent Events.
 
-**Features:** Same as /chat/complete
+**Features:** Same as /chat/complete + Response Mode streaming events
 
-**Response format:** 
+**Response Modes:**
+- `fast` (⚡): Quick responses (3-6s), gpt-4o-mini, 8 tools, 2 turns max
+- `auto` (🔄): LLM classifies complexity, routes to fast/expert (default)
+- `expert` (🧠): Deep analysis (15-45s), gpt-4o, 31 tools, 6 turns max
+
+**SSE Events for Response Modes:**
+- `mode_selecting`: Started classifying query complexity (AUTO mode)
+- `mode_selected`: Mode determined with reason and model info
+
+**Response format:**
 - Content-Type: text/event-stream
 - Each chunk: `{"content": "text"}\\n\\n`
 - End marker: `[DONE]\\n\\n`

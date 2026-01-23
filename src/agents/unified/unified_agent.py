@@ -204,7 +204,6 @@ class UnifiedAgent(LoggerMixin):
     # Slow tools with longer timeouts (seconds)
     SLOW_TOOL_TIMEOUTS = {
         "webSearch": 180.0,     # Web search can take 60+ seconds with OpenAI Responses API
-        "serpSearch": 120.0,    # SerpAPI search
     }
 
     def __init__(
@@ -530,28 +529,8 @@ class UnifiedAgent(LoggerMixin):
             session_id=session_id,
         )
 
-        # Log tool results for data integrity verification
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        for i, result in enumerate(tool_results):
-            tool_name = result.get("tool_name", "unknown")
-            status = result.get("status", "unknown")
-            symbol = result.get("symbol", "N/A")
-            formatted_context = result.get("formatted_context")
-            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
-
-            # Log tool info
-            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-
-            # Log formatted_context status with length
-            if formatted_context:
-                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
-                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
-            else:
-                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
-                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        # Log tool results in LLM format (no truncation)
+        self._log_tool_results_for_llm(tool_results, flow_id)
 
         # Build synthesis prompt
         messages = self._build_synthesis_messages(
@@ -698,28 +677,8 @@ class UnifiedAgent(LoggerMixin):
                 "content": f"Received {success_count}/{len(tool_results)} successful results",
             }
 
-        # Log tool results for data integrity verification
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        self.logger.info(f"[{flow_id}] TOOL RESULTS → LLM SYNTHESIS ({len(tool_results)} tools)")
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
-        for i, result in enumerate(tool_results):
-            tool_name = result.get("tool_name", "unknown")
-            status = result.get("status", "unknown")
-            symbol = result.get("symbol", "N/A")
-            formatted_context = result.get("formatted_context")
-            data_keys = list(result.get("data", {}).keys()) if result.get("data") else []
-
-            # Log tool info
-            self.logger.info(f"[{flow_id}] [{i+1}] {tool_name} | symbol={symbol} | status={status}")
-
-            # Log formatted_context status with length
-            if formatted_context:
-                self.logger.info(f"[{flow_id}]     ✅ formatted_context: {len(formatted_context)} chars")
-                self.logger.info(f"[{flow_id}]     Preview: {formatted_context[:300]}...")
-            else:
-                self.logger.warning(f"[{flow_id}]     ⚠️ formatted_context: MISSING (will use json.dumps of data)")
-                self.logger.info(f"[{flow_id}]     data keys: {data_keys[:10]}")  # First 10 keys
-        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        # Log tool results in LLM format (no truncation)
+        self._log_tool_results_for_llm(tool_results, flow_id)
 
         # Stream synthesis
         if enable_reasoning:
@@ -1705,6 +1664,53 @@ IMPORTANT:
 
         return processed
 
+    def _log_tool_results_for_llm(
+        self,
+        tool_results: List[Dict[str, Any]],
+        flow_id: str,
+    ) -> None:
+        """
+        Log tool results in the same format as passed to LLM.
+
+        This helps debug and verify what data the LLM receives for synthesis.
+        Format mirrors `_build_synthesis_messages` line 2206-2210.
+
+        Args:
+            tool_results: List of tool result dictionaries
+            flow_id: Flow ID for logging
+        """
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+        self.logger.info(f"[{flow_id}] 📊 TOOL RESULTS → LLM FORMAT ({len(tool_results)} tools)")
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
+        for i, result in enumerate(tool_results, 1):
+            tool_name = result.get("tool_name", "unknown")
+            status = result.get("status", "unknown")
+            formatted_context = result.get("formatted_context")
+            data = result.get("data", {})
+
+            # Header with tool info
+            status_icon = "✅" if status in ["success", "200"] else "❌"
+            self.logger.info(f"[{flow_id}] ───────────────────────────────────────────────────────")
+            self.logger.info(f"[{flow_id}] [{i}] {status_icon} **{tool_name}** | status={status}")
+
+            # Full content in LLM format (no truncation)
+            if formatted_context:
+                self.logger.info(f"[{flow_id}]     📝 formatted_context ({len(formatted_context)} chars):")
+                # Log full content, preserving newlines
+                for line in formatted_context.split('\n'):
+                    self.logger.info(f"[{flow_id}]     | {line}")
+            elif data:
+                # Fallback to JSON data (same as LLM receives)
+                self.logger.info(f"[{flow_id}]     📝 data (json):")
+                data_str = json.dumps(data, indent=2, default=str)
+                for line in data_str.split('\n'):
+                    self.logger.info(f"[{flow_id}]     | {line}")
+            else:
+                self.logger.warning(f"[{flow_id}]     ⚠️ No formatted_context or data available")
+
+        self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
+
     async def _execute_tool_search(
         self,
         tc: ToolCall,
@@ -1719,7 +1725,7 @@ IMPORTANT:
         3. GPT can then understand what tools are available
 
         Args:
-            tc: ToolCall with query and optional top_k
+            tc: ToolCall with query, optional top_k, and optional exclude_tools
             flow_id: Flow ID for logging
 
         Returns:
@@ -1727,22 +1733,28 @@ IMPORTANT:
         """
         try:
             query = tc.arguments.get("query", "")
-            top_k = tc.arguments.get("top_k", 5)
+            top_k = tc.arguments.get("top_k", 10)  # Default to 10
+            exclude_tools = tc.arguments.get("exclude_tools", [])
 
             if not query:
                 return {
                     "tool_name": "tool_search",
                     "status": "error",
                     "error": "Missing required parameter: query",
+                    "formatted_context": "Error: Missing required parameter 'query' for tool_search.",
                 }
 
+            # Log search parameters
+            exclude_info = f", excluding {len(exclude_tools)} tools" if exclude_tools else ""
             self.logger.info(
-                f"[{flow_id}] tool_search called: '{query[:50]}...' top_k={top_k}"
+                f"[{flow_id}] tool_search: query='{query[:50]}...' top_k={top_k}{exclude_info}"
             )
 
-            # Use ToolSearchService for semantic search
+            # Use ToolSearchService for semantic search with exclusions
             search_service = get_tool_search_service()
-            response = await search_service.search(query, top_k=top_k)
+            response = await search_service.search(
+                query, top_k=top_k, exclude_tools=exclude_tools
+            )
 
             # Format results for LLM
             formatted_result = response.format_for_llm()
@@ -2035,15 +2047,25 @@ IMPORTANT:
 
         # Get domain-specific skill based on classification
         market_type = "stock"  # Default
+        analysis_type = "general"  # Default
         if classification:
             market_type = getattr(classification, "market_type", "stock") or "stock"
+            # Phase 6: Extract analysis_type for specialized prompts
+            analysis_type_attr = getattr(classification, "analysis_type", "general")
+            if hasattr(analysis_type_attr, "value"):
+                analysis_type = analysis_type_attr.value
+            else:
+                analysis_type = str(analysis_type_attr or "general")
 
-        # Select skill and get domain prompt
+        # Select skill and get domain prompt with analysis-specific hints
         skill = self.skill_registry.select_skill(market_type)
-        skill_prompt = skill.get_full_prompt()
+        skill_prompt = self.skill_registry.get_skill_prompt_with_analysis(
+            market_type, analysis_type
+        )
 
         self.logger.debug(
-            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}"
+            f"[UNIFIED_AGENT] Using skill: {skill.name} for market_type={market_type}, "
+            f"analysis_type={analysis_type}"
         )
 
         # Build context hints
@@ -2168,11 +2190,22 @@ Tools to use: [{tool_list_str}]
 
         # Get domain-specific skill based on classification
         market_type = "stock"
+        analysis_type = "general"
         if classification:
             market_type = getattr(classification, "market_type", "stock") or "stock"
+            # Phase 6: Extract analysis_type
+            analysis_type_attr = getattr(classification, "analysis_type", "general")
+            if hasattr(analysis_type_attr, "value"):
+                analysis_type = analysis_type_attr.value
+            else:
+                analysis_type = str(analysis_type_attr or "general")
 
         skill = self.skill_registry.select_skill(market_type)
         analysis_framework = skill.get_analysis_framework()
+
+        # Phase 6: Get analysis-type-specific hint
+        from src.agents.skills.skill_registry import get_analysis_type_hint
+        analysis_hint = get_analysis_type_hint(analysis_type)
 
         # Check if web search results are present
         has_web_search = any(
@@ -2192,9 +2225,12 @@ Tools to use: [{tool_list_str}]
 
 {analysis_framework}
 
+{analysis_hint}
+
 ---
 ## Current Context
 - Date: {current_date}
+- Analysis Type: {analysis_type}
 
 ## Tool Results Data (CRITICAL - USE ALL DATA)
 
@@ -2204,6 +2240,12 @@ Tools to use: [{tool_list_str}]
 ## Your Task
 
 Analyze the data above and provide a **comprehensive, data-driven response** to the user's query.
+
+### Response Length Requirements (MANDATORY)
+- **MINIMUM LENGTH**: Your response MUST be at least 2000-3000 words for complex analysis
+- **DETAIL LEVEL**: Cover EVERY data point from tool results - nothing should be omitted
+- **DO NOT SUMMARIZE**: Present full details, not summaries. Users want comprehensive analysis, not brief overviews
+- **EXPAND ON INSIGHTS**: For each data point, explain what it means, why it matters, and how to act on it
 
 ### Data Integrity Requirements (MANDATORY)
 1. **USE ALL DATA**: Every piece of data from tools MUST be included in your analysis
@@ -2227,15 +2269,42 @@ Analyze the data above and provide a **comprehensive, data-driven response** to 
 
 ### Response Style
 - **Language**: Match the user's language naturally
-- **Depth**: Be comprehensive - longer is better if it adds value
+- **Depth**: Be comprehensive - aim for 2000+ words with detailed analysis
 - **Clarity**: Structure with headers, use bullet points for key data
 - **Engagement**: End with 2-3 follow-up questions to explore deeper"""
 
         if has_web_search:
             system_prompt += """
 
-**Source Citations:**
-Include web sources at the end: [Title](URL)"""
+### WEB SEARCH SOURCE CITATIONS (MANDATORY - ChatGPT Style)
+
+**CRITICAL**: You MUST include clickable source links in TWO ways:
+
+#### 1. INLINE CITATIONS (Throughout your response)
+When referencing information from web search, ALWAYS include the source as a clickable markdown link INLINE.
+
+**Format**: Statement + [Source Name](URL)
+
+**Examples**:
+- "NVIDIA đạt doanh thu kỷ lục $35.1 tỷ trong Q3 2024. [NVIDIA Investor Relations](https://investor.nvidia.com/...)"
+- "Theo [Reuters](https://reuters.com/...), chip H200 đang gặp vấn đề về chuỗi cung ứng."
+- "TSMC dành 70% công suất CoWoS-L cho NVIDIA. [TechPowerUp](https://www.techpowerup.com/...)"
+
+**DO NOT** write statements without source links. Every claim from web search needs a citation.
+
+#### 2. SOURCES SECTION (At the end)
+After your analysis, include a "## 📚 Sources" section listing all sources used.
+
+**Example Format**:
+```
+## 📚 Sources
+
+1. [NVIDIA Announces Financial Results for Q3 2026](https://investor.nvidia.com/news/...)
+2. [TSMC Reserves 70% of CoWoS-L Capacity for NVIDIA](https://www.techpowerup.com/...)
+3. [AMD launches MI325X to rival Nvidia's Blackwell](https://www.cnbc.com/...)
+```
+
+**WARNING**: Responses without inline source citations will be considered incomplete and unverifiable."""
 
         messages = [{"role": "system", "content": system_prompt}]
 
@@ -2369,7 +2438,7 @@ Respond naturally and helpfully while staying in character."""
                 context continuity for follow-up questions.
             enable_think_tool: If True, add STRONG instruction to always use think tool
                 for explicit reasoning before and after tool calls.
-            enable_web_search: If True, FORCE inject webSearch/serpSearch tools
+            enable_web_search: If True, FORCE inject webSearch tool
                 and add instruction to search for latest news/information.
             system_prompt_override: If provided, replace the default skill-based
                 system prompt with this custom prompt. Used for character agents
@@ -2464,6 +2533,11 @@ Respond naturally and helpfully while staying in character."""
                 }
 
             # ================================================================
+            # TRACK WEB SEARCH CITATIONS FOR SOURCES SECTION
+            # ================================================================
+            all_web_citations = []  # List of {"title": str, "url": str}
+
+            # ================================================================
             # TOOL LOADING STRATEGY
             # ================================================================
             if enable_tool_search_mode:
@@ -2472,12 +2546,12 @@ Respond naturally and helpfully while staying in character."""
                 tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION]
                 discovered_tool_names = set()  # No tools discovered yet
 
-                # FORCE INJECT: Web search tools when enabled
+                # FORCE INJECT: Web search tool when enabled
                 if enable_web_search:
-                    web_search_tools = self.catalog.get_openai_functions(["webSearch", "serpSearch"])
+                    web_search_tools = self.catalog.get_openai_functions(["webSearch"])
                     tools.extend(web_search_tools)
-                    discovered_tool_names.update(["webSearch", "serpSearch"])
-                    self.logger.info(f"[{flow_id}] 🌐 FORCE INJECTED: webSearch, serpSearch (enable_web_search=True)")
+                    discovered_tool_names.add("webSearch")
+                    self.logger.info(f"[{flow_id}] 🌐 FORCE INJECTED: webSearch (enable_web_search=True)")
 
                 self.logger.info(
                     f"[{flow_id}] 🔍 TOOL SEARCH MODE: Starting with tool_search + think "
@@ -2525,9 +2599,11 @@ Respond naturally and helpfully while staying in character."""
                 enable_think_tool=enable_think_tool,
                 enable_web_search=enable_web_search,
                 system_prompt_override=system_prompt_override,  # Character persona override
+                enable_tool_search_mode=enable_tool_search_mode,  # Pass tool search mode flag
             )
 
             total_tool_calls = 0
+            tool_search_called = False  # Track if tool_search was ever called
 
             for turn_num in range(1, max_turns + 1):
                 yield {"type": "turn_start", "turn": turn_num}
@@ -2567,8 +2643,72 @@ Respond naturally and helpfully while staying in character."""
                     }
                     self.logger.info(f"[{flow_id}] 💭 Thinking: {thinking_content[:100]}...")
 
-                # No tool calls - stream final response
+                # No tool calls - check if we should retry or return response
                 if not tool_calls:
+                    # ============================================================
+                    # EMPTY RESPONSE HANDLING: Retry when LLM returns nothing
+                    # This can happen due to:
+                    # - Response parsing issues (especially with Gemini)
+                    # - Model confusion
+                    # - Network issues
+                    # ============================================================
+                    if not assistant_content and turn_num < max_turns:
+                        # Check finish_reason for hints about what happened
+                        finish_reason = response.get("finish_reason", "unknown")
+                        self.logger.warning(
+                            f"[{flow_id}] ⚠️ EMPTY RESPONSE: No content and no tool calls! "
+                            f"finish_reason={finish_reason}, turn={turn_num}"
+                        )
+
+                        # If not on last turn, retry with a prompt to continue
+                        retry_message = (
+                            "Please continue with the analysis. Use the available tools to gather data "
+                            "and provide a comprehensive response to the user's query."
+                        )
+                        messages.append({"role": "assistant", "content": ""})
+                        messages.append({"role": "user", "content": retry_message})
+
+                        if enable_reasoning:
+                            yield {
+                                "type": "reasoning",
+                                "phase": "empty_response_retry",
+                                "action": "retry",
+                                "content": f"LLM returned empty response (finish_reason={finish_reason}) - retrying",
+                            }
+
+                        # Continue to next turn
+                        continue
+
+                    # ============================================================
+                    # TOOL SEARCH MODE: Force retry if LLM skipped tool_search
+                    # This prevents LLM from "giving up" based on past conversation errors
+                    # ============================================================
+                    if enable_tool_search_mode and turn_num == 1 and not tool_search_called:
+                        self.logger.warning(
+                            f"[{flow_id}] ⚠️ TOOL SEARCH MODE: LLM skipped tool_search in turn 1. "
+                            f"Injecting reminder and retrying..."
+                        )
+
+                        # Inject a strong reminder to use tool_search
+                        reminder_message = (
+                            "You must use the tool_search tool to discover available tools before responding. "
+                            "Do not assume tools will fail - try them first. "
+                            "Call tool_search now with a query related to the user's request."
+                        )
+                        messages.append({"role": "assistant", "content": assistant_content or ""})
+                        messages.append({"role": "user", "content": reminder_message})
+
+                        if enable_reasoning:
+                            yield {
+                                "type": "reasoning",
+                                "phase": "tool_search_retry",
+                                "action": "reminder",
+                                "content": "LLM skipped tool_search - injecting reminder to use tools",
+                            }
+
+                        # Continue to next turn instead of returning
+                        continue
+
                     if enable_reasoning:
                         yield {
                             "type": "reasoning",
@@ -2590,7 +2730,7 @@ Respond naturally and helpfully while staying in character."""
                         total_chunks = len(chunks)
 
                         for i, chunk in enumerate(chunks):
-                            is_last = (i == total_chunks - 1)
+                            is_last = (i == total_chunks - 1) and not all_web_citations
                             yield {
                                 "type": "content",
                                 "content": chunk + (" " if not is_last else ""),
@@ -2619,11 +2759,44 @@ Respond naturally and helpfully while staying in character."""
                             # Emit chunks as they come, mark all as not final initially
                             yield {"type": "content", "content": chunk, "is_final": False}
 
-                        # Emit final empty chunk to signal completion if we had content
-                        if content_chunks:
-                            yield {"type": "content", "content": "", "is_final": True}
-
                         self.logger.info(f"[{flow_id}] Final response streamed: {len(content_chunks)} chunks")
+
+                    # ============================================================
+                    # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
+                    # ============================================================
+                    if all_web_citations:
+                        self.logger.info(
+                            f"[{flow_id}] 📚 Appending {len(all_web_citations)} web sources to response"
+                        )
+
+                        # Build sources section
+                        sources_lines = [
+                            "",
+                            "",
+                            "---",
+                            "",
+                            "## 📚 Sources",
+                            "",
+                        ]
+                        for i, citation in enumerate(all_web_citations[:15], 1):  # Limit to 15 sources
+                            title = citation.get("title", "Source")[:100]
+                            url = citation.get("url", "")
+                            sources_lines.append(f"{i}. [{title}]({url})")
+
+                        sources_section = "\n".join(sources_lines)
+
+                        # Yield sources as content chunk
+                        yield {"type": "content", "content": sources_section, "is_final": False}
+
+                        # Emit sources metadata event for FE (optional widget rendering)
+                        yield {
+                            "type": "sources",
+                            "citations": all_web_citations[:15],
+                            "count": len(all_web_citations),
+                        }
+
+                    # Signal end of content stream
+                    yield {"type": "content", "content": "", "is_final": True}
 
                     yield {
                         "type": "done",
@@ -2638,6 +2811,17 @@ Respond naturally and helpfully while staying in character."""
                 # ============================================================
                 think_calls = [tc for tc in tool_calls if tc.name == "think"]
                 data_tool_calls = [tc for tc in tool_calls if tc.name != "think"]
+
+                # Debug: Log tool call breakdown
+                self.logger.debug(
+                    f"[{flow_id}] Tool calls breakdown: "
+                    f"think_calls={len(think_calls)}, data_tool_calls={len(data_tool_calls)}, "
+                    f"tools=[{', '.join(tc.name for tc in tool_calls)}]"
+                )
+
+                # Track if tool_search was called (for tool search mode retry logic)
+                if any(tc.name == "tool_search" for tc in tool_calls):
+                    tool_search_called = True
 
                 # Process think tool calls FIRST - emit thinking events
                 think_results = []
@@ -2739,7 +2923,7 @@ Respond naturally and helpfully while staying in character."""
                 # ============================================================
                 called_tool_names = {tc.name for tc in data_tool_calls}
                 news_tools_called = called_tool_names & NEWS_TOOL_NAMES
-                web_search_already_called = "webSearch" in called_tool_names or "serpSearch" in called_tool_names
+                web_search_already_called = "webSearch" in called_tool_names
 
                 should_auto_search = (
                     (enable_web_search or news_tools_called) and
@@ -2816,6 +3000,27 @@ Respond naturally and helpfully while staying in character."""
                     ],
                 }
 
+                # ============================================================
+                # EXTRACT CITATIONS FROM WEB SEARCH RESULTS
+                # ============================================================
+                for tc, result in zip(tool_calls, tool_results):
+                    if tc.name == "webSearch" and result.get("status") == "success":
+                        result_data = result.get("data", {})
+                        citations = result_data.get("citations", [])
+                        for citation in citations:
+                            title = citation.get("title", "")
+                            url = citation.get("url", "")
+                            if url and url not in [c.get("url") for c in all_web_citations]:
+                                all_web_citations.append({
+                                    "title": title or "Source",
+                                    "url": url,
+                                })
+                        if citations:
+                            self.logger.info(
+                                f"[{flow_id}] 📚 Extracted {len(citations)} citations from {tc.name}, "
+                                f"total: {len(all_web_citations)}"
+                            )
+
                 # Update messages (preserves thought_signature for Gemini 3+)
                 messages.append({
                     "role": "assistant",
@@ -2870,9 +3075,44 @@ IMPORTANT:
                 content_chunks += 1
                 yield {"type": "content", "content": chunk, "is_final": False}
 
+            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
+
+            # ============================================================
+            # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
+            # ============================================================
+            if all_web_citations:
+                self.logger.info(
+                    f"[{flow_id}] 📚 Appending {len(all_web_citations)} web sources to response"
+                )
+
+                # Build sources section
+                sources_lines = [
+                    "",
+                    "",
+                    "---",
+                    "",
+                    "## 📚 Sources",
+                    "",
+                ]
+                for i, citation in enumerate(all_web_citations[:15], 1):  # Limit to 15 sources
+                    title = citation.get("title", "Source")[:100]
+                    url = citation.get("url", "")
+                    sources_lines.append(f"{i}. [{title}]({url})")
+
+                sources_section = "\n".join(sources_lines)
+
+                # Yield sources as content chunk
+                yield {"type": "content", "content": sources_section, "is_final": False}
+
+                # Emit sources metadata event for FE (optional widget rendering)
+                yield {
+                    "type": "sources",
+                    "citations": all_web_citations[:15],
+                    "count": len(all_web_citations),
+                }
+
             # Signal end of content stream
             yield {"type": "content", "content": "", "is_final": True}
-            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
             yield {
                 "type": "done",
                 "total_turns": max_turns,
@@ -2898,6 +3138,7 @@ IMPORTANT:
         enable_think_tool: bool = False,
         enable_web_search: bool = False,
         system_prompt_override: Optional[str] = None,
+        enable_tool_search_mode: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Build messages for agent with ALL tools.
@@ -2951,27 +3192,104 @@ IMPORTANT:
 
 You have access to various data tools. Use them to gather real data before responding.
 
-**Key principles:**
+**Key Principles:**
 1. **Call tools first** - Get actual data before making claims
-2. **Use the `think` tool** - Plan your approach and analyze results
-3. **Cite data sources** - Reference where numbers come from
-4. **Be accurate** - Never fabricate numbers, only use tool results
-5. **Respond naturally** - Match the user's language, be conversational"""
+2. **Think before responding** - Analyze data thoroughly before writing your response
+3. **Be accurate** - Never fabricate numbers, only use tool results
+4. **Respond naturally** - Match the user's language, be conversational
 
-        # Add think tool instruction if enabled
+**CRITICAL - Response Style:**
+- **NEVER mention internal tool names** in your response (e.g., DON'T say "getStockPrice returned..." or "Using getTechnicalIndicators...")
+- Present data naturally as if you already know it (e.g., "AAPL is currently trading at $259.96" NOT "getStockPrice shows AAPL at $259.96")
+- Reference data sources generically: "Real-time data shows..." or "Market data indicates..."
+- The user should NOT know which specific tools you used - just deliver the insights
+
+**Language (IMPORTANT):**
+- **Match the user's language** - If they write in Vietnamese, respond in Vietnamese. If English, respond in English.
+- **Never switch languages mid-conversation** unless the user does first
+- Be consistent throughout your entire response"""
+
+        # Add think tool instruction if enabled (works for both GPT and Gemini)
         if enable_think_tool:
             system_prompt += """
 
-**Think Tool (RECOMMENDED):**
-Use the `think` tool to plan your approach and analyze data before responding.
-Pattern: think(plan) → call tools → think(analyze) → respond"""
+**Thinking Process (MANDATORY - ALWAYS USE):**
+You MUST use the `think` tool for EVERY response. This is NOT optional.
 
-        # Add web search instruction if enabled
+REQUIRED Pattern for EVERY question:
+1. think(planning) → Plan your approach and what data you need
+2. Call data tools → Gather information
+3. think(analyzing) → Analyze results, synthesize insights
+4. Respond → Give your final answer
+
+Even for simple questions, ALWAYS call think() at least once before responding.
+The user has explicitly enabled thinking mode to see your reasoning process."""
+
+        # Add web search instruction based on mode
         if enable_web_search:
+            # FORCED mode: always use web search
             system_prompt += """
 
-**Web Search (RECOMMENDED):**
-Use `webSearch` for latest news and market context. Include source citations."""
+**Web Search (REQUIRED - ENABLED):**
+You MUST use `webSearch` to get latest news and real-time information.
+When presenting web search results:
+- Integrate findings naturally into your response
+- Include relevant source URLs inline or in a "Sources:" section at the end
+- Format: "According to [Source Name](URL), ..." or list sources at the end
+- Example Sources section:
+  **Sources:**
+  - [Bloomberg: AAPL hits new high](https://bloomberg.com/...)
+  - [Reuters: Fed rate decision](https://reuters.com/...)"""
+        else:
+            # AUTO mode: LLM decides when internal tools are insufficient
+            system_prompt += """
+
+**Web Search (AVAILABLE - USE WHEN NEEDED):**
+Use `webSearch` when your internal data tools don't have sufficient information to answer accurately:
+- Latest breaking news or recent events (last 24-48 hours)
+- Information not covered by financial data APIs
+- User asks about topics beyond market data
+When presenting web search results:
+- Integrate findings naturally into your response
+- Include relevant source URLs in a "Sources:" section
+- Format sources as: [Title](URL)"""
+
+        # Add CRITICAL instruction for TOOL SEARCH MODE
+        if enable_tool_search_mode:
+            system_prompt += """
+
+**⚠️ TOOL SEARCH MODE (CRITICAL):**
+You are in Tool Search Mode. You currently only have access to `tool_search` and `think` tools.
+
+**MANDATORY FIRST ACTION:**
+1. You MUST call `tool_search` FIRST to discover the tools you need for this task
+2. After tool_search returns available tools, you can use those tools to gather data
+3. DO NOT respond with content before calling tools - always search and use tools first
+
+**IMPORTANT RULES:**
+- NEVER assume tools will fail based on past conversation history
+- NEVER give up without trying - past errors do not predict future results
+- NEVER respond with an "apology for errors" without actually trying the tools
+- Each request is independent - previous failures are IRRELEVANT to this request
+- If a tool failed before, TRY IT AGAIN - the issue may have been fixed
+
+**🚀 PARALLEL TOOL EXECUTION (CRITICAL FOR SPEED):**
+After tool_search returns discovered tools, you MUST call ALL relevant tools in your NEXT SINGLE TURN.
+
+❌ WRONG (SLOW - causes multiple round trips):
+   Turn 2: getTechnicalIndicators(NVDA)
+   Turn 3: getFinancialRatios(NVDA)
+   Turn 4: getStockNews(NVDA)
+
+✅ CORRECT (FAST - all tools in one turn, executed in parallel):
+   Turn 2: [getTechnicalIndicators(NVDA), getFinancialRatios(NVDA), getStockNews(NVDA)]
+
+You CAN and SHOULD call multiple tools simultaneously. The system will execute them in parallel.
+
+**REQUIRED PATTERN:**
+1. Turn 1: Call `tool_search(query="...")` to find relevant tools
+2. Turn 2: Call ALL discovered tools you need IN ONE TURN (they run in parallel!)
+3. Turn 3: Analyze all results and provide comprehensive response"""
 
         messages = [{"role": "system", "content": system_prompt}]
 

@@ -59,7 +59,52 @@ class Settings(BaseSettings):
 
     CACHE_TTL_DISCOVERY_HISTORICAL: int = int(os.getenv("CACHE_TTL_DISCOVERY_HISTORICAL", 60 * 60 * 24))  # 24 giờ
     CACHE_TTL_DISCOVERY_QUOTE: int = int(os.getenv("CACHE_TTL_DISCOVERY_QUOTE", 30))  # 30 giây cho real-time quote
-    
+
+    # =============================================================================
+    # FMP API CACHING TTLs (ToolCallService)
+    # =============================================================================
+    # Quote: real-time price data, needs frequent updates
+    CACHE_TTL_FMP_QUOTE: int = int(os.getenv("CACHE_TTL_FMP_QUOTE", 30))  # 30 seconds
+
+    # Key metrics: P/E, P/B, ROE - changes with price but less critical
+    CACHE_TTL_FMP_KEY_METRICS: int = int(os.getenv("CACHE_TTL_FMP_KEY_METRICS", 60 * 5))  # 5 minutes
+
+    # Key metrics TTM: rolling 12-month metrics
+    CACHE_TTL_FMP_KEY_METRICS_TTM: int = int(os.getenv("CACHE_TTL_FMP_KEY_METRICS_TTM", 60 * 5))  # 5 minutes
+
+    # Financial statements: annual data rarely changes
+    CACHE_TTL_FMP_FINANCIALS: int = int(os.getenv("CACHE_TTL_FMP_FINANCIALS", 60 * 15))  # 15 minutes
+
+    # Financial growth: historical growth data
+    CACHE_TTL_FMP_GROWTH: int = int(os.getenv("CACHE_TTL_FMP_GROWTH", 60 * 15))  # 15 minutes
+
+    # Analyst estimates: updated periodically
+    CACHE_TTL_FMP_ANALYST: int = int(os.getenv("CACHE_TTL_FMP_ANALYST", 60 * 30))  # 30 minutes
+
+    # Financial ratios: calculated from financials
+    CACHE_TTL_FMP_RATIOS: int = int(os.getenv("CACHE_TTL_FMP_RATIOS", 60 * 15))  # 15 minutes
+
+    # =============================================================================
+    # SCANNER STEP CACHING TTLs (for synthesis)
+    # =============================================================================
+    # Technical: price data changes frequently
+    CACHE_TTL_SCANNER_TECHNICAL: int = int(os.getenv("CACHE_TTL_SCANNER_TECHNICAL", 180))  # 3 minutes
+
+    # Position: Relative strength vs benchmark
+    CACHE_TTL_SCANNER_POSITION: int = int(os.getenv("CACHE_TTL_SCANNER_POSITION", 300))  # 5 minutes
+
+    # Risk: stop loss levels tied to current price
+    CACHE_TTL_SCANNER_RISK: int = int(os.getenv("CACHE_TTL_SCANNER_RISK", 300))  # 5 minutes
+
+    # Sentiment: news/sentiment less volatile
+    CACHE_TTL_SCANNER_SENTIMENT: int = int(os.getenv("CACHE_TTL_SCANNER_SENTIMENT", 600))  # 10 minutes
+
+    # Fundamental: fundamentals rarely change intraday
+    CACHE_TTL_SCANNER_FUNDAMENTAL: int = int(os.getenv("CACHE_TTL_SCANNER_FUNDAMENTAL", 900))  # 15 minutes
+
+    # Synthesis report cache (short TTL as it aggregates all steps)
+    CACHE_TTL_SCANNER_SYNTHESIS: int = int(os.getenv("CACHE_TTL_SCANNER_SYNTHESIS", 300))  # 5 minutes
+
     # Define global variables with the Field class
     ENV_STATE: str = Field('dev', env='ENV_STATE')
     LOG_LEVEL: str = Field('DEBUG', env='LOG_LEVEL')

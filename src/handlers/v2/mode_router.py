@@ -1,3 +1,19 @@
+"""
+Mode Router - Decides between NORMAL and DEEP_RESEARCH modes.
+
+================================================================================
+LEGACY NOTICE: This module is ONLY used by the legacy /chat endpoint.
+               The new /chat/v2 endpoint does NOT use ModeRouter.
+
+For /chat/v2:
+- IntentClassifier determines complexity (direct vs agent_loop)
+- No separate DEEP_RESEARCH routing - agent loop handles all queries
+- Deep research functionality can be triggered via query keywords directly
+
+See: docs/ARCHITECTURE_CHAT_V2.md for the new architecture.
+================================================================================
+"""
+
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field

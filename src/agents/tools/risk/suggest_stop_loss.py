@@ -328,28 +328,43 @@ class SuggestStopLossTool(BaseTool):
     ) -> Dict[str, Any]:
         """
         Format raw handler output to tool schema
-        
+
         ✅ Returns ALL required fields
+        ✅ Includes ATR value and ATR% for transparency (ChatGPT feedback)
+        ✅ Clearly distinguishes data sources
         """
         # Extract stop levels from handler
         stop_levels = raw_data.get("stop_levels", {})
         current_price = float(raw_data.get("current_price", 0.0))
-        
+
         # Use entry_price if provided, else current_price
         actual_entry = entry_price if entry_price else current_price
-        
+
+        # ═══════════════════════════════════════════════════════════
+        # Extract ATR metrics (Critical for transparency)
+        # ═══════════════════════════════════════════════════════════
+        atr_value = float(stop_levels.get("atr_value", 0))
+        atr_percent = float(stop_levels.get("atr_percent", 0))
+
+        # If ATR not available, estimate from price
+        if atr_value == 0 and actual_entry > 0:
+            # Estimate ATR as ~2% of price (conservative default)
+            atr_value = actual_entry * 0.02
+            atr_percent = 2.0
+
         # ═══════════════════════════════════════════════════════════
         # Extract individual stop loss values
         # ═══════════════════════════════════════════════════════════
-        atr_2x = float(stop_levels.get("atr_2x", actual_entry * 0.95))
-        atr_3x = float(stop_levels.get("atr_3x", actual_entry * 0.93))
+        atr_1x = float(stop_levels.get("atr_1x", actual_entry - atr_value))
+        atr_2x = float(stop_levels.get("atr_2x", actual_entry - 2 * atr_value))
+        atr_3x = float(stop_levels.get("atr_3x", actual_entry - 3 * atr_value))
         percent_3 = float(stop_levels.get("percent_3", actual_entry * 0.97))
         percent_5 = float(stop_levels.get("percent_5", actual_entry * 0.95))
         percent_7 = float(stop_levels.get("percent_7", actual_entry * 0.93))
-        sma_20 = float(stop_levels.get("sma_20", actual_entry * 0.95))
-        sma_50 = float(stop_levels.get("sma_50", actual_entry * 0.93))
+        sma_20 = float(stop_levels.get("sma_20", 0))
+        sma_50 = float(stop_levels.get("sma_50", 0))
         recent_swing = float(stop_levels.get("recent_swing", actual_entry * 0.95))
-        
+
         # ═══════════════════════════════════════════════════════════
         # Select recommended stop based on risk tolerance
         # ═══════════════════════════════════════════════════════════
@@ -362,27 +377,35 @@ class SuggestStopLossTool(BaseTool):
         else:  # moderate
             recommended_stop = percent_5  # 5% stop
             recommended_method = "5% below entry"
-        
+
         # ═══════════════════════════════════════════════════════════
         # Calculate risk metrics
         # ═══════════════════════════════════════════════════════════
         risk_per_share = actual_entry - recommended_stop
         risk_amount = risk_per_share  # Will multiply by position size if provided
-        
-        # Calculate risk/reward (assume 2:1 target)
+
+        # Calculate risk/reward (assume 2:1 target - R-multiple based, NOT technical)
         target_price = actual_entry + (risk_per_share * 2)
         risk_reward_ratio = 2.0
-        
+
         # ═══════════════════════════════════════════════════════════
-        # Return ALL required fields
+        # Daily expected move from ATR (NOT VaR - different concept)
+        # ═══════════════════════════════════════════════════════════
+        daily_move_dollars = atr_value
+        daily_move_percent = atr_percent
+
+        # ═══════════════════════════════════════════════════════════
+        # Return ALL required fields with clear data sources
         # ═══════════════════════════════════════════════════════════
         return {
             # ✅ Required fields from schema
             "symbol": symbol,
             "current_price": current_price,
+            "current_price_source": "market close (from historical data)",
             "entry_price": actual_entry,
             "stop_loss_levels": {
                 "atr_based": {
+                    "atr_1x": round(atr_1x, 2),
                     "atr_2x": round(atr_2x, 2),
                     "atr_3x": round(atr_3x, 2)
                 },
@@ -392,8 +415,8 @@ class SuggestStopLossTool(BaseTool):
                     "percent_7": round(percent_7, 2)
                 },
                 "sma_based": {
-                    "sma_20": round(sma_20, 2),
-                    "sma_50": round(sma_50, 2)
+                    "sma_20": round(sma_20, 2) if sma_20 > 0 else None,
+                    "sma_50": round(sma_50, 2) if sma_50 > 0 else None
                 },
                 "technical": {
                     "recent_swing": round(recent_swing, 2)
@@ -406,15 +429,104 @@ class SuggestStopLossTool(BaseTool):
             "risk_amount": round(risk_amount, 2),
             "risk_reward_ratio": risk_reward_ratio,
             "timestamp": datetime.now().isoformat(),
-            
-            # Additional fields (not in schema but useful)
+
+            # ═══════════════════════════════════════════════════════════
+            # ATR METRICS (Critical for transparency - ChatGPT feedback)
+            # Daily Expected Move (NOT VaR - VaR is tail risk)
+            # ═══════════════════════════════════════════════════════════
+            "atr_metrics": {
+                "atr_value": round(atr_value, 4),
+                "atr_percent": round(atr_percent, 2),
+                "daily_move_dollars": round(daily_move_dollars, 2),
+                "daily_move_percent": round(daily_move_percent, 2),
+                "note": "ATR = Average True Range (typical daily range, NOT tail risk like VaR)"
+            },
+
+            # Additional fields
             "recommended_stop": round(recommended_stop, 2),
             "recommended_method": recommended_method,
             "risk_tolerance": risk_tolerance,
-            "risk_percentage": round((risk_per_share / actual_entry) * 100, 2),
+            "risk_percentage": round((risk_per_share / actual_entry) * 100, 2) if actual_entry > 0 else 0,
             "target_price": round(target_price, 2),
-            "summary": raw_data.get("suggested_stop_levels", "Stop loss analysis completed")
+            "target_note": "Target is R-multiple based (2:1 R:R), NOT technical resistance level",
+            "summary": raw_data.get("suggested_stop_levels", "Stop loss analysis completed"),
+
+            # ═══════════════════════════════════════════════════════════
+            # LLM Summary (for prompt context)
+            # ═══════════════════════════════════════════════════════════
+            "llm_summary": self._build_llm_summary(
+                symbol=symbol,
+                current_price=current_price,
+                entry_price=actual_entry,
+                atr_value=atr_value,
+                atr_percent=atr_percent,
+                atr_2x=atr_2x,
+                atr_3x=atr_3x,
+                percent_5=percent_5,
+                percent_7=percent_7,
+                recommended_stop=recommended_stop,
+                recommended_method=recommended_method,
+                risk_per_share=risk_per_share,
+                target_price=target_price
+            )
         }
+
+    def _build_llm_summary(
+        self,
+        symbol: str,
+        current_price: float,
+        entry_price: float,
+        atr_value: float,
+        atr_percent: float,
+        atr_2x: float,
+        atr_3x: float,
+        percent_5: float,
+        percent_7: float,
+        recommended_stop: float,
+        recommended_method: str,
+        risk_per_share: float,
+        target_price: float
+    ) -> str:
+        """
+        Build LLM-friendly summary with clear data attribution.
+
+        Addresses ChatGPT feedback:
+        - Show ATR value explicitly
+        - Distinguish Daily Move (ATR) from Tail Risk (VaR)
+        - Clear data sources
+        """
+        risk_pct = (risk_per_share / entry_price * 100) if entry_price > 0 else 0
+
+        lines = [
+            f"=== STOP LOSS DATA: {symbol} ===",
+            "",
+            "DATA SOURCE:",
+            f"  Current Price: ${current_price:.2f} (from market close)",
+            f"  Entry Price: ${entry_price:.2f}",
+            f"  Data Type: Historical price data (60-day lookback)",
+            "",
+            "ATR METRICS (Average True Range - Daily Expected Move):",
+            f"  ATR Value: ${atr_value:.2f}",
+            f"  ATR Percent: {atr_percent:.2f}% of price",
+            f"  Daily Move: Stock typically moves ${atr_value:.2f} ({atr_percent:.2f}%) per day",
+            f"  Note: ATR measures typical daily range, NOT tail risk (VaR is different)",
+            "",
+            "STOP LOSS LEVELS:",
+            f"  ATR 1x (Tight): ${entry_price - atr_value:.2f} (risk: ${atr_value:.2f}, {atr_percent:.2f}%)",
+            f"  ATR 2x (Conservative): ${atr_2x:.2f} (risk: ${entry_price - atr_2x:.2f}, {(entry_price - atr_2x) / entry_price * 100:.2f}%)",
+            f"  ATR 3x (Wide): ${atr_3x:.2f} (risk: ${entry_price - atr_3x:.2f}, {(entry_price - atr_3x) / entry_price * 100:.2f}%)",
+            f"  5% Rule: ${percent_5:.2f} (risk: ${entry_price - percent_5:.2f}, 5.00%)",
+            f"  7% Rule: ${percent_7:.2f} (risk: ${entry_price - percent_7:.2f}, 7.00%)",
+            "",
+            f"RECOMMENDED: {recommended_method} at ${recommended_stop:.2f}",
+            f"  Risk per share: ${risk_per_share:.2f} ({risk_pct:.2f}%)",
+            "",
+            "TARGET (R-Multiple Based, NOT Technical):",
+            f"  Target 2:1 R:R: ${target_price:.2f}",
+            f"  Note: This is a rule-based target, not a technical resistance level",
+        ]
+
+        return "\n".join(lines)
 
 
 # ============================================================================

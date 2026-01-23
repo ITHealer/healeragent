@@ -72,6 +72,21 @@ class IntentMarketType(str, Enum):
     NONE = "none"
 
 
+class AnalysisType(str, Enum):
+    """Analysis type for skill selection.
+
+    Determines which specialized skill/workflow to use for processing.
+    """
+    BASIC = "basic"              # Simple price/info queries
+    TECHNICAL = "technical"      # Technical analysis (RSI, MACD, charts)
+    FUNDAMENTAL = "fundamental"  # Fundamental analysis (financials, ratios)
+    VALUATION = "valuation"      # DCF, Graham, DDM valuation queries
+    PORTFOLIO = "portfolio"      # Portfolio analysis queries
+    BACKTEST = "backtest"        # Strategy backtesting queries
+    COMPARISON = "comparison"    # Comparative analysis
+    GENERAL = "general"          # General/conversational
+
+
 @dataclass
 class IntentResult:
     """
@@ -91,6 +106,9 @@ class IntentResult:
     market_type: IntentMarketType = IntentMarketType.NONE
     complexity: IntentComplexity = IntentComplexity.DIRECT
     requires_tools: bool = False
+
+    # Analysis type for skill selection (Phase 6)
+    analysis_type: AnalysisType = AnalysisType.GENERAL
 
     # Response language
     response_language: str = "en"
@@ -112,6 +130,7 @@ class IntentResult:
             "market_type": self.market_type.value,
             "complexity": self.complexity.value,
             "requires_tools": self.requires_tools,
+            "analysis_type": self.analysis_type.value,
             "response_language": self.response_language,
             "confidence": self.confidence,
             "query_type": self.query_type,
@@ -130,6 +149,11 @@ class IntentResult:
             complexity = IntentComplexity(data.get("complexity", "direct"))
         except ValueError:
             complexity = IntentComplexity.DIRECT
+
+        try:
+            analysis_type = AnalysisType(data.get("analysis_type", "general"))
+        except ValueError:
+            analysis_type = AnalysisType.GENERAL
 
         # Get values from data
         validated_symbols = data.get("validated_symbols", [])
@@ -171,6 +195,7 @@ class IntentResult:
             market_type=market_type,
             complexity=complexity,
             requires_tools=requires_tools,
+            analysis_type=analysis_type,
             response_language=data.get("response_language", "en"),
             confidence=data.get("confidence", 0.9),
             query_type=query_type,
@@ -627,7 +652,34 @@ If unsure about a symbol, make your best guess based on context.
 - Stock screening
 - Any query about current state of markets
 
-## STEP 5: Detect Language
+## STEP 5: Determine Analysis Type (CRITICAL for skill routing)
+Classify what TYPE of analysis the user wants:
+
+- "basic": Simple price/quote queries, basic stock info
+  Examples: "Giá AAPL?", "What's NVDA trading at?", "Show me MSFT"
+
+- "technical": Technical analysis with indicators (RSI, MACD, Bollinger, etc.)
+  Examples: "RSI của AAPL", "Phân tích kỹ thuật NVDA", "MACD signals for TSLA"
+
+- "fundamental": Fundamental analysis (P/E, financials, earnings, revenue)
+  Examples: "P/E ratio của AAPL", "Báo cáo tài chính NVDA", "MSFT earnings report"
+
+- "valuation": Stock valuation calculations (DCF, Graham, DDM)
+  Examples: "Định giá AAPL theo DCF", "Graham number cho NVDA", "Fair value of MSFT"
+
+- "portfolio": Portfolio analysis (optimization, correlation, diversification)
+  Examples: "Phân tích danh mục", "Optimize my portfolio", "Portfolio correlation"
+
+- "backtest": Strategy backtesting queries
+  Examples: "Backtest SMA crossover", "Test RSI strategy on AAPL", "Compare strategies"
+
+- "comparison": Comparing multiple stocks or strategies
+  Examples: "So sánh AAPL và NVDA", "Compare tech stocks", "MSFT vs GOOGL"
+
+- "general": General knowledge, concepts, greetings, non-financial queries
+  Examples: "What is P/E?", "Hello", "Thanks"
+
+## STEP 6: Detect Language
 "vi" for Vietnamese, "en" for English, "zh" for Chinese
 
 </instructions>
@@ -647,6 +699,7 @@ Then, provide the classification inside <classification> tags as valid JSON:
   "market_type": "stock|crypto|both|none",
   "complexity": "direct|agent_loop",
   "requires_tools": true|false,
+  "analysis_type": "basic|technical|fundamental|valuation|portfolio|backtest|comparison|general",
   "response_language": "vi|en|zh",
   "query_type": "stock_analysis|crypto_analysis|comparison|screener|conversational|general_knowledge|real_time_info",
   "confidence": 0.0-1.0
@@ -655,88 +708,112 @@ Then, provide the classification inside <classification> tags as valid JSON:
 </output_format>
 
 <few_shot_examples>
-Example 1 - Stock Analysis (Symbol Normalization):
-Query: "Phân tích Google và Amazon"
+Example 1 - Technical Analysis (Symbol Normalization):
+Query: "Phân tích kỹ thuật Google và Amazon"
 <reasoning>
-User wants analysis of Google and Amazon stocks.
+User wants technical analysis of Google and Amazon stocks.
 - "Google" → normalized to "GOOGL" (official ticker)
 - "Amazon" → normalized to "AMZN" (official ticker)
-This requires real-time data (price, technicals), so complexity is agent_loop.
+This requires technical indicators (RSI, MACD, etc.), so analysis_type is "technical".
 </reasoning>
 <classification>
-{{"intent_summary": "Technical analysis of Google and Amazon stocks", "validated_symbols": ["GOOGL", "AMZN"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.95}}
+{{"intent_summary": "Technical analysis of Google and Amazon stocks", "validated_symbols": ["GOOGL", "AMZN"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "technical", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.95}}
 </classification>
 
 Example 2 - Greeting (No Tools):
 Query: "Xin chào"
 <reasoning>
-Simple greeting. No financial query. No tools needed.
+Simple greeting. No financial query. No tools needed. Analysis type is "general".
 </reasoning>
 <classification>
-{{"intent_summary": "Greeting", "validated_symbols": [], "market_type": "none", "complexity": "direct", "requires_tools": false, "response_language": "vi", "query_type": "conversational", "confidence": 0.99}}
+{{"intent_summary": "Greeting", "validated_symbols": [], "market_type": "none", "complexity": "direct", "requires_tools": false, "analysis_type": "general", "response_language": "vi", "query_type": "conversational", "confidence": 0.99}}
 </classification>
 
-Example 3 - Multiple Symbols:
+Example 3 - Comparison Analysis:
 Query: "So sánh NVDA, Apple và Microsoft"
 <reasoning>
 User wants comparison of 3 stocks.
 - "NVDA" → already correct ticker
 - "Apple" → normalized to "AAPL"
 - "Microsoft" → normalized to "MSFT"
-Comparison requires multiple data points, so agent_loop.
+Comparison of multiple stocks → analysis_type is "comparison".
 </reasoning>
 <classification>
-{{"intent_summary": "Compare NVIDIA, Apple, and Microsoft stocks", "validated_symbols": ["NVDA", "AAPL", "MSFT"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "comparison", "confidence": 0.94}}
+{{"intent_summary": "Compare NVIDIA, Apple, and Microsoft stocks", "validated_symbols": ["NVDA", "AAPL", "MSFT"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "comparison", "response_language": "vi", "query_type": "comparison", "confidence": 0.94}}
 </classification>
 
 Example 4 - General Knowledge (No Tools):
 Query: "P/E ratio là gì?"
 <reasoning>
 User asks about P/E ratio definition - a static concept that doesn't need live data.
+This is general knowledge, not requiring data retrieval.
 </reasoning>
 <classification>
-{{"intent_summary": "Explain P/E ratio concept", "validated_symbols": [], "market_type": "none", "complexity": "direct", "requires_tools": false, "response_language": "vi", "query_type": "general_knowledge", "confidence": 0.95}}
+{{"intent_summary": "Explain P/E ratio concept", "validated_symbols": [], "market_type": "none", "complexity": "direct", "requires_tools": false, "analysis_type": "general", "response_language": "vi", "query_type": "general_knowledge", "confidence": 0.95}}
 </classification>
 
-Example 5 - Crypto with UI Context:
+Example 5 - Basic Price Query:
 Query: "Giá BTC" (UI Context: active_tab = crypto)
 <reasoning>
 User asks about BTC price. UI context shows crypto tab, so BTC = Bitcoin cryptocurrency.
-Price data requires tools.
+Simple price query → analysis_type is "basic".
 </reasoning>
 <classification>
-{{"intent_summary": "Bitcoin cryptocurrency price", "validated_symbols": ["BTC"], "market_type": "crypto", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "crypto_analysis", "confidence": 0.93}}
+{{"intent_summary": "Bitcoin cryptocurrency price", "validated_symbols": ["BTC"], "market_type": "crypto", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "basic", "response_language": "vi", "query_type": "crypto_analysis", "confidence": 0.93}}
 </classification>
 
-Example 5b - Stock BTC with UI Context:
-Query: "Giá BTC" (UI Context: active_tab = stock)
+Example 6 - Fundamental Analysis:
+Query: "Báo cáo tài chính của Apple"
 <reasoning>
-User asks about BTC price. UI context shows STOCK tab, so BTC = Grayscale Bitcoin Mini Trust (GBTC alternative stock).
-Since user is on stock tab, they want stock market data for BTC.
-Price data requires tools.
+User wants Apple's financial report - this is fundamental analysis.
+- "Apple" → normalized to "AAPL"
+Financial statements require fundamental data tools.
 </reasoning>
 <classification>
-{{"intent_summary": "Grayscale Bitcoin Mini Trust (BTC) stock price", "validated_symbols": ["BTC"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.92}}
+{{"intent_summary": "Apple financial report and fundamental analysis", "validated_symbols": ["AAPL"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "fundamental", "response_language": "vi", "query_type": "fundamental_analysis", "confidence": 0.94}}
 </classification>
 
-Example 5c - Query with symbols should NOT have market_type=none:
+Example 7 - Valuation Query:
+Query: "Định giá NVDA theo phương pháp DCF"
+<reasoning>
+User wants DCF valuation for NVIDIA.
+- "NVDA" → already correct ticker
+DCF is a valuation method → analysis_type is "valuation".
+</reasoning>
+<classification>
+{{"intent_summary": "DCF valuation of NVIDIA stock", "validated_symbols": ["NVDA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "valuation", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.95}}
+</classification>
+
+Example 8 - Backtest Query:
+Query: "Backtest chiến lược SMA crossover trên Tesla"
+<reasoning>
+User wants to backtest SMA crossover strategy on Tesla.
+- "Tesla" → normalized to "TSLA"
+Backtesting a trading strategy → analysis_type is "backtest".
+</reasoning>
+<classification>
+{{"intent_summary": "Backtest SMA crossover strategy on Tesla stock", "validated_symbols": ["TSLA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "backtest", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.94}}
+</classification>
+
+Example 9 - Portfolio Analysis:
+Query: "Phân tích danh mục đầu tư của tôi gồm AAPL, NVDA, MSFT"
+<reasoning>
+User wants portfolio analysis of their holdings.
+All symbols are already correct tickers.
+Portfolio analysis → analysis_type is "portfolio".
+</reasoning>
+<classification>
+{{"intent_summary": "Portfolio analysis of AAPL, NVDA, MSFT holdings", "validated_symbols": ["AAPL", "NVDA", "MSFT"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "portfolio", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.93}}
+</classification>
+
+Example 10 - Context Reference:
 Query: "Phân tích công ty này" (Working Memory: NVDA mentioned previously)
 <reasoning>
 User refers to "công ty này" (this company). Working memory shows NVDA was discussed.
-NVDA is a stock. Symbols are present, so market_type cannot be "none".
+NVDA is a stock. General analysis request → analysis_type is "technical" (default for stock analysis).
 </reasoning>
 <classification>
-{{"intent_summary": "Analysis of NVIDIA stock (referenced from context)", "validated_symbols": ["NVDA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.88}}
-</classification>
-
-Example 6 - Real-Time Info:
-Query: "Who is Apple's CEO?"
-<reasoning>
-User asks about current Apple CEO. This is real-time info that could change.
-Need web search to verify current state.
-</reasoning>
-<classification>
-{{"intent_summary": "Find current Apple CEO", "validated_symbols": ["AAPL"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "response_language": "en", "query_type": "real_time_info", "confidence": 0.92}}
+{{"intent_summary": "Analysis of NVIDIA stock (referenced from context)", "validated_symbols": ["NVDA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "technical", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.88}}
 </classification>
 </few_shot_examples>
 
@@ -821,6 +898,13 @@ Now analyze the query and provide your classification:
         except ValueError:
             market_type = IntentMarketType.NONE
 
+        # Parse analysis type (Phase 6)
+        analysis_str = data.get("analysis_type", "general").lower()
+        try:
+            analysis_type = AnalysisType(analysis_str)
+        except ValueError:
+            analysis_type = AnalysisType.GENERAL
+
         # Extract validated symbols (already normalized by LLM)
         validated_symbols = data.get("validated_symbols", [])
         if not isinstance(validated_symbols, list):
@@ -883,6 +967,7 @@ Now analyze the query and provide your classification:
             market_type=market_type,
             complexity=complexity,
             requires_tools=requires_tools,
+            analysis_type=analysis_type,
             response_language=data.get("response_language", "en"),
             confidence=data.get("confidence", 0.9),
             query_type=query_type,
@@ -928,6 +1013,7 @@ Now analyze the query and provide your classification:
         self.logger.info(f"  ├─ Symbols: {result.validated_symbols}")
         self.logger.info(f"  ├─ Market: {result.market_type.value}")
         self.logger.info(f"  ├─ Complexity: {result.complexity.value}")
+        self.logger.info(f"  ├─ Analysis Type: {result.analysis_type.value}")
         self.logger.info(f"  ├─ Requires Tools: {result.requires_tools}")
         self.logger.info(f"  └─ ⏱️ Time: {elapsed_ms}ms")
 

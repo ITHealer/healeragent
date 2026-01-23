@@ -37,8 +37,9 @@ class IncludeAPIRouter(object):
         from src.routers.risk_analysis import router as router_risk_analysis
         from src.routers.sentiment_analysis import router as router_sentiment_analysis
         from src.routers.fundamental_analysis import router as router_fundamental_analysis
-        from src.routers.news_analysis import router as router_news_analysis 
+        from src.routers.news_analysis import router as router_news_analysis
         from src.routers.market_analysis import router as router_market_analysis
+        from src.routers.market_scanner import router as router_market_scanner
         # from src.routers.options_strategy import router as router_options_strategy
         from src.routers.comprehensive_analysis import router as router_comprehensive_analysis
 
@@ -113,6 +114,7 @@ class IncludeAPIRouter(object):
         router.include_router(router_fundamental_analysis, tags=['Tool - Fundamental Analysis'])
         router.include_router(router_news_analysis, tags=['Tool - News Analysis'])
         router.include_router(router_market_analysis, tags=['Tool - Market Analysis'])
+        router.include_router(router_market_scanner, tags=['Tool - Market Scanner (5-Step)'])
         # router.include_router(router_options_strategy, tags=['Tool - Strategy Trading'])
         router.include_router(router_comprehensive_analysis, tags=['Tool - Comprehensive Analysis'])
 
