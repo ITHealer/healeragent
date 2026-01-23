@@ -428,32 +428,44 @@ class CanonicalDataBuilder:
             canonical["technical"]["sma_200"] = round(float(sma_data["sma_200"]["value"]), 2)
 
         # =====================================================================
-        # ATR FALLBACK - FROM TECHNICAL INDICATORS
+        # ATR FROM TECHNICAL INDICATORS (ALWAYS STORE FOR COMPARISON)
         # =====================================================================
-        # Only used if Risk ATR (from suggest_stop_loss) is not available.
-        #
         # TECHNICAL ATR:
         # - Period: 14 days (standard Wilder ATR)
         # - Source: getTechnicalIndicators tool
         # - Path: indicators['atr']['value']
         # - Example: ATR=$8.94, ATR%=1.98%
         #
-        # NOTE: This differs from Risk ATR (60-day lookback) by design.
-        # Technical ATR is shorter-term and may show lower values in trending markets.
+        # WHY STORE BOTH:
+        # - Risk ATR (60d) = longer-term, better for stop-loss/position sizing
+        # - Technical ATR (14d) = standard TA period, better for volatility assessment
+        # - We ALWAYS store both for transparency, using Risk ATR as primary
         # =====================================================================
-        if not canonical["risk"].get("atr_value"):
-            atr_data = indicators.get("atr", {})
-            atr_value = atr_data.get("value")
-            if atr_value is not None:
-                canonical["risk"]["atr_value"] = round(float(atr_value), 2)
-                canonical["risk"]["atr_source"] = "technical_14d"  # Mark source
-                # Also get atr_percent from technical or calculate it
-                atr_pct = atr_data.get("atr_percent")
-                if atr_pct is not None:
-                    canonical["risk"]["atr_percent"] = round(float(atr_pct), 2)
+        atr_data = indicators.get("atr", {})
+        tech_atr_value = atr_data.get("value")
+        if tech_atr_value is not None:
+            # ALWAYS store technical ATR separately for comparison
+            canonical["technical"]["atr_14d"] = round(float(tech_atr_value), 2)
+            tech_atr_pct = atr_data.get("atr_percent")
+            if tech_atr_pct is not None:
+                canonical["technical"]["atr_14d_percent"] = round(float(tech_atr_pct), 2)
+            elif canonical["price"].get("current"):
+                canonical["technical"]["atr_14d_percent"] = round(
+                    (tech_atr_value / canonical["price"]["current"]) * 100, 2
+                )
+            # Store explanation from tool if available
+            if atr_data.get("explanation"):
+                canonical["technical"]["atr_14d_explanation"] = atr_data["explanation"]
+
+            # Fallback: Use technical ATR for risk if Risk ATR is missing
+            if not canonical["risk"].get("atr_value"):
+                canonical["risk"]["atr_value"] = round(float(tech_atr_value), 2)
+                canonical["risk"]["atr_source"] = "technical_14d"
+                if tech_atr_pct is not None:
+                    canonical["risk"]["atr_percent"] = round(float(tech_atr_pct), 2)
                 elif canonical["price"].get("current"):
                     canonical["risk"]["atr_percent"] = round(
-                        (atr_value / canonical["price"]["current"]) * 100, 2
+                        (tech_atr_value / canonical["price"]["current"]) * 100, 2
                     )
 
         # Backup price from technical if risk doesn't have it
@@ -1376,14 +1388,18 @@ Verdict: Is this attractive for a dividend/value investor? Why/why not?
 
 1. **Technical Indicators**
    - DATA ONLY: RSI=X, MACD (line/signal/hist)=X/Y/Z, ADX=X, +DI/-DI=X/Y
-   - PRICE LEVELS: SMA20=$X, SMA50=$Y, SMA200=$Z, Current=$C, ATR=$A
+   - PRICE LEVELS: SMA20=$X, SMA50=$Y, SMA200=$Z, Current=$C
+   - ATR (14d): $X (Y% of price) [Source: technical_14d]
 
 2. **Market Position**
    - DATA ONLY: RS_21d=X%, RS_63d=Y%, Sector=NAME (GICS), Industry=NAME
    - Sector Rank=X/11 (Source: FMP 1-day performance)
 
 3. **Risk Metrics**
-   - DATA ONLY: ATR=$X (X% of price), VaR_95%=X%, Daily Vol=X%, Annual Vol=Y%
+   - ATR (60d): $X (Y% of price) [Source: risk_60d] - used for stop-loss
+   - ATR (14d): $X (Y% of price) [Source: technical_14d] - standard TA
+   - DATA ONLY: VaR_95%=X%, Daily Vol=X%, Annual Vol=Y%
+   - NOTE: Risk ATR (60d) is preferred for stop-loss (more conservative)
 
 4. **Sentiment Data**
    - DATA ONLY: Score=X or "N/A (sample<5)", Sample=N articles, Source=FMP News API
@@ -2832,7 +2848,9 @@ class SynthesisHandlerV2(LoggerMixin):
         current_price = risk_raw.get("current_price", 0)
         atr = risk_raw.get("atr", {}).get("value", 0) if isinstance(risk_raw.get("atr"), dict) else 0
 
-        # Support/Resistance levels
+        # Support/Resistance levels - PERCENTAGE-BASED (not chart-based)
+        # These are calculated as fixed percentages from current price
+        # Formula: support_1 = price × 0.95 (5% below), support_2 = price × 0.90 (10% below)
         support_1 = round(current_price * 0.95, 2) if current_price else 0
         support_2 = round(current_price * 0.90, 2) if current_price else 0
         resistance_1 = round(current_price * 1.05, 2) if current_price else 0
@@ -2846,6 +2864,30 @@ class SynthesisHandlerV2(LoggerMixin):
             "targets": [],
             "risk_reward_ratio": None,
             "position_sizing_note": "",
+            # Store support/resistance with formulas for transparency
+            "support_resistance": {
+                "support_1": {
+                    "price": support_1,
+                    "formula": f"${current_price:.2f} × 0.95 = ${support_1:.2f}",
+                    "description": "5% below current price (percent_5)"
+                },
+                "support_2": {
+                    "price": support_2,
+                    "formula": f"${current_price:.2f} × 0.90 = ${support_2:.2f}",
+                    "description": "10% below current price (percent_10)"
+                },
+                "resistance_1": {
+                    "price": resistance_1,
+                    "formula": f"${current_price:.2f} × 1.05 = ${resistance_1:.2f}",
+                    "description": "5% above current price"
+                },
+                "resistance_2": {
+                    "price": resistance_2,
+                    "formula": f"${current_price:.2f} × 1.10 = ${resistance_2:.2f}",
+                    "description": "10% above current price"
+                },
+                "note": "These are PERCENTAGE-BASED levels, NOT chart support/resistance"
+            } if current_price else {},
             "holder_rules": {
                 "reduce_trigger": None,
                 "exit_trigger": None,
@@ -2953,6 +2995,32 @@ class SynthesisHandlerV2(LoggerMixin):
                 lines.append(f"- Exit fully: If price breaks ${holder_rules['exit_trigger']:.2f}")
             if holder_rules.get("trailing_stop"):
                 lines.append(f"- Trailing Stop: {holder_rules['trailing_stop']}")
+
+        # Add support/resistance levels WITH FORMULAS for transparency
+        sr_data = plan.get("support_resistance", {})
+        if sr_data:
+            lines.append("")
+            lines.append("### SUPPORT/RESISTANCE LEVELS (PERCENTAGE-BASED):")
+            lines.append(f"⚠️ {sr_data.get('note', 'Calculated from current price')}")
+            lines.append("")
+            if sr_data.get("support_1"):
+                s1 = sr_data["support_1"]
+                lines.append(f"- Support 1: ${s1['price']:.2f}")
+                lines.append(f"  Formula: {s1['formula']}")
+                lines.append(f"  ({s1['description']})")
+            if sr_data.get("support_2"):
+                s2 = sr_data["support_2"]
+                lines.append(f"- Support 2: ${s2['price']:.2f}")
+                lines.append(f"  Formula: {s2['formula']}")
+                lines.append(f"  ({s2['description']})")
+            if sr_data.get("resistance_1"):
+                r1 = sr_data["resistance_1"]
+                lines.append(f"- Resistance 1: ${r1['price']:.2f}")
+                lines.append(f"  Formula: {r1['formula']}")
+            if sr_data.get("resistance_2"):
+                r2 = sr_data["resistance_2"]
+                lines.append(f"- Resistance 2: ${r2['price']:.2f}")
+                lines.append(f"  Formula: {r2['formula']}")
 
         return "\n".join(lines)
 
@@ -3304,7 +3372,19 @@ class SynthesisHandlerV2(LoggerMixin):
         risk_content = risk_data.get("content", "")
         risk_raw = risk_data.get("raw_data", {})
         # FIX: Also get advanced_metrics for VaR/volatility
-        risk_advanced = risk_data.get("advanced_metrics", {})
+        risk_advanced = risk_data.get("advanced_metrics", {}) or {}
+
+        # FIX: Add technical ATR from technical step for comparison display
+        tech_data = step_data.get("technical", {})
+        tech_raw = tech_data.get("raw_data", {})
+        tech_indicators = tech_raw.get("indicators", {}) if tech_raw else {}
+        tech_atr = tech_indicators.get("atr", {})
+        if tech_atr.get("value"):
+            risk_advanced["technical_atr"] = {
+                "value": tech_atr.get("value"),
+                "percent": tech_atr.get("atr_percent"),
+                "explanation": tech_atr.get("explanation", "")
+            }
 
         if risk_content:
             parts.append("### LLM ANALYSIS SUMMARY:")
@@ -3736,19 +3816,28 @@ class SynthesisHandlerV2(LoggerMixin):
         risk = canonical_data.get("risk", {})
         parts.append("")
         parts.append("**RISK METRICS:**")
-        parts.append(f"- ATR: ${risk.get('atr_value') or 'N/A'} ({risk.get('atr_percent') or 'N/A'}%)")
+        # Show ATR with source information
+        atr_value = risk.get('atr_value')
+        atr_percent = risk.get('atr_percent')
+        atr_source = risk.get('atr_source', 'unknown')
+        parts.append(f"- ATR: ${atr_value or 'N/A'} ({atr_percent or 'N/A'}%) [Source: {atr_source}]")
+        # Also show Technical ATR (14d) if available for comparison
+        tech_atr_14d = tech.get('atr_14d')
+        tech_atr_14d_pct = tech.get('atr_14d_percent')
+        if tech_atr_14d:
+            parts.append(f"- ATR (14d): ${tech_atr_14d} ({tech_atr_14d_pct or 'N/A'}%) [Source: technical_14d]")
         parts.append(f"- VaR (95%): {risk.get('var_95') or 'N/A'}%")
         parts.append(f"- Volatility (Daily): {risk.get('volatility_daily') or 'N/A'}%")
         parts.append(f"- Volatility (Annual): {risk.get('volatility_annual') or 'N/A'}%")
         parts.append(f"- Max Drawdown: {risk.get('max_drawdown') or 'N/A'}%")
 
-        # Pre-calculate stop-loss for reference
-        if price and risk.get('atr_value'):
-            atr = risk['atr_value']
+        # Pre-calculate stop-loss for reference (use primary ATR)
+        if price and atr_value:
+            atr = atr_value
             stop_2atr = round(price - 2 * atr, 2)
             stop_risk_pct = round((2 * atr / price) * 100, 1)
             parts.append("")
-            parts.append("**PRE-CALCULATED STOP-LOSS (2×ATR):**")
+            parts.append(f"**PRE-CALCULATED STOP-LOSS (2×ATR, using {atr_source}):**")
             parts.append(f"- Formula: ${price:.2f} - (2 × ${atr:.2f}) = ${stop_2atr}")
             parts.append(f"- Risk: {stop_risk_pct}%")
 
@@ -4493,34 +4582,74 @@ Provide the corrected report only. No explanations or comments.
             lines.append(f"**Current Price: ${current_price}**")
             lines.append("")
 
-        # ATR from atr_metrics - FIX: suggest_stop_loss.py returns {"atr_metrics": {...}}
+        # =====================================================================
+        # ATR METRICS - SHOW BOTH SOURCES WITH CLEAR EXPLANATION
+        # =====================================================================
+        # We have TWO sources of ATR:
+        # 1. RISK ATR (60-day) - from suggest_stop_loss.py - for position sizing
+        # 2. TECHNICAL ATR (14-day) - from getTechnicalIndicators - standard TA
+        # =====================================================================
         atr_metrics = raw.get("atr_metrics", {})
-        atr_value = atr_metrics.get("atr_value", 0) or raw.get("atr", 0)
-        atr_pct = atr_metrics.get("atr_percent", 0)
+        risk_atr_value = atr_metrics.get("atr_value", 0) or raw.get("atr", 0)
+        risk_atr_pct = atr_metrics.get("atr_percent", 0)
         daily_move_dollars = atr_metrics.get("daily_move_dollars", 0)
         daily_move_percent = atr_metrics.get("daily_move_percent", 0)
+
+        # Get technical ATR if available (from canonical data passed via advanced)
+        tech_atr = advanced.get("technical_atr", {}) if advanced else {}
+        tech_atr_value = tech_atr.get("value", 0)
+        tech_atr_pct = tech_atr.get("percent", 0)
+        tech_atr_explanation = tech_atr.get("explanation", "")
 
         # Also get ATR-based stop prices from the tool
         atr_stop = raw.get("atr_stop", 0)
 
-        if atr_value:
-            lines.append("**ATR Metrics (from atr_metrics):**")
-            lines.append(f"- ATR Value: ${atr_value:.2f}")
-            if atr_pct:
-                lines.append(f"- ATR Percent: {atr_pct:.2f}%")
+        # Display RISK ATR (primary - used for stop-loss)
+        if risk_atr_value:
+            lines.append("**ATR Metrics - RISK (60-day lookback):**")
+            lines.append(f"- ATR Value: ${risk_atr_value:.2f}")
+            lines.append(f"- ATR Percent: {risk_atr_pct:.2f}%" if risk_atr_pct else "- ATR Percent: N/A")
             if daily_move_dollars:
                 lines.append(f"- Daily Move: ${daily_move_dollars:.2f} ({daily_move_percent:.2f}%)")
             if atr_stop:
                 lines.append(f"- 2×ATR Stop Price: ${atr_stop:.2f}")
+            lines.append("- Source: suggest_stop_loss tool (60-day lookback)")
+            lines.append("- Purpose: Stop-loss calculation, position sizing")
             lines.append("")
 
-        # Pre-calculate stop levels if we have the data
-        if current_price and atr_value:
-            stop_2atr = round(current_price - (2 * atr_value), 2)
-            stop_2atr_pct = round((2 * atr_value / current_price) * 100, 1)
+        # Display TECHNICAL ATR (comparison - standard TA)
+        if tech_atr_value:
+            lines.append("**ATR Metrics - TECHNICAL (14-day period):**")
+            lines.append(f"- ATR Value: ${tech_atr_value:.2f}")
+            lines.append(f"- ATR Percent: {tech_atr_pct:.2f}%" if tech_atr_pct else "- ATR Percent: N/A")
+            if tech_atr_explanation:
+                lines.append(f"- Explanation: {tech_atr_explanation[:200]}")
+            lines.append("- Source: getTechnicalIndicators tool (14-day Wilder ATR)")
+            lines.append("- Purpose: Traditional technical analysis, volatility assessment")
+            lines.append("")
+
+        # Explain the difference if both exist
+        if risk_atr_value and tech_atr_value:
+            diff = risk_atr_value - tech_atr_value
+            lines.append("**⚠️ ATR COMPARISON (Why they differ):**")
+            lines.append(f"- Risk ATR (60d): ${risk_atr_value:.2f} vs Technical ATR (14d): ${tech_atr_value:.2f}")
+            lines.append(f"- Difference: ${abs(diff):.2f} ({'higher' if diff > 0 else 'lower'} for Risk ATR)")
+            lines.append("- Reason: Risk ATR uses 60-day lookback to capture more market conditions")
+            lines.append("- Technical ATR uses standard 14-day period for traditional TA signals")
+            lines.append("- For STOP-LOSS: Use Risk ATR (more conservative)")
+            lines.append("- For VOLATILITY ASSESSMENT: Technical ATR is standard")
+            lines.append("")
+
+        # Pre-calculate stop levels if we have the data (use Risk ATR)
+        atr_for_stops = risk_atr_value or tech_atr_value
+        if current_price and atr_for_stops:
+            stop_2atr = round(current_price - (2 * atr_for_stops), 2)
+            stop_2atr_pct = round((2 * atr_for_stops / current_price) * 100, 1)
+            atr_source = "60d" if risk_atr_value else "14d"
             lines.append("**PRE-CALCULATED STOPS:**")
             lines.append(f"- 2× ATR Stop: ${stop_2atr} ({stop_2atr_pct}% risk)")
-            lines.append(f"  Formula: ${current_price:.2f} - (2 × ${atr_value:.2f}) = ${stop_2atr}")
+            lines.append(f"  Formula: ${current_price:.2f} - (2 × ${atr_for_stops:.2f}) = ${stop_2atr}")
+            lines.append(f"  Using: ATR ({atr_source})")
             lines.append("")
 
         # Percentage-based stop
@@ -4588,17 +4717,21 @@ Provide the corrected report only. No explanations or comments.
         data_points = sentiment_data.get("data_points_analyzed") or sentiment_data.get("data_count", 0)
 
         if score is not None:
-            # Classification with score range
+            # Classification with score range - more granular for edge cases
             if score > 0.5:
-                classification = "STRONGLY BULLISH (>0.5)"
+                classification = "STRONGLY_BULLISH (>0.5)"
             elif score > 0.2:
-                classification = "BULLISH (0.2-0.5)"
-            elif score > -0.2:
-                classification = "NEUTRAL (-0.2 to 0.2)"
+                classification = "BULLISH (0.2 to 0.5)"
+            elif score > 0.1:
+                classification = "SLIGHTLY_BULLISH (0.1 to 0.2)"
+            elif score >= -0.1:
+                classification = "NEUTRAL (-0.1 to 0.1)"
+            elif score >= -0.2:
+                classification = "SLIGHTLY_BEARISH (-0.2 to -0.1)"
             elif score > -0.5:
                 classification = "BEARISH (-0.5 to -0.2)"
             else:
-                classification = "STRONGLY BEARISH (<-0.5)"
+                classification = "STRONGLY_BEARISH (<-0.5)"
 
             lines.append(f"**Sentiment Score: {score:.3f}**")
             lines.append(f"- Classification: {classification}")
@@ -4606,24 +4739,24 @@ Provide the corrected report only. No explanations or comments.
                 lines.append(f"- Label: {label}")
             lines.append("")
 
-            # Phase 3: Sample size weighting and confidence
+            # Phase 3: Sample size weighting and confidence with clear n=X notation
             confidence = self._calculate_sentiment_confidence(data_points, score)
-            lines.append(f"**Confidence Level: {confidence['level']}** ({confidence['score']:.0f}/100)")
-            lines.append(f"- Sample Size: {data_points} data points")
+            lines.append(f"**Confidence Level: {confidence['level']}** (n={data_points} → {confidence['score']:.0f}/100)")
+            lines.append(f"- Sample Size: n={data_points} data points")
             lines.append(f"- {confidence['explanation']}")
             lines.append("")
 
-            # Warning for low sample size
+            # Warning for low sample size with explicit n=X notation
             if data_points < 10:
-                lines.append("⚠️ **LOW SAMPLE SIZE WARNING:**")
-                lines.append("   - Less than 10 data points analyzed")
+                lines.append(f"⚠️ **VERY LOW SAMPLE SIZE (n={data_points}):**")
+                lines.append(f"   - n={data_points} → very low confidence")
                 lines.append("   - Sentiment may not be statistically significant")
-                lines.append("   - Consider this as directional indicator only")
+                lines.append("   - Treat as DIRECTIONAL INDICATOR only, not reliable signal")
                 lines.append("")
             elif data_points < 30:
-                lines.append("⚠️ **MODERATE SAMPLE SIZE:**")
-                lines.append("   - 10-30 data points may show sentiment direction")
-                lines.append("   - Confidence increases with more data points")
+                lines.append(f"⚠️ **LOW SAMPLE SIZE (n={data_points}):**")
+                lines.append(f"   - n={data_points} → low confidence")
+                lines.append("   - May show sentiment direction but requires confirmation")
                 lines.append("")
 
         # Social sentiment breakdown
@@ -4699,19 +4832,19 @@ Provide the corrected report only. No explanations or comments.
 
         total_score = size_score + signal_bonus
 
-        # Determine confidence level
+        # Determine confidence level with clear n=X notation
         if total_score >= 80:
             level = "HIGH"
-            explanation = f"Strong signal ({score:.2f}) with adequate sample ({sample_size})"
+            explanation = f"Strong signal ({score:.3f}) with adequate sample (n={sample_size})"
         elif total_score >= 50:
             level = "MODERATE"
-            explanation = f"Reasonable sample size ({sample_size}), signal strength: {signal_strength:.2f}"
+            explanation = f"Reasonable sample (n={sample_size}), signal strength: {signal_strength:.3f}"
         elif total_score >= 30:
             level = "LOW"
-            explanation = f"Limited data ({sample_size} points) - treat as directional only"
+            explanation = f"Limited data (n={sample_size}) - treat as directional only"
         else:
-            level = "VERY LOW"
-            explanation = f"Insufficient data ({sample_size} points) - sentiment unreliable"
+            level = "VERY_LOW"
+            explanation = f"n={sample_size} → very low confidence - sentiment unreliable"
 
         return {
             "level": level,
@@ -4728,17 +4861,26 @@ Provide the corrected report only. No explanations or comments.
 
         report = raw.get("fundamental_report", {})
 
-        # Valuation
+        # Valuation - with clear distinction between P/E types
         if report.get("valuation"):
             v = report["valuation"]
             pe_ttm = v.get('pe_ttm', 'N/A')
+            pe_fy = v.get('pe_fy', 'N/A')
+            forward_pe = v.get('forward_pe') or v.get('pe_forward', 'N/A')
             ps_ttm = v.get('ps_ttm', 'N/A')
             pb_ttm = v.get('pb_ttm', 'N/A')
             ev_ebitda = v.get('ev_ebitda', 'N/A')
 
             lines.append("**Valuation Metrics:**")
+            # P/E TTM: Based on last 12 months actual earnings
             lines.append(f"- P/E (TTM): {pe_ttm}")
-            lines.append(f"- P/E (Forward): {v.get('pe_fy', 'N/A')}")
+            lines.append("  *(Trailing 12 Months - based on actual past earnings)*")
+            # P/E FY: Based on full fiscal year earnings
+            lines.append(f"- P/E (FY): {pe_fy}")
+            lines.append("  *(Full Year - based on most recent complete fiscal year)*")
+            # Forward P/E: Based on analyst estimates for next 12 months
+            lines.append(f"- P/E (Forward): {forward_pe}")
+            lines.append("  *(Forward - based on analyst EPS estimates, N/A if unavailable)*")
             lines.append(f"- P/S (TTM): {ps_ttm}")
             lines.append(f"- P/B (TTM): {pb_ttm}")
             lines.append(f"- EV/EBITDA: {ev_ebitda}")
