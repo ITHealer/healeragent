@@ -301,19 +301,55 @@ class CanonicalDataBuilder:
             canonical["price"]["source"] = "risk_step"
             canonical["price"]["timestamp"] = risk_data.get("cached_at")
 
-        # ATR and risk metrics - FIX: ATR is in 'atr_metrics', NOT 'stop_loss_recommendations.atr_based'
-        # The suggest_stop_loss.py tool returns: {"atr_metrics": {"atr_value": X, "atr_percent": Y, ...}}
+        # =====================================================================
+        # ATR EXTRACTION - FROM RISK MODULE (suggest_stop_loss tool)
+        # =====================================================================
+        # IMPORTANT: There are TWO sources of ATR in the system:
+        #
+        # 1. RISK ATR (used here) - from suggest_stop_loss.py:
+        #    - Lookback: 60 days (configurable via lookback_days parameter)
+        #    - Purpose: Stop-loss calculation, position sizing
+        #    - Returns: {"atr_metrics": {"atr_value": X, "atr_percent": Y, "daily_move_dollars": Z}}
+        #    - Example: ATR=$9.81, ATR%=2.17% (60-day lookback)
+        #
+        # 2. TECHNICAL ATR (fallback) - from getTechnicalIndicators:
+        #    - Period: 14 days (standard ATR period)
+        #    - Purpose: Technical analysis, volatility assessment
+        #    - Returns: {"indicators": {"atr": {"value": X, "atr_percent": Y}}}
+        #    - Example: ATR=$8.94, ATR%=1.98% (14-day period)
+        #
+        # WHY THEY DIFFER:
+        # - Risk ATR uses longer lookback (60d) to capture more market conditions
+        # - Technical ATR uses standard 14d for traditional TA signals
+        # - Both are valid; we prioritize Risk ATR for position sizing/stop-loss
+        # =====================================================================
         atr_metrics = raw.get("atr_metrics", {})
         atr_value = atr_metrics.get("atr_value") or raw.get("atr")
         atr_percent = atr_metrics.get("atr_percent")
 
         if atr_value:
             canonical["risk"]["atr_value"] = round(float(atr_value), 2)
+            canonical["risk"]["atr_source"] = "risk_60d"  # Mark source for transparency
             # Use pre-calculated atr_percent if available, otherwise calculate
             if atr_percent:
                 canonical["risk"]["atr_percent"] = round(float(atr_percent), 2)
             elif current_price and current_price > 0:
                 canonical["risk"]["atr_percent"] = round((atr_value / current_price) * 100, 2)
+
+        # =====================================================================
+        # STOP LOSS LEVELS - Extract all available levels for traceability
+        # =====================================================================
+        # These are the ONLY valid stop-loss levels LLM can reference
+        # LLM should NOT invent additional levels beyond these
+        stop_levels = raw.get("stop_loss_levels", {})
+        if stop_levels:
+            canonical["risk"]["stop_loss_levels"] = {
+                "atr_based": stop_levels.get("atr_based", {}),
+                "percentage_based": stop_levels.get("percentage_based", {}),
+                "sma_based": stop_levels.get("sma_based", {}),
+                "technical": stop_levels.get("technical", {}),
+                "recommended": stop_levels.get("recommended"),
+            }
 
         # FIX: VaR, Volatility, MaxDrawdown are in 'advanced_metrics' not 'raw_data'
         # See market_scanner_handler.get_risk_analysis() which returns:
@@ -391,13 +427,26 @@ class CanonicalDataBuilder:
         if sma_data.get("sma_200", {}).get("value"):
             canonical["technical"]["sma_200"] = round(float(sma_data["sma_200"]["value"]), 2)
 
-        # ATR from technical step (fallback if risk step didn't provide it)
-        # FIX: Technical tool provides ATR in indicators['atr']['value']
+        # =====================================================================
+        # ATR FALLBACK - FROM TECHNICAL INDICATORS
+        # =====================================================================
+        # Only used if Risk ATR (from suggest_stop_loss) is not available.
+        #
+        # TECHNICAL ATR:
+        # - Period: 14 days (standard Wilder ATR)
+        # - Source: getTechnicalIndicators tool
+        # - Path: indicators['atr']['value']
+        # - Example: ATR=$8.94, ATR%=1.98%
+        #
+        # NOTE: This differs from Risk ATR (60-day lookback) by design.
+        # Technical ATR is shorter-term and may show lower values in trending markets.
+        # =====================================================================
         if not canonical["risk"].get("atr_value"):
             atr_data = indicators.get("atr", {})
             atr_value = atr_data.get("value")
             if atr_value is not None:
                 canonical["risk"]["atr_value"] = round(float(atr_value), 2)
+                canonical["risk"]["atr_source"] = "technical_14d"  # Mark source
                 # Also get atr_percent from technical or calculate it
                 atr_pct = atr_data.get("atr_percent")
                 if atr_pct is not None:
@@ -444,11 +493,30 @@ class CanonicalDataBuilder:
                 canonical["_warnings"].extend(gics_result["warnings"])
 
         # Relative Strength
-        # FIX: Handler returns 'relative_strength' key, and uses 'Excess_21d' format (not 'excess_return_21d')
-        # Try multiple structures for backwards compatibility
-        rs_metrics = raw.get("rs_metrics") or raw.get("relative_strength") or raw
+        # =====================================================================
+        # RS DATA EXTRACTION - CRITICAL FIX
+        # =====================================================================
+        # GetRelativeStrengthTool._format_rs_data() returns:
+        #   "relative_performance": {RS_21d, Return_21d, Benchmark_21d, Excess_21d, ...}
+        #
+        # The data contains TWO types of RS metrics:
+        #   1. RS_XXd   = Percentile rank (0-100 scale, e.g., RS_21d=42.43 means 42nd percentile)
+        #   2. Excess_XXd = Excess return vs benchmark (e.g., Excess_21d=-7.57 means -7.57% vs SPY)
+        #
+        # For investment reports, we use Excess_XXd (actual outperformance %).
+        # RS_XXd (percentile) can be used for IBD-style RS Rating.
+        # =====================================================================
 
-        # FIX: Tool uses 'Excess_21d' format, also try legacy 'excess_return_21d'
+        # Try multiple structures - CRITICAL: "relative_performance" is the correct key from tool
+        rs_metrics = (
+            raw.get("relative_performance") or  # PRIMARY: from GetRelativeStrengthTool
+            raw.get("rs_metrics") or            # Legacy: old format
+            raw.get("relative_strength") or     # Legacy: handler direct return
+            raw                                 # Fallback: raw object itself
+        )
+
+        # EXCESS RETURN (actual % outperformance vs benchmark) - PRIMARY for reports
+        # Excess_21d = Symbol_Return - Benchmark_Return (e.g., -7.57% = MSFT underperformed SPY by 7.57%)
         rs_21d = rs_metrics.get("Excess_21d") or rs_metrics.get("excess_return_21d")
         rs_63d = rs_metrics.get("Excess_63d") or rs_metrics.get("excess_return_63d")
         rs_126d = rs_metrics.get("Excess_126d") or rs_metrics.get("excess_return_126d")
@@ -3684,6 +3752,29 @@ class SynthesisHandlerV2(LoggerMixin):
             parts.append(f"- Formula: ${price:.2f} - (2 × ${atr:.2f}) = ${stop_2atr}")
             parts.append(f"- Risk: {stop_risk_pct}%")
 
+        # Display ALL available stop-loss levels for traceability
+        stop_levels = risk.get("stop_loss_levels", {})
+        if stop_levels:
+            parts.append("")
+            parts.append("**AVAILABLE STOP-LOSS LEVELS (ONLY USE THESE):**")
+            atr_based = stop_levels.get("atr_based", {})
+            if atr_based:
+                parts.append(f"- ATR 1×: ${atr_based.get('atr_1x', 'N/A')}")
+                parts.append(f"- ATR 2×: ${atr_based.get('atr_2x', 'N/A')}")
+                parts.append(f"- ATR 3×: ${atr_based.get('atr_3x', 'N/A')}")
+            pct_based = stop_levels.get("percentage_based", {})
+            if pct_based:
+                parts.append(f"- Percent 3%: ${pct_based.get('percent_3', 'N/A')}")
+                parts.append(f"- Percent 5%: ${pct_based.get('percent_5', 'N/A')}")
+                parts.append(f"- Percent 7%: ${pct_based.get('percent_7', 'N/A')}")
+            tech_based = stop_levels.get("technical", {})
+            if tech_based and tech_based.get("recent_swing"):
+                parts.append(f"- Recent Swing Low: ${tech_based.get('recent_swing', 'N/A')}")
+            if stop_levels.get("recommended"):
+                parts.append(f"- **Recommended Stop: ${stop_levels['recommended']}**")
+            parts.append("")
+            parts.append("⚠️ DO NOT invent additional stop-loss levels (e.g., 10%, 15%)")
+
         # Sentiment
         sent = canonical_data.get("sentiment")
         parts.append("")
@@ -3747,6 +3838,11 @@ class SynthesisHandlerV2(LoggerMixin):
             "3. If sentiment is N/A, do NOT display any sentiment score",
             "4. Show stop-loss calculation with the pre-calculated formula",
             "5. Use conditional language (IF...THEN...) for action items",
+            "6. **STOP-LOSS CONSTRAINT:** ONLY use stop-loss levels from the provided data:",
+            "   - ATR-based: atr_1x, atr_2x, atr_3x (from tool)",
+            "   - Percentage-based: percent_3, percent_5, percent_7 (from tool)",
+            "   - DO NOT invent/calculate additional levels (e.g., 10%, 15%)",
+            "   - If you need a specific level not in data, state 'not calculated'",
             "",
         ])
 
@@ -4336,14 +4432,28 @@ Provide the corrected report only. No explanations or comments.
 
         # RS Data - from raw which has the structure from get_relative_strength
         if raw:
-            # Multi-timeframe RS metrics
-            # FIX: Try 'relative_strength' key (from handler) and use 'Excess_21d' format (from tool)
-            rs_metrics = raw.get("rs_metrics") or raw.get("relative_strength") or raw
+            # =====================================================================
+            # RS DATA FORMATTING - CRITICAL FIX
+            # =====================================================================
+            # GetRelativeStrengthTool returns "relative_performance" key containing:
+            #   - RS_XXd: Percentile rank (0-100 scale)
+            #   - Excess_XXd: Excess return vs benchmark (actual % outperformance)
+            #   - Return_XXd: Symbol's return over period
+            #   - Benchmark_XXd: Benchmark's return over period
+            # =====================================================================
 
-            # FIX: Tool uses 'Excess_21d' format, also try legacy 'excess_return_21d'
-            rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d') or raw.get('Excess_21d')
-            rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d') or raw.get('Excess_63d')
-            rs_126d = rs_metrics.get('Excess_126d') or rs_metrics.get('excess_return_126d') or raw.get('Excess_126d')
+            # Try multiple structures - CRITICAL: "relative_performance" is correct key
+            rs_metrics = (
+                raw.get("relative_performance") or  # PRIMARY: from GetRelativeStrengthTool
+                raw.get("rs_metrics") or            # Legacy: old format
+                raw.get("relative_strength") or     # Legacy: handler direct return
+                raw                                 # Fallback: raw object itself
+            )
+
+            # EXCESS RETURN (actual % outperformance) - used for RS display
+            rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d')
+            rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d')
+            rs_126d = rs_metrics.get('Excess_126d') or rs_metrics.get('excess_return_126d')
 
             lines.append("**Relative Strength vs SPY (Multi-Timeframe):**")
             if rs_21d is not None:
@@ -4866,8 +4976,14 @@ Past performance is not indicative of future results. Investments involve risk, 
             self.logger.info(f"  pos_raw keys: {list(pos_raw.keys())}")
             self.logger.info(f"  pos_raw FULL: {json.dumps(pos_raw, indent=2, default=str)[:2000]}")
             self.logger.info(f"  sector_ctx: {json.dumps(sector_ctx, default=str)[:500]}")
-        # FIX: Try both 'rs_metrics' and 'relative_strength' keys, and use 'Excess_21d' format
-        rs_metrics = pos_raw.get("rs_metrics") or pos_raw.get("relative_strength") or pos_raw
+        # CRITICAL FIX: "relative_performance" is the correct key from GetRelativeStrengthTool
+        rs_metrics = (
+            pos_raw.get("relative_performance") or  # PRIMARY: from tool
+            pos_raw.get("rs_metrics") or            # Legacy
+            pos_raw.get("relative_strength") or     # Legacy
+            pos_raw                                 # Fallback
+        )
+        # Use Excess_XXd (actual % outperformance vs benchmark)
         rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d', 'N/A')
         rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d', 'N/A')
         rs_126d = rs_metrics.get('Excess_126d') or rs_metrics.get('excess_return_126d', 'N/A')
