@@ -105,12 +105,14 @@ class RiskAnalysis:
 
             # ═══════════════════════════════════════════════════════════════════
             # Calculate ATR (Average True Range)
+            # Priority: Use pre-calculated ATR from dataframe (from Technical step)
+            # Fallback: Calculate proper True Range if not available
             # ═══════════════════════════════════════════════════════════════════
             atr = latest.get("atr", None)
             if atr is None or pd.isna(atr):
-                # Fallback: calculate ATR from high-low range
-                high_low_range = df["high"].iloc[-20:] - df["low"].iloc[-20:]
-                atr = high_low_range.mean()
+                # Fallback: Calculate proper ATR using True Range formula
+                # True Range = max(High-Low, |High-Close_prev|, |Low-Close_prev|)
+                atr = RiskAnalysis._calculate_true_range_atr(df, period=14)
 
             # ═══════════════════════════════════════════════════════════════════
             # Calculate ATR percentage (daily expected move)
@@ -151,3 +153,47 @@ class RiskAnalysis:
 
         except Exception as e:
             raise Exception(f"Error suggesting stop levels: {str(e)}")
+
+    @staticmethod
+    def _calculate_true_range_atr(df: pd.DataFrame, period: int = 14) -> float:
+        """
+        Calculate ATR using proper True Range formula.
+
+        True Range = max(High-Low, |High-Close_prev|, |Low-Close_prev|)
+        ATR = Rolling mean of True Range over the specified period.
+
+        This ensures consistency with pandas_ta.atr() used in Technical Analysis.
+
+        Args:
+            df: DataFrame with 'high', 'low', 'close' columns
+            period: ATR period (default 14 days)
+
+        Returns:
+            float: ATR value (latest)
+        """
+        if len(df) < period:
+            # Not enough data - use simple high-low average as last resort
+            return float((df["high"] - df["low"]).mean())
+
+        # Calculate True Range components
+        high_low = df["high"] - df["low"]
+        high_close_prev = abs(df["high"] - df["close"].shift(1))
+        low_close_prev = abs(df["low"] - df["close"].shift(1))
+
+        # True Range = max of the three components
+        true_range = pd.concat(
+            [high_low, high_close_prev, low_close_prev],
+            axis=1
+        ).max(axis=1)
+
+        # ATR = Rolling mean of True Range
+        atr_series = true_range.rolling(window=period).mean()
+
+        # Get latest ATR value
+        atr = atr_series.iloc[-1]
+
+        # Final fallback if still NaN
+        if pd.isna(atr):
+            atr = float(high_low.iloc[-period:].mean())
+
+        return float(atr)
