@@ -4653,6 +4653,7 @@ Provide the corrected report only. No explanations or comments.
             lines.append("")
 
         # Percentage-based stop
+        stop_recs = raw.get("stop_loss_levels", {})
         pct_data = stop_recs.get("percentage_based", {})
         if pct_data:
             lines.append("**Percentage-Based Stop:**")
