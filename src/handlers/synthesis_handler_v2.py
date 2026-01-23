@@ -310,22 +310,31 @@ class CanonicalDataBuilder:
             if current_price and current_price > 0:
                 canonical["risk"]["atr_percent"] = round((atr_value / current_price) * 100, 2)
 
-        # VaR
-        var_data = raw.get("var", {})
-        if var_data.get("var_percent"):
+        # FIX: VaR, Volatility, MaxDrawdown are in 'advanced_metrics' not 'raw_data'
+        # See market_scanner_handler.get_risk_analysis() which returns:
+        # - raw_data: from stop_loss_tool (no VaR/volatility)
+        # - advanced_metrics: from _calculate_advanced_risk_metrics (has VaR/volatility)
+        advanced = risk_data.get("advanced_metrics", {}) or {}
+
+        # VaR - try advanced_metrics first, then raw as fallback
+        var_data = advanced.get("var", {}) or raw.get("var", {})
+        if var_data.get("var_percent") is not None:
             canonical["risk"]["var_95"] = round(float(var_data["var_percent"]), 2)
 
-        # Volatility
-        vol_data = raw.get("volatility", {})
+        # Volatility - try advanced_metrics first
+        # Note: advanced_metrics uses 'annual'/'daily', raw might use 'annualized'/'daily'
+        vol_data = advanced.get("volatility", {}) or raw.get("volatility", {})
         if isinstance(vol_data, dict):
-            if vol_data.get("daily"):
-                canonical["risk"]["volatility_daily"] = round(float(vol_data["daily"]), 2)
-            if vol_data.get("annualized"):
-                canonical["risk"]["volatility_annual"] = round(float(vol_data["annualized"]), 2)
+            daily_vol = vol_data.get("daily") or vol_data.get("daily_volatility")
+            annual_vol = vol_data.get("annual") or vol_data.get("annualized") or vol_data.get("annual_volatility")
+            if daily_vol is not None:
+                canonical["risk"]["volatility_daily"] = round(float(daily_vol), 2)
+            if annual_vol is not None:
+                canonical["risk"]["volatility_annual"] = round(float(annual_vol), 2)
 
-        # Max drawdown
-        dd_data = raw.get("max_drawdown", {})
-        if isinstance(dd_data, dict) and dd_data.get("max_drawdown"):
+        # Max drawdown - try advanced_metrics first
+        dd_data = advanced.get("max_drawdown", {}) or raw.get("max_drawdown", {})
+        if isinstance(dd_data, dict) and dd_data.get("max_drawdown") is not None:
             canonical["risk"]["max_drawdown"] = round(float(dd_data["max_drawdown"]), 2)
 
     def _extract_from_technical(self, canonical: Dict, tech_data: Dict) -> None:
@@ -357,13 +366,15 @@ class CanonicalDataBuilder:
             canonical["technical"]["macd_histogram"] = round(float(macd_data["histogram"]), 4)
 
         # ADX
+        # FIX: Tool returns 'adx' key, not 'value' (see get_technical_indicators.py line 468)
         adx_data = indicators.get("adx", {})
-        if adx_data.get("value") is not None:
-            canonical["technical"]["adx"] = round(float(adx_data["value"]), 1)
-        if adx_data.get("plus_di") is not None:
-            canonical["technical"]["plus_di"] = round(float(adx_data["plus_di"]), 1)
-        if adx_data.get("minus_di") is not None:
-            canonical["technical"]["minus_di"] = round(float(adx_data["minus_di"]), 1)
+        if adx_data.get("adx") is not None:
+            canonical["technical"]["adx"] = round(float(adx_data["adx"]), 1)
+        # FIX: Tool returns 'di_plus'/'di_minus', not 'plus_di'/'minus_di'
+        if adx_data.get("di_plus") is not None:
+            canonical["technical"]["plus_di"] = round(float(adx_data["di_plus"]), 1)
+        if adx_data.get("di_minus") is not None:
+            canonical["technical"]["minus_di"] = round(float(adx_data["di_minus"]), 1)
 
         # Moving Averages
         ma_data = indicators.get("moving_averages", {})
@@ -374,6 +385,22 @@ class CanonicalDataBuilder:
             canonical["technical"]["sma_50"] = round(float(sma_data["sma_50"]["value"]), 2)
         if sma_data.get("sma_200", {}).get("value"):
             canonical["technical"]["sma_200"] = round(float(sma_data["sma_200"]["value"]), 2)
+
+        # ATR from technical step (fallback if risk step didn't provide it)
+        # FIX: Technical tool provides ATR in indicators['atr']['value']
+        if not canonical["risk"].get("atr_value"):
+            atr_data = indicators.get("atr", {})
+            atr_value = atr_data.get("value")
+            if atr_value is not None:
+                canonical["risk"]["atr_value"] = round(float(atr_value), 2)
+                # Also get atr_percent from technical or calculate it
+                atr_pct = atr_data.get("atr_percent")
+                if atr_pct is not None:
+                    canonical["risk"]["atr_percent"] = round(float(atr_pct), 2)
+                elif canonical["price"].get("current"):
+                    canonical["risk"]["atr_percent"] = round(
+                        (atr_value / canonical["price"]["current"]) * 100, 2
+                    )
 
         # Backup price from technical if risk doesn't have it
         if not canonical["price"]["current"]:
@@ -412,14 +439,21 @@ class CanonicalDataBuilder:
                 canonical["_warnings"].extend(gics_result["warnings"])
 
         # Relative Strength
-        rs_metrics = raw.get("rs_metrics", raw)
+        # FIX: Handler returns 'relative_strength' key, and uses 'Excess_21d' format (not 'excess_return_21d')
+        # Try multiple structures for backwards compatibility
+        rs_metrics = raw.get("rs_metrics") or raw.get("relative_strength") or raw
 
-        if rs_metrics.get("excess_return_21d") is not None:
-            canonical["relative_strength"]["rs_21d"] = round(float(rs_metrics["excess_return_21d"]), 2)
-        if rs_metrics.get("excess_return_63d") is not None:
-            canonical["relative_strength"]["rs_63d"] = round(float(rs_metrics["excess_return_63d"]), 2)
-        if rs_metrics.get("excess_return_126d") is not None:
-            canonical["relative_strength"]["rs_126d"] = round(float(rs_metrics["excess_return_126d"]), 2)
+        # FIX: Tool uses 'Excess_21d' format, also try legacy 'excess_return_21d'
+        rs_21d = rs_metrics.get("Excess_21d") or rs_metrics.get("excess_return_21d")
+        rs_63d = rs_metrics.get("Excess_63d") or rs_metrics.get("excess_return_63d")
+        rs_126d = rs_metrics.get("Excess_126d") or rs_metrics.get("excess_return_126d")
+
+        if rs_21d is not None:
+            canonical["relative_strength"]["rs_21d"] = round(float(rs_21d), 2)
+        if rs_63d is not None:
+            canonical["relative_strength"]["rs_63d"] = round(float(rs_63d), 2)
+        if rs_126d is not None:
+            canonical["relative_strength"]["rs_126d"] = round(float(rs_126d), 2)
         if rs_metrics.get("rs_rating"):
             canonical["relative_strength"]["rs_rating"] = rs_metrics["rs_rating"]
 
@@ -3196,14 +3230,16 @@ class SynthesisHandlerV2(LoggerMixin):
         risk_data = step_data.get("risk", {})
         risk_content = risk_data.get("content", "")
         risk_raw = risk_data.get("raw_data", {})
+        # FIX: Also get advanced_metrics for VaR/volatility
+        risk_advanced = risk_data.get("advanced_metrics", {})
 
         if risk_content:
             parts.append("### LLM ANALYSIS SUMMARY:")
             parts.append(risk_content[:2000])
             parts.append("")
 
-        if risk_raw:
-            parts.extend(self._format_risk_raw_data(risk_raw))
+        if risk_raw or risk_advanced:
+            parts.extend(self._format_risk_raw_data(risk_raw, risk_advanced))
         parts.append("")
 
         # =====================================================================
@@ -4296,14 +4332,13 @@ Provide the corrected report only. No explanations or comments.
         # RS Data - from raw which has the structure from get_relative_strength
         if raw:
             # Multi-timeframe RS metrics
-            rs_metrics = raw.get("rs_metrics", {})
-            if not rs_metrics:
-                # Try direct access (different structure)
-                rs_metrics = raw
+            # FIX: Try 'relative_strength' key (from handler) and use 'Excess_21d' format (from tool)
+            rs_metrics = raw.get("rs_metrics") or raw.get("relative_strength") or raw
 
-            rs_21d = rs_metrics.get('excess_return_21d') or raw.get('excess_return_21d')
-            rs_63d = rs_metrics.get('excess_return_63d') or raw.get('excess_return_63d')
-            rs_126d = rs_metrics.get('excess_return_126d') or raw.get('excess_return_126d')
+            # FIX: Tool uses 'Excess_21d' format, also try legacy 'excess_return_21d'
+            rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d') or raw.get('Excess_21d')
+            rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d') or raw.get('Excess_63d')
+            rs_126d = rs_metrics.get('Excess_126d') or rs_metrics.get('excess_return_126d') or raw.get('Excess_126d')
 
             lines.append("**Relative Strength vs SPY (Multi-Timeframe):**")
             if rs_21d is not None:
@@ -4328,10 +4363,14 @@ Provide the corrected report only. No explanations or comments.
 
         return lines
 
-    def _format_risk_raw_data(self, raw: Dict[str, Any]) -> List[str]:
-        """Format risk raw data using CORRECT structure from suggest_stop_loss and risk_analysis."""
+    def _format_risk_raw_data(self, raw: Dict[str, Any], advanced: Dict[str, Any] = None) -> List[str]:
+        """Format risk raw data using CORRECT structure from suggest_stop_loss and risk_analysis.
+
+        FIX: Now accepts advanced_metrics parameter for VaR/volatility data.
+        """
         lines = ["### RAW RISK METRICS:"]
         lines.append("")
+        advanced = advanced or {}
 
         # Current price
         current_price = raw.get('current_price', 0)
@@ -4377,30 +4416,38 @@ Provide the corrected report only. No explanations or comments.
             lines.append(f"- Risk %: {pct_data.get('risk_percent', 'N/A')}%")
             lines.append("")
 
-        # Volatility from volatility key
-        vol_data = raw.get("volatility", {})
+        # FIX: Volatility - try advanced_metrics first (from _calculate_advanced_risk_metrics)
+        vol_data = advanced.get("volatility", {}) or raw.get("volatility", {})
         if vol_data:
+            daily_vol = vol_data.get('daily') or vol_data.get('daily_volatility', 'N/A')
+            annual_vol = vol_data.get('annual') or vol_data.get('annualized') or vol_data.get('annual_volatility', 'N/A')
+            regime = vol_data.get('regime') or vol_data.get('classification', 'N/A')
             lines.append("**Volatility:**")
-            lines.append(f"- Daily: {vol_data.get('daily', 'N/A')}%")
-            lines.append(f"- Annualized: {vol_data.get('annualized', 'N/A')}%")
-            lines.append(f"- Classification: {vol_data.get('classification', 'N/A')}")
+            lines.append(f"- Daily: {daily_vol}%")
+            lines.append(f"- Annualized: {annual_vol}%")
+            lines.append(f"- Classification: {regime}")
             lines.append("")
 
-        # VaR from var key
-        var_data = raw.get("var", {})
+        # FIX: VaR - try advanced_metrics first
+        var_data = advanced.get("var", {}) or raw.get("var", {})
         if var_data:
             var_pct = var_data.get("var_percent", 0)
             lines.append("**Value at Risk (VaR):**")
-            lines.append(f"- VaR: {var_pct:.2f}% ({var_data.get('confidence_level', 95)}% confidence)")
+            if var_pct:
+                lines.append(f"- VaR: {var_pct:.2f}% ({var_data.get('confidence_level', 95)}% confidence)")
+            else:
+                lines.append(f"- VaR: N/A ({var_data.get('confidence_level', 95)}% confidence)")
             lines.append(f"- Method: {var_data.get('method', 'historical')}")
             lines.append("")
 
-        # Max Drawdown
-        dd_data = raw.get("max_drawdown", {})
+        # FIX: Max Drawdown - try advanced_metrics first
+        dd_data = advanced.get("max_drawdown", {}) or raw.get("max_drawdown", {})
         if dd_data:
+            max_dd = dd_data.get('max_drawdown', 0)
+            curr_dd = dd_data.get('current_drawdown', 0)
             lines.append("**Max Drawdown:**")
-            lines.append(f"- Max DD: {dd_data.get('max_drawdown', 0):.1f}%")
-            lines.append(f"- Current DD: {dd_data.get('current_drawdown', 0):.1f}%")
+            lines.append(f"- Max DD: {max_dd:.1f}%" if max_dd else "- Max DD: N/A")
+            lines.append(f"- Current DD: {curr_dd:.1f}%" if curr_dd else "- Current DD: N/A")
             lines.append("")
 
         return lines
@@ -4771,8 +4818,9 @@ Past performance is not indicative of future results. Investments involve risk, 
             rsi_data = indicators.get("rsi", {})
             macd_data = indicators.get("macd", {})
             adx_data = indicators.get("adx", {})
+            # FIX: ADX uses 'adx' key, not 'value' (consistent with get_technical_indicators.py)
             self.logger.info(f"[SynthesisV2] TECHNICAL: RSI={rsi_data.get('value', 'N/A')}, "
-                           f"MACD={macd_data.get('macd_line', 'N/A')}, ADX={adx_data.get('value', 'N/A')}, "
+                           f"MACD={macd_data.get('macd_line', 'N/A')}, ADX={adx_data.get('adx', 'N/A')}, "
                            f"has_content={has_tech_content}")
         else:
             self.logger.info(f"[SynthesisV2] TECHNICAL: raw_data=None, has_content={has_tech_content}")
@@ -4782,9 +4830,12 @@ Past performance is not indicative of future results. Investments involve risk, 
         pos_raw = pos_data.get("raw_data", {})
         sector_ctx = pos_data.get("sector_context", {})
         has_pos_content = bool(pos_data.get("content", ""))
-        rs_metrics = pos_raw.get("rs_metrics", pos_raw)
-        self.logger.info(f"[SynthesisV2] POSITION: RS_21d={rs_metrics.get('excess_return_21d', 'N/A')}, "
-                       f"RS_63d={rs_metrics.get('excess_return_63d', 'N/A')}, "
+        # FIX: Try both 'rs_metrics' and 'relative_strength' keys, and use 'Excess_21d' format
+        rs_metrics = pos_raw.get("rs_metrics") or pos_raw.get("relative_strength") or pos_raw
+        rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d', 'N/A')
+        rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d', 'N/A')
+        self.logger.info(f"[SynthesisV2] POSITION: RS_21d={rs_21d}, "
+                       f"RS_63d={rs_63d}, "
                        f"Sector={sector_ctx.get('stock_sector', 'N/A')}, "
                        f"Industry={sector_ctx.get('stock_industry', 'N/A')}, "
                        f"has_content={has_pos_content}")
@@ -4792,17 +4843,22 @@ Past performance is not indicative of future results. Investments involve risk, 
         # Risk - use correct path: raw['stop_loss_recommendations']['atr_based']
         risk_data = step_data.get("risk", {})
         risk_raw = risk_data.get("raw_data", {})
+        # FIX: VaR/Volatility are in advanced_metrics, not raw_data
+        advanced = risk_data.get("advanced_metrics", {}) or {}
         has_risk_content = bool(risk_data.get("content", ""))
-        if risk_raw:
-            stop_recs = risk_raw.get("stop_loss_recommendations", {})
+        if risk_raw or advanced:
+            stop_recs = risk_raw.get("stop_loss_recommendations", {}) if risk_raw else {}
             atr_data = stop_recs.get("atr_based", {})
-            var_data = risk_raw.get("var", {})
-            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr_data.get('atr_value', risk_raw.get('atr', 'N/A'))}, "
+            # FIX: Get VaR from advanced_metrics first
+            var_data = advanced.get("var", {}) or (risk_raw.get("var", {}) if risk_raw else {})
+            vol_data = advanced.get("volatility", {}) or (risk_raw.get("volatility", {}) if risk_raw else {})
+            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr_data.get('atr_value', risk_raw.get('atr', 'N/A') if risk_raw else 'N/A')}, "
                            f"VaR={var_data.get('var_percent', 'N/A')}%, "
-                           f"Price=${risk_raw.get('current_price', 'N/A')}, "
-                           f"has_content={has_risk_content}")
+                           f"Vol(daily)={vol_data.get('daily') or vol_data.get('daily_volatility', 'N/A')}%, "
+                           f"Price=${risk_raw.get('current_price', 'N/A') if risk_raw else 'N/A'}, "
+                           f"has_content={has_risk_content}, has_advanced_metrics={bool(advanced)}")
         else:
-            self.logger.info(f"[SynthesisV2] RISK: raw_data=None, has_content={has_risk_content}")
+            self.logger.info(f"[SynthesisV2] RISK: raw_data=None, advanced_metrics=None, has_content={has_risk_content}")
 
         # Sentiment - COMPREHENSIVE LOGGING for debugging
         sent_data = step_data.get("sentiment", {})
