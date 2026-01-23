@@ -42,7 +42,9 @@ from src.helpers.llm_chat_helper import (
     SSE_HEADERS,
     DEFAULT_HEARTBEAT_SEC,
     sse_error,
-    sse_done
+    sse_done,
+    sse_content,
+    sse_heartbeat
 )
 
 router = APIRouter()
@@ -193,13 +195,13 @@ async def scanner_technical_stream(
                 chat_history=chat_history
             )
 
-            # Stream with heartbeat
+            # Stream with heartbeat - using standard SSE format
             async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
                 if event["type"] == "content":
                     full_response.append(event["chunk"])
-                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                    yield sse_content(event["chunk"])
                 elif event["type"] == "heartbeat":
-                    yield ": heartbeat\n\n"
+                    yield sse_heartbeat()
                 elif event["type"] == "error":
                     yield sse_error(event["error"])
                     break
@@ -274,12 +276,13 @@ async def scanner_position_stream(
                 chat_history=chat_history
             )
 
+            # Stream with heartbeat - using standard SSE format
             async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
                 if event["type"] == "content":
                     full_response.append(event["chunk"])
-                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                    yield sse_content(event["chunk"])
                 elif event["type"] == "heartbeat":
-                    yield ": heartbeat\n\n"
+                    yield sse_heartbeat()
                 elif event["type"] == "error":
                     yield sse_error(event["error"])
                     break
@@ -355,12 +358,13 @@ async def scanner_risk_stream(
                 chat_history=chat_history
             )
 
+            # Stream with heartbeat - using standard SSE format
             async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
                 if event["type"] == "content":
                     full_response.append(event["chunk"])
-                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                    yield sse_content(event["chunk"])
                 elif event["type"] == "heartbeat":
-                    yield ": heartbeat\n\n"
+                    yield sse_heartbeat()
                 elif event["type"] == "error":
                     yield sse_error(event["error"])
                     break
@@ -433,12 +437,13 @@ async def scanner_sentiment_stream(
                 chat_history=chat_history
             )
 
+            # Stream with heartbeat - using standard SSE format
             async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
                 if event["type"] == "content":
                     full_response.append(event["chunk"])
-                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                    yield sse_content(event["chunk"])
                 elif event["type"] == "heartbeat":
-                    yield ": heartbeat\n\n"
+                    yield sse_heartbeat()
                 elif event["type"] == "error":
                     yield sse_error(event["error"])
                     break
@@ -525,12 +530,13 @@ async def scanner_fundamental_stream(
                 target_language=scan_request.target_language
             )
 
+            # Stream with heartbeat - using standard SSE format
             async for event in stream_with_heartbeat(llm_gen, DEFAULT_HEARTBEAT_SEC):
                 if event["type"] == "content":
                     full_response.append(event["chunk"])
-                    yield f"{json.dumps({'content': event['chunk']}, ensure_ascii=False)}\n\n"
+                    yield sse_content(event["chunk"])
                 elif event["type"] == "heartbeat":
-                    yield ": heartbeat\n\n"
+                    yield sse_heartbeat()
                 elif event["type"] == "error":
                     yield sse_error(event["error"])
                     break

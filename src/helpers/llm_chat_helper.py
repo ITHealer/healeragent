@@ -90,12 +90,23 @@ async def stream_with_heartbeat(
 
 
 def sse_error(message: str) -> str:
-    """Format SSE error message."""
-    return f"{json.dumps({'error': message}, ensure_ascii=False)}\n\n"
+    """Format SSE error message with type field for FE consistency."""
+    return f"{json.dumps({'type': 'error', 'error': message}, ensure_ascii=False)}\n\n"
+
 
 def sse_done() -> str:
-    """Format SSE done message."""
-    return "[DONE]\n\n"
+    """Format SSE done message with type field for FE consistency."""
+    return f"{json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+
+
+def sse_content(content: str) -> str:
+    """Format SSE content message with type field for FE consistency."""
+    return f"{json.dumps({'type': 'content', 'content': content}, ensure_ascii=False)}\n\n"
+
+
+def sse_heartbeat() -> str:
+    """Format SSE heartbeat comment to keep connection alive."""
+    return ": heartbeat\n\n"
 
 
 @dataclass
