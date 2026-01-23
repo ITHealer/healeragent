@@ -19,6 +19,7 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 import os
 import httpx
@@ -300,14 +301,18 @@ class CanonicalDataBuilder:
             canonical["price"]["source"] = "risk_step"
             canonical["price"]["timestamp"] = risk_data.get("cached_at")
 
-        # ATR and risk metrics
-        stop_recs = raw.get("stop_loss_recommendations", {})
-        atr_data = stop_recs.get("atr_based", {})
+        # ATR and risk metrics - FIX: ATR is in 'atr_metrics', NOT 'stop_loss_recommendations.atr_based'
+        # The suggest_stop_loss.py tool returns: {"atr_metrics": {"atr_value": X, "atr_percent": Y, ...}}
+        atr_metrics = raw.get("atr_metrics", {})
+        atr_value = atr_metrics.get("atr_value") or raw.get("atr")
+        atr_percent = atr_metrics.get("atr_percent")
 
-        atr_value = atr_data.get("atr_value") or raw.get("atr")
         if atr_value:
             canonical["risk"]["atr_value"] = round(float(atr_value), 2)
-            if current_price and current_price > 0:
+            # Use pre-calculated atr_percent if available, otherwise calculate
+            if atr_percent:
+                canonical["risk"]["atr_percent"] = round(float(atr_percent), 2)
+            elif current_price and current_price > 0:
                 canonical["risk"]["atr_percent"] = round((atr_value / current_price) * 100, 2)
 
         # FIX: VaR, Volatility, MaxDrawdown are in 'advanced_metrics' not 'raw_data'
@@ -4378,25 +4383,25 @@ Provide the corrected report only. No explanations or comments.
             lines.append(f"**Current Price: ${current_price}**")
             lines.append("")
 
-        # ATR from stop_loss_recommendations
-        stop_recs = raw.get("stop_loss_recommendations", {})
-        atr_data = stop_recs.get("atr_based", {})
-        atr_value = atr_data.get("atr_value", 0)
-        atr_stop = atr_data.get("stop_price", 0)
-        atr_pct = atr_data.get("risk_percent", 0)
+        # ATR from atr_metrics - FIX: suggest_stop_loss.py returns {"atr_metrics": {...}}
+        atr_metrics = raw.get("atr_metrics", {})
+        atr_value = atr_metrics.get("atr_value", 0) or raw.get("atr", 0)
+        atr_pct = atr_metrics.get("atr_percent", 0)
+        daily_move_dollars = atr_metrics.get("daily_move_dollars", 0)
+        daily_move_percent = atr_metrics.get("daily_move_percent", 0)
 
-        # Also try direct atr key
-        if not atr_value:
-            atr_value = raw.get("atr", 0)
+        # Also get ATR-based stop prices from the tool
+        atr_stop = raw.get("atr_stop", 0)
 
-        if atr_value or atr_stop:
-            lines.append("**ATR-Based Stop Loss:**")
-            if atr_value:
-                lines.append(f"- ATR Value: ${atr_value:.2f}")
-            if atr_stop:
-                lines.append(f"- ATR Stop Price: ${atr_stop:.2f}")
+        if atr_value:
+            lines.append("**ATR Metrics (from atr_metrics):**")
+            lines.append(f"- ATR Value: ${atr_value:.2f}")
             if atr_pct:
-                lines.append(f"- Risk %: {atr_pct:.1f}%")
+                lines.append(f"- ATR Percent: {atr_pct:.2f}%")
+            if daily_move_dollars:
+                lines.append(f"- Daily Move: ${daily_move_dollars:.2f} ({daily_move_percent:.2f}%)")
+            if atr_stop:
+                lines.append(f"- 2×ATR Stop Price: ${atr_stop:.2f}")
             lines.append("")
 
         # Pre-calculate stop levels if we have the data
@@ -4809,52 +4814,103 @@ Past performance is not indicative of future results. Investments involve risk, 
         """Log summary of step data going into synthesis LLM for audit purposes."""
         self.logger.info(f"[SynthesisV2] ========== STEP DATA SUMMARY: {symbol} ==========")
 
-        # Technical - use correct path: raw['indicators']['rsi']['value']
+        # Technical - COMPREHENSIVE LOGGING
         tech_data = step_data.get("technical", {})
         tech_raw = tech_data.get("raw_data", {})
         has_tech_content = bool(tech_data.get("content", ""))
         if tech_raw:
+            import json
+            self.logger.info(f"[SynthesisV2] TECHNICAL RAW DATA (FULL):")
+            self.logger.info(f"  tech_raw keys: {list(tech_raw.keys())}")
             indicators = tech_raw.get("indicators", {})
+            self.logger.info(f"  indicators keys: {list(indicators.keys()) if isinstance(indicators, dict) else 'NOT A DICT'}")
+
+            # Log each indicator group
             rsi_data = indicators.get("rsi", {})
             macd_data = indicators.get("macd", {})
             adx_data = indicators.get("adx", {})
-            # FIX: ADX uses 'adx' key, not 'value' (consistent with get_technical_indicators.py)
-            self.logger.info(f"[SynthesisV2] TECHNICAL: RSI={rsi_data.get('value', 'N/A')}, "
+            ma_data = indicators.get("moving_averages", {})
+            bb_data = indicators.get("bollinger_bands", {})
+            stoch_data = indicators.get("stochastic", {})
+            obv_data = indicators.get("obv", {})
+            atr_data = indicators.get("atr", {})
+
+            self.logger.info(f"  RSI: {json.dumps(rsi_data, default=str)[:500]}")
+            self.logger.info(f"  MACD: {json.dumps(macd_data, default=str)[:500]}")
+            self.logger.info(f"  ADX: {json.dumps(adx_data, default=str)[:500]}")
+            self.logger.info(f"  Moving Averages: {json.dumps(ma_data, default=str)[:500]}")
+            self.logger.info(f"  Bollinger Bands: {json.dumps(bb_data, default=str)[:500]}")
+            self.logger.info(f"  Stochastic: {json.dumps(stoch_data, default=str)[:500]}")
+            self.logger.info(f"  OBV: {json.dumps(obv_data, default=str)[:300]}")
+            self.logger.info(f"  ATR (from tech): {json.dumps(atr_data, default=str)[:300]}")
+
+            # Price data
+            price_data = tech_raw.get("price", {})
+            self.logger.info(f"  Price: {json.dumps(price_data, default=str)[:500]}")
+
+            self.logger.info(f"[SynthesisV2] TECHNICAL SUMMARY: RSI={rsi_data.get('value', 'N/A')}, "
                            f"MACD={macd_data.get('macd_line', 'N/A')}, ADX={adx_data.get('adx', 'N/A')}, "
-                           f"has_content={has_tech_content}")
+                           f"SMA20=${ma_data.get('sma_20', 'N/A')}, SMA50=${ma_data.get('sma_50', 'N/A')}, "
+                           f"SMA200=${ma_data.get('sma_200', 'N/A')}, has_content={has_tech_content}")
         else:
             self.logger.info(f"[SynthesisV2] TECHNICAL: raw_data=None, has_content={has_tech_content}")
 
-        # Position
+        # Position - COMPREHENSIVE LOGGING
         pos_data = step_data.get("position", {})
         pos_raw = pos_data.get("raw_data", {})
         sector_ctx = pos_data.get("sector_context", {})
         has_pos_content = bool(pos_data.get("content", ""))
+        if pos_raw:
+            import json
+            self.logger.info(f"[SynthesisV2] POSITION RAW DATA (FULL):")
+            self.logger.info(f"  pos_raw keys: {list(pos_raw.keys())}")
+            self.logger.info(f"  pos_raw FULL: {json.dumps(pos_raw, indent=2, default=str)[:2000]}")
+            self.logger.info(f"  sector_ctx: {json.dumps(sector_ctx, default=str)[:500]}")
         # FIX: Try both 'rs_metrics' and 'relative_strength' keys, and use 'Excess_21d' format
         rs_metrics = pos_raw.get("rs_metrics") or pos_raw.get("relative_strength") or pos_raw
         rs_21d = rs_metrics.get('Excess_21d') or rs_metrics.get('excess_return_21d', 'N/A')
         rs_63d = rs_metrics.get('Excess_63d') or rs_metrics.get('excess_return_63d', 'N/A')
-        self.logger.info(f"[SynthesisV2] POSITION: RS_21d={rs_21d}, "
-                       f"RS_63d={rs_63d}, "
+        rs_126d = rs_metrics.get('Excess_126d') or rs_metrics.get('excess_return_126d', 'N/A')
+        rs_252d = rs_metrics.get('Excess_252d') or rs_metrics.get('excess_return_252d', 'N/A')
+        self.logger.info(f"[SynthesisV2] POSITION SUMMARY: RS_21d={rs_21d}, RS_63d={rs_63d}, "
+                       f"RS_126d={rs_126d}, RS_252d={rs_252d}, "
                        f"Sector={sector_ctx.get('stock_sector', 'N/A')}, "
                        f"Industry={sector_ctx.get('stock_industry', 'N/A')}, "
                        f"has_content={has_pos_content}")
 
-        # Risk - use correct path: raw['stop_loss_recommendations']['atr_based']
+        # Risk - COMPREHENSIVE LOGGING - FIX: ATR is in 'atr_metrics', NOT 'stop_loss_recommendations.atr_based'
         risk_data = step_data.get("risk", {})
         risk_raw = risk_data.get("raw_data", {})
         # FIX: VaR/Volatility are in advanced_metrics, not raw_data
         advanced = risk_data.get("advanced_metrics", {}) or {}
         has_risk_content = bool(risk_data.get("content", ""))
         if risk_raw or advanced:
-            stop_recs = risk_raw.get("stop_loss_recommendations", {}) if risk_raw else {}
-            atr_data = stop_recs.get("atr_based", {})
+            import json
+            self.logger.info(f"[SynthesisV2] RISK RAW DATA (FULL):")
+            self.logger.info(f"  risk_raw keys: {list(risk_raw.keys()) if risk_raw else 'None'}")
+            # Log atr_metrics specifically - this is the key fix
+            atr_metrics = risk_raw.get("atr_metrics", {}) if risk_raw else {}
+            self.logger.info(f"  atr_metrics FULL: {json.dumps(atr_metrics, default=str)}")
+            # Log stop loss levels
+            stop_levels = risk_raw.get("stop_loss_levels", {}) if risk_raw else {}
+            self.logger.info(f"  stop_loss_levels: {json.dumps(stop_levels, default=str)[:500]}")
+            # Log advanced metrics
+            self.logger.info(f"  advanced_metrics keys: {list(advanced.keys()) if advanced else 'None'}")
+            self.logger.info(f"  advanced_metrics FULL: {json.dumps(advanced, indent=2, default=str)[:1500]}")
+
+            atr_value = atr_metrics.get("atr_value") or (risk_raw.get("atr") if risk_raw else None)
+            atr_percent = atr_metrics.get("atr_percent")
+            daily_move = atr_metrics.get("daily_move_dollars")
             # FIX: Get VaR from advanced_metrics first
             var_data = advanced.get("var", {}) or (risk_raw.get("var", {}) if risk_raw else {})
             vol_data = advanced.get("volatility", {}) or (risk_raw.get("volatility", {}) if risk_raw else {})
-            self.logger.info(f"[SynthesisV2] RISK: ATR=${atr_data.get('atr_value', risk_raw.get('atr', 'N/A') if risk_raw else 'N/A')}, "
+            max_dd = advanced.get("max_drawdown", {}) or (risk_raw.get("max_drawdown", {}) if risk_raw else {})
+            self.logger.info(f"[SynthesisV2] RISK SUMMARY: ATR=${atr_value if atr_value else 'N/A'}, "
+                           f"ATR%={atr_percent if atr_percent else 'N/A'}%, "
+                           f"Daily_Move=${daily_move if daily_move else 'N/A'}, "
                            f"VaR={var_data.get('var_percent', 'N/A')}%, "
                            f"Vol(daily)={vol_data.get('daily') or vol_data.get('daily_volatility', 'N/A')}%, "
+                           f"MaxDD={max_dd.get('max_drawdown', 'N/A')}%, "
                            f"Price=${risk_raw.get('current_price', 'N/A') if risk_raw else 'N/A'}, "
                            f"has_content={has_risk_content}, has_advanced_metrics={bool(advanced)}")
         else:
@@ -4889,16 +4945,33 @@ Past performance is not indicative of future results. Investments involve risk, 
         else:
             self.logger.info(f"[SynthesisV2] SENTIMENT: raw_data=None, has_content={has_sent_content}")
 
-        # Fundamental - this path is correct
+        # Fundamental - COMPREHENSIVE LOGGING
         fund_data = step_data.get("fundamental", {})
         fund_raw = fund_data.get("raw_data", {})
         has_fund_content = bool(fund_data.get("content", ""))
         if fund_raw:
+            import json
+            self.logger.info(f"[SynthesisV2] FUNDAMENTAL RAW DATA (FULL):")
+            self.logger.info(f"  fund_raw keys: {list(fund_raw.keys())}")
             report = fund_raw.get("fundamental_report", {})
+            self.logger.info(f"  report keys: {list(report.keys()) if isinstance(report, dict) else 'NOT A DICT'}")
+
             valuation = report.get("valuation", {})
+            profitability = report.get("profitability", {})
             intrinsic = report.get("intrinsic_value", {})
-            self.logger.info(f"[SynthesisV2] FUNDAMENTAL: P/E={valuation.get('pe_ttm', 'N/A')}, "
-                           f"P/S={valuation.get('ps_ttm', 'N/A')}, "
+            growth = report.get("growth", {})
+            financial_health = report.get("financial_health", {})
+
+            self.logger.info(f"  valuation FULL: {json.dumps(valuation, default=str)[:800]}")
+            self.logger.info(f"  profitability FULL: {json.dumps(profitability, default=str)[:500]}")
+            self.logger.info(f"  intrinsic_value FULL: {json.dumps(intrinsic, default=str)[:500]}")
+            self.logger.info(f"  growth FULL: {json.dumps(growth, default=str)[:500]}")
+            self.logger.info(f"  financial_health FULL: {json.dumps(financial_health, default=str)[:500]}")
+
+            self.logger.info(f"[SynthesisV2] FUNDAMENTAL SUMMARY: P/E={valuation.get('pe_ttm', 'N/A')}, "
+                           f"P/S={valuation.get('ps_ttm', 'N/A')}, P/B={valuation.get('pb_ratio', 'N/A')}, "
+                           f"EV/EBITDA={valuation.get('ev_ebitda', 'N/A')}, "
+                           f"ROE={profitability.get('roe', 'N/A')}%, ROA={profitability.get('roa', 'N/A')}%, "
                            f"Graham=${intrinsic.get('graham_value', 'N/A')}, "
                            f"DCF=${intrinsic.get('dcf_value', 'N/A')}, "
                            f"has_content={has_fund_content}")
