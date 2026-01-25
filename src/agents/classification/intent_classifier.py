@@ -52,6 +52,7 @@ from src.utils.config import settings
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 from src.helpers.redis_cache import redis_manager
+from src.utils.circuit_breaker import CircuitBreakerOpenError, get_circuit_breaker
 
 
 # ============================================================================
@@ -365,6 +366,13 @@ class IntentClassifier(LoggerMixin):
     DEFAULT_MODEL = "gpt-4.1-mini"
     DEFAULT_PROVIDER = ProviderType.OPENAI
 
+    # Fallback providers when primary circuit breaker is open
+    # Order matters: first available will be used
+    FALLBACK_PROVIDERS = [
+        {"provider": ProviderType.GEMINI, "model": "gemini-2.0-flash"},
+        # Add more fallback providers here as needed
+    ]
+
     def __init__(
         self,
         model_name: Optional[str] = None,
@@ -428,8 +436,8 @@ class IntentClassifier(LoggerMixin):
                 conversation_summary
             )
 
-            # Call LLM
-            result_data = await self._call_llm(prompt)
+            # Call LLM with primary provider
+            result_data = await self._call_llm_with_fallback(prompt)
 
             # Parse result
             result = self._parse_result(result_data)
@@ -479,7 +487,8 @@ class IntentClassifier(LoggerMixin):
 
         except Exception as e:
             self.logger.error(f"[INTENT_CLASSIFIER] Error: {e}", exc_info=True)
-            return IntentResult.fallback(str(e))
+            # Use heuristic fallback instead of simple fallback
+            return self._heuristic_fallback(query, ui_context, working_memory_symbols, str(e))
 
     def _build_prompt(
         self,
@@ -820,13 +829,35 @@ NVDA is a stock. General analysis request → analysis_type is "technical" (defa
 Now analyze the query and provide your classification:
 """
 
-    async def _call_llm(self, prompt: str) -> Dict[str, Any]:
-        """Call LLM and parse response."""
+    async def _call_llm(
+        self,
+        prompt: str,
+        provider_type: Optional[str] = None,
+        model_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call LLM and parse response.
+
+        Args:
+            prompt: The classification prompt
+            provider_type: Override provider (for fallback)
+            model_name: Override model name (for fallback)
+
+        Returns:
+            Parsed classification result dict
+
+        Raises:
+            CircuitBreakerOpenError: If circuit breaker is open
+            RuntimeError: If all retries failed
+        """
+        use_provider = provider_type or self.provider_type
+        use_model = model_name or self.model_name
+        use_api_key = ModelProviderFactory._get_api_key(use_provider)
 
         for attempt in range(self.max_retries + 1):
             try:
                 params = {
-                    "model_name": self.model_name,
+                    "model_name": use_model,
                     "messages": [
                         {
                             "role": "system",
@@ -837,8 +868,8 @@ Now analyze the query and provide your classification:
                         },
                         {"role": "user", "content": prompt},
                     ],
-                    "provider_type": self.provider_type,
-                    "api_key": self.api_key,
+                    "provider_type": use_provider,
+                    "api_key": use_api_key,
                     "max_tokens": 1000,
                     "temperature": 0.1,
                 }
@@ -866,6 +897,9 @@ Now analyze the query and provide your classification:
                 result["reasoning"] = reasoning
                 return result
 
+            except CircuitBreakerOpenError:
+                # Don't retry on circuit breaker - propagate immediately
+                raise
             except json.JSONDecodeError as e:
                 self.logger.warning(
                     f"[INTENT_CLASSIFIER] JSON parse error (attempt {attempt + 1}): {e}"
@@ -880,6 +914,94 @@ Now analyze the query and provide your classification:
                     raise
 
         raise RuntimeError("Failed to classify after retries")
+
+    async def _call_llm_with_fallback(self, prompt: str) -> Dict[str, Any]:
+        """
+        Call LLM with automatic fallback to secondary providers.
+
+        Tries primary provider first. If circuit breaker is open,
+        automatically tries fallback providers in order.
+
+        Args:
+            prompt: The classification prompt
+
+        Returns:
+            Parsed classification result dict
+
+        Raises:
+            CircuitBreakerOpenError: If ALL providers' circuits are open
+            Exception: If all providers fail with other errors
+        """
+        # Track which providers we've tried
+        providers_tried = []
+        last_error = None
+
+        # 1. Try primary provider first
+        try:
+            self.logger.debug(
+                f"[INTENT_CLASSIFIER] Trying primary provider: {self.provider_type}"
+            )
+            return await self._call_llm(prompt)
+        except CircuitBreakerOpenError as e:
+            providers_tried.append(self.provider_type)
+            last_error = e
+            self.logger.warning(
+                f"[INTENT_CLASSIFIER] Primary provider circuit open: {e.service_name}, "
+                f"trying fallback providers..."
+            )
+        except Exception as e:
+            # For non-circuit-breaker errors, don't fallback (could be prompt issue)
+            raise
+
+        # 2. Try fallback providers
+        for fallback in self.FALLBACK_PROVIDERS:
+            fallback_provider = fallback["provider"]
+            fallback_model = fallback["model"]
+
+            # Skip if same as primary
+            if fallback_provider == self.provider_type:
+                continue
+
+            try:
+                self.logger.info(
+                    f"[INTENT_CLASSIFIER] Trying fallback provider: {fallback_provider} "
+                    f"with model: {fallback_model}"
+                )
+                result = await self._call_llm(
+                    prompt,
+                    provider_type=fallback_provider,
+                    model_name=fallback_model,
+                )
+                self.logger.info(
+                    f"[INTENT_CLASSIFIER] Fallback provider succeeded: {fallback_provider}"
+                )
+                return result
+
+            except CircuitBreakerOpenError as e:
+                providers_tried.append(fallback_provider)
+                last_error = e
+                self.logger.warning(
+                    f"[INTENT_CLASSIFIER] Fallback provider circuit also open: {e.service_name}"
+                )
+                continue
+            except Exception as e:
+                # Log but continue to next fallback
+                self.logger.warning(
+                    f"[INTENT_CLASSIFIER] Fallback provider {fallback_provider} failed: {e}"
+                )
+                last_error = e
+                continue
+
+        # 3. All providers failed
+        providers_str = ", ".join(str(p) for p in providers_tried)
+        self.logger.error(
+            f"[INTENT_CLASSIFIER] All providers failed. Tried: {providers_str}"
+        )
+
+        # Re-raise the last error (preferably CircuitBreakerOpenError for clarity)
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"All classification providers failed: {providers_str}")
 
     def _parse_result(self, data: Dict[str, Any]) -> IntentResult:
         """Parse LLM response into IntentResult."""
@@ -1016,6 +1138,170 @@ Now analyze the query and provide your classification:
         self.logger.info(f"  ├─ Analysis Type: {result.analysis_type.value}")
         self.logger.info(f"  ├─ Requires Tools: {result.requires_tools}")
         self.logger.info(f"  └─ ⏱️ Time: {elapsed_ms}ms")
+
+    def _heuristic_fallback(
+        self,
+        query: str,
+        ui_context: Optional[Dict[str, Any]],
+        working_memory_symbols: Optional[List[str]],
+        error_reason: str,
+    ) -> IntentResult:
+        """
+        Rule-based classification fallback when all LLM providers fail.
+
+        Uses regex patterns and keyword matching to provide a best-effort
+        classification. This ensures the system can still function even
+        when all LLM services are unavailable.
+
+        Args:
+            query: User query
+            ui_context: UI context (active_tab, etc.)
+            working_memory_symbols: Symbols from previous turns
+            error_reason: Why LLM classification failed
+
+        Returns:
+            IntentResult with heuristic classification
+        """
+        self.logger.warning(
+            f"[INTENT_CLASSIFIER] Using heuristic fallback due to: {error_reason}"
+        )
+
+        query_lower = query.lower()
+
+        # =====================================================================
+        # 1. Extract symbols using regex patterns
+        # =====================================================================
+        # Match 1-5 uppercase letters that look like tickers
+        potential_symbols = re.findall(r'\b[A-Z]{1,5}\b', query)
+
+        # Filter out common non-symbol words
+        non_symbols = {
+            "I", "A", "THE", "AND", "OR", "FOR", "TO", "OF", "IN", "ON",
+            "IS", "IT", "AT", "BY", "BE", "AS", "AN", "SO", "IF", "NO",
+            "YES", "OK", "HI", "RSI", "MACD", "SMA", "EMA", "ATR", "DCF",
+            "PE", "PB", "ROE", "ROA", "EPS", "CEO", "CFO", "IPO", "ETF",
+        }
+        validated_symbols = [s for s in potential_symbols if s not in non_symbols]
+
+        # If no symbols found, try working memory
+        if not validated_symbols and working_memory_symbols:
+            # Check if query references previous context
+            reference_words = [
+                "này", "đó", "nó", "this", "that", "it", "the stock",
+                "company", "công ty", "cổ phiếu", "symbol", "mã"
+            ]
+            if any(ref in query_lower for ref in reference_words):
+                validated_symbols = working_memory_symbols.copy()
+                self.logger.info(
+                    f"[HEURISTIC] Inherited symbols from working memory: {validated_symbols}"
+                )
+
+        # =====================================================================
+        # 2. Detect market type
+        # =====================================================================
+        crypto_keywords = [
+            "bitcoin", "btc", "ethereum", "eth", "crypto", "coin",
+            "solana", "sol", "binance", "defi", "blockchain"
+        ]
+        is_crypto = any(kw in query_lower for kw in crypto_keywords)
+
+        # Check UI context for market type hint
+        active_tab = ui_context.get("active_tab", "none") if ui_context else "none"
+        if active_tab == "crypto":
+            market_type = IntentMarketType.CRYPTO
+        elif active_tab == "stock" or not is_crypto:
+            market_type = IntentMarketType.STOCK if validated_symbols else IntentMarketType.NONE
+        else:
+            market_type = IntentMarketType.CRYPTO
+
+        # =====================================================================
+        # 3. Detect if tools are needed
+        # =====================================================================
+        tool_keywords = [
+            "price", "giá", "quote", "analysis", "phân tích",
+            "news", "tin", "chart", "biểu đồ", "technical", "kỹ thuật",
+            "fundamental", "cơ bản", "financial", "tài chính",
+            "report", "báo cáo", "earnings", "revenue", "doanh thu",
+            "compare", "so sánh", "screen", "lọc", "search", "tìm"
+        ]
+        requires_tools = (
+            len(validated_symbols) > 0 or
+            any(kw in query_lower for kw in tool_keywords)
+        )
+
+        # =====================================================================
+        # 4. Detect greeting/conversational queries (no tools needed)
+        # =====================================================================
+        greeting_patterns = [
+            "hello", "hi", "xin chào", "chào", "thanks", "cảm ơn",
+            "thank you", "bye", "goodbye", "tạm biệt", "help", "giúp"
+        ]
+        is_greeting = any(pattern in query_lower for pattern in greeting_patterns)
+        if is_greeting and not validated_symbols:
+            requires_tools = False
+
+        # =====================================================================
+        # 5. Detect analysis type
+        # =====================================================================
+        analysis_type = AnalysisType.GENERAL
+
+        if validated_symbols:
+            # Check for specific analysis types
+            if any(kw in query_lower for kw in ["rsi", "macd", "sma", "ema", "kỹ thuật", "technical", "chart"]):
+                analysis_type = AnalysisType.TECHNICAL
+            elif any(kw in query_lower for kw in ["pe", "pb", "roe", "earnings", "financial", "tài chính", "cơ bản"]):
+                analysis_type = AnalysisType.FUNDAMENTAL
+            elif any(kw in query_lower for kw in ["dcf", "định giá", "valuation", "fair value", "graham"]):
+                analysis_type = AnalysisType.VALUATION
+            elif any(kw in query_lower for kw in ["compare", "so sánh", "vs", "versus"]):
+                analysis_type = AnalysisType.COMPARISON
+            elif any(kw in query_lower for kw in ["portfolio", "danh mục", "allocation"]):
+                analysis_type = AnalysisType.PORTFOLIO
+            elif any(kw in query_lower for kw in ["backtest", "strategy", "chiến lược"]):
+                analysis_type = AnalysisType.BACKTEST
+            else:
+                analysis_type = AnalysisType.BASIC
+
+        # =====================================================================
+        # 6. Detect language
+        # =====================================================================
+        vietnamese_chars = set("àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ")
+        has_vietnamese = any(c in vietnamese_chars for c in query_lower)
+        response_language = "vi" if has_vietnamese else "en"
+
+        # =====================================================================
+        # 7. Build result
+        # =====================================================================
+        complexity = IntentComplexity.AGENT_LOOP if requires_tools else IntentComplexity.DIRECT
+
+        # Build intent summary
+        if validated_symbols:
+            intent_summary = f"Query about {', '.join(validated_symbols)}"
+        elif is_greeting:
+            intent_summary = "Greeting or conversational"
+        else:
+            intent_summary = "General query"
+
+        result = IntentResult(
+            intent_summary=intent_summary,
+            reasoning=f"Heuristic fallback (LLM unavailable: {error_reason[:100]})",
+            validated_symbols=validated_symbols,
+            market_type=market_type,
+            complexity=complexity,
+            requires_tools=requires_tools,
+            analysis_type=analysis_type,
+            response_language=response_language,
+            confidence=0.6,  # Lower confidence for heuristic
+            query_type="stock_analysis" if validated_symbols else "general",
+            classification_method="heuristic_fallback",
+        )
+
+        self.logger.info(
+            f"[HEURISTIC] Result: symbols={validated_symbols}, "
+            f"requires_tools={requires_tools}, market={market_type.value}"
+        )
+
+        return result
 
 
 # ============================================================================
