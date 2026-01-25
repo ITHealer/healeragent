@@ -2723,17 +2723,35 @@ Respond naturally and helpfully while staying in character."""
                         self.logger.info(f"[{flow_id}] Using existing response content ({len(assistant_content)} chars)")
 
                         # Simulate streaming by yielding content in chunks
-                        # Split by sentences/paragraphs for natural streaming feel
+                        # IMPORTANT: Preserve markdown formatting (especially \n\n before headers)
                         import re
-                        # Split on sentence boundaries while keeping the delimiter
-                        chunks = [c for c in re.split(r'(?<=[.!?。\n])\s*', assistant_content) if c.strip()]
+
+                        # Strategy: Split by paragraphs first (preserve \n\n), then by sentences within each paragraph
+                        # This ensures markdown headers get proper spacing
+                        paragraphs = re.split(r'(\n{2,})', assistant_content)  # Capture the newlines
+
+                        chunks = []
+                        for para in paragraphs:
+                            if not para:
+                                continue
+                            # If it's just newlines, keep it as-is (preserve markdown spacing)
+                            if para.strip() == '':
+                                chunks.append(para)
+                            else:
+                                # Split paragraph into sentences, keeping the punctuation
+                                # Use findall to keep delimiters attached to the sentence
+                                sentences = re.findall(r'[^.!?。\n]+[.!?。]?\s*|\n', para)
+                                chunks.extend([s for s in sentences if s])
+
+                        # Filter out empty chunks but keep whitespace-only chunks (for \n\n)
+                        chunks = [c for c in chunks if c]
                         total_chunks = len(chunks)
 
                         for i, chunk in enumerate(chunks):
                             is_last = (i == total_chunks - 1) and not all_web_citations
                             yield {
                                 "type": "content",
-                                "content": chunk + (" " if not is_last else ""),
+                                "content": chunk,
                                 "is_final": is_last
                             }
 
