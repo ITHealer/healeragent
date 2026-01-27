@@ -80,6 +80,16 @@ NEWS_TOOL_NAMES = {
     "getEarningsCalendar",
 }
 
+# ============================================================================
+# STREAMING CONFIGURATION
+# ============================================================================
+# Max tokens for streaming responses - high limit to allow comprehensive analysis
+# This applies to final synthesis streaming (ChatGPT/Claude architecture)
+STREAMING_MAX_TOKENS = 32000
+
+# Temperature for final synthesis (lower = more focused, higher = more creative)
+STREAMING_TEMPERATURE = 0.3
+
 
 # ============================================================================
 # THINK TOOL DEFINITION
@@ -967,17 +977,14 @@ IMPORTANT:
                         "content": "All data gathered - generating comprehensive response",
                     }
 
-                # Fixed max_tokens as safety cutoff - output length controlled by system prompt
-                # Per OpenAI: "max_tokens is a hard cutoff limit, not a length control"
-                MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
-
+                # Use centralized streaming config constants
                 async for chunk in self.llm_provider.stream_response(
                     model_name=effective_model,
                     messages=messages,
                     provider_type=effective_provider,
                     api_key=self.api_key,
-                    max_tokens=MAX_RESPONSE_TOKENS,
-                    temperature=0.3,
+                    max_tokens=STREAMING_MAX_TOKENS,
+                    temperature=STREAMING_TEMPERATURE,
                 ):
                     yield {"type": "content", "content": chunk, "is_final": False}
 
@@ -1093,16 +1100,14 @@ IMPORTANT:
 - End with 2-3 follow-up questions""",
         })
 
-        # Fixed max_tokens as safety cutoff - length controlled by system prompt
-        MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
-
+        # Use centralized streaming config constants
         async for chunk in self.llm_provider.stream_response(
             model_name=effective_model,
             messages=messages,
             provider_type=effective_provider,
             api_key=self.api_key,
-            max_tokens=MAX_RESPONSE_TOKENS,
-            temperature=0.3,
+            max_tokens=STREAMING_MAX_TOKENS,
+            temperature=STREAMING_TEMPERATURE,
         ):
             yield {"type": "content", "content": chunk, "is_final": False}
 
@@ -2717,67 +2722,58 @@ Respond naturally and helpfully while staying in character."""
                             "content": "Agent decided no more tools needed - generating final response",
                         }
 
-                    # If we already have content from the first LLM call, yield it directly
-                    # This avoids making a second streaming call which can lose content (especially with Gemini)
-                    if assistant_content and len(assistant_content) > 100:
-                        self.logger.info(f"[{flow_id}] Using existing response content ({len(assistant_content)} chars)")
+                    # ============================================================
+                    # REAL STREAMING ARCHITECTURE (ChatGPT/Claude Style)
+                    # ============================================================
+                    # ALWAYS use native streaming for final synthesis.
+                    # This ensures proper real-time UX regardless of provider.
+                    #
+                    # Previous approach (fake streaming):
+                    # - Used cached content from non-streaming call
+                    # - Split into fake chunks → poor UX, not real streaming
+                    #
+                    # Current approach (real streaming):
+                    # - Always call streaming API for final response
+                    # - Real chunks from LLM provider → proper streaming UX
+                    # - Works consistently for OpenAI, Gemini, Claude
+                    # ============================================================
 
-                        # Simulate streaming by yielding content in chunks
-                        # IMPORTANT: Preserve markdown formatting (especially \n\n before headers)
-                        import re
+                    # Build synthesis prompt to guide final response generation
+                    synthesis_instruction = """Please provide your COMPREHENSIVE final response based on all the information gathered.
 
-                        # Strategy: Split by paragraphs first (preserve \n\n), then by sentences within each paragraph
-                        # This ensures markdown headers get proper spacing
-                        paragraphs = re.split(r'(\n{2,})', assistant_content)  # Capture the newlines
+IMPORTANT:
+- Include ALL important data points and numbers from tool results
+- For financial queries: provide price, technical signals, fundamental metrics
+- Give clear insights and actionable recommendations
+- Be thorough - don't truncate or summarize important details
+- Use proper markdown formatting for readability"""
 
-                        chunks = []
-                        for para in paragraphs:
-                            if not para:
-                                continue
-                            # If it's just newlines, keep it as-is (preserve markdown spacing)
-                            if para.strip() == '':
-                                chunks.append(para)
-                            else:
-                                # Split paragraph into sentences, keeping the punctuation
-                                # Use findall to keep delimiters attached to the sentence
-                                sentences = re.findall(r'[^.!?。\n]+[.!?。]?\s*|\n', para)
-                                chunks.extend([s for s in sentences if s])
+                    # Add synthesis instruction as user message
+                    messages.append({
+                        "role": "user",
+                        "content": synthesis_instruction
+                    })
 
-                        # Filter out empty chunks but keep whitespace-only chunks (for \n\n)
-                        chunks = [c for c in chunks if c]
-                        total_chunks = len(chunks)
+                    self.logger.info(
+                        f"[{flow_id}] 🎯 REAL STREAMING: Starting final synthesis "
+                        f"(max_tokens={STREAMING_MAX_TOKENS}, provider={effective_provider})"
+                    )
 
-                        for i, chunk in enumerate(chunks):
-                            is_last = (i == total_chunks - 1) and not all_web_citations
-                            yield {
-                                "type": "content",
-                                "content": chunk,
-                                "is_final": is_last
-                            }
+                    chunk_count = 0
+                    async for chunk in self.llm_provider.stream_response(
+                        model_name=effective_model,
+                        messages=messages,
+                        provider_type=effective_provider,
+                        api_key=self.api_key,
+                        max_tokens=STREAMING_MAX_TOKENS,
+                        temperature=STREAMING_TEMPERATURE,
+                    ):
+                        chunk_count += 1
+                        yield {"type": "content", "content": chunk, "is_final": False}
 
-                        self.logger.info(f"[{flow_id}] Yielded existing content: {total_chunks} chunks")
-                    else:
-                        # No content from first call - need to make streaming call
-                        messages.append({"role": "assistant", "content": assistant_content})
-
-                        # High limit - let model generate full responses
-                        MAX_RESPONSE_TOKENS = 32000
-
-                        self.logger.info(f"[{flow_id}] Streaming final response (max_tokens={MAX_RESPONSE_TOKENS})")
-                        content_chunks = []
-                        async for chunk in self.llm_provider.stream_response(
-                            model_name=effective_model,
-                            messages=messages,
-                            provider_type=effective_provider,
-                            api_key=self.api_key,
-                            max_tokens=MAX_RESPONSE_TOKENS,
-                            temperature=0.3,
-                        ):
-                            content_chunks.append(chunk)
-                            # Emit chunks as they come, mark all as not final initially
-                            yield {"type": "content", "content": chunk, "is_final": False}
-
-                        self.logger.info(f"[{flow_id}] Final response streamed: {len(content_chunks)} chunks")
+                    self.logger.info(
+                        f"[{flow_id}] ✅ REAL STREAMING complete: {chunk_count} chunks streamed"
+                    )
 
                     # ============================================================
                     # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
@@ -3077,23 +3073,27 @@ IMPORTANT:
 - End with 2-3 follow-up questions""",
             })
 
-            # Fixed max_tokens as safety cutoff - length controlled by system prompt
-            MAX_RESPONSE_TOKENS = 32000  # High limit - let model generate full responses
+            # Use centralized streaming config constants
+            self.logger.info(
+                f"[{flow_id}] 🎯 REAL STREAMING (max_turns): Starting final synthesis "
+                f"(max_tokens={STREAMING_MAX_TOKENS}, provider={effective_provider})"
+            )
 
-            self.logger.info(f"[{flow_id}] Streaming final response after max_turns (max_tokens={MAX_RESPONSE_TOKENS})")
-            content_chunks = 0
+            chunk_count = 0
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
                 messages=messages,
                 provider_type=effective_provider,
                 api_key=self.api_key,
-                max_tokens=MAX_RESPONSE_TOKENS,
-                temperature=0.3,
+                max_tokens=STREAMING_MAX_TOKENS,
+                temperature=STREAMING_TEMPERATURE,
             ):
-                content_chunks += 1
+                chunk_count += 1
                 yield {"type": "content", "content": chunk, "is_final": False}
 
-            self.logger.info(f"[{flow_id}] Final response after max_turns: {content_chunks} chunks")
+            self.logger.info(
+                f"[{flow_id}] ✅ REAL STREAMING (max_turns) complete: {chunk_count} chunks"
+            )
 
             # ============================================================
             # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
