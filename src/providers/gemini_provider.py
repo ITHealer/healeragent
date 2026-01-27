@@ -60,10 +60,20 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
         Returns:
             Response dict with content and optional tool_calls
         """
+        import time
+
         if not self.model:
             await self.initialize()
 
         try:
+            # Log request details
+            msg_count = len(messages)
+            total_chars = sum(len(m.get('content', '') or '') for m in messages)
+            self.logger.debug(
+                f"[GEMINI] Generate | model={self.model_name} | msgs={msg_count} | "
+                f"~{total_chars} chars | params={list(kwargs.keys())}"
+            )
+
             # Convert messages from OpenAI format to Gemini format
             gemini_messages = self._convert_messages(messages)
 
@@ -80,7 +90,8 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                         f"[GEMINI] Converted {len(openai_tools)} tools to Gemini format"
                     )
 
-            # Make the API call
+            # Make the API call with timing
+            start_time = time.time()
             if gemini_tools:
                 response = await self.model.generate_content_async(
                     gemini_messages,
@@ -92,50 +103,137 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                     gemini_messages,
                     generation_config=generation_config,
                 )
+            elapsed = time.time() - start_time
+
+            self.logger.debug(
+                f"[GEMINI] Generate done | {elapsed:.2f}s | model={self.model_name}"
+            )
 
             return self._format_response(response)
 
         except Exception as e:
-            self.logger.error(f"Error generating Gemini completion: {str(e)}")
+            error_type = type(e).__name__
+            self.logger.error(
+                f"[GEMINI] Generate failed | model={self.model_name} | "
+                f"type={error_type} | error={str(e)}"
+            )
             raise
 
     async def stream(self, messages: List[Dict[str, str]], **kwargs) -> AsyncGenerator[str, None]:
-        """Stream response chunks (text only, no tool calling in stream mode)"""
+        """
+        Stream response chunks with retry logic and comprehensive error handling.
+
+        Features:
+        - Retry with exponential backoff for transient errors
+        - Specific handling for rate limits, quota errors, safety blocks
+        - TTFT (Time-To-First-Token) logging for performance monitoring
+        - Graceful handling of FunctionCall chunks in stream mode
+        """
+        import time
+        import asyncio
+
         if not self.model:
             await self.initialize()
 
-        try:
-            gemini_messages = self._convert_messages(messages)
+        max_retries = 3
+        base_delay = 1.0  # seconds
 
-            stream = await self.model.generate_content_async(
-                gemini_messages,
-                generation_config=self._convert_params(kwargs),
-                stream=True
-            )
+        msg_count = len(messages)
+        total_chars = sum(len(m.get('content', '') or '') for m in messages)
+        generation_config = self._convert_params(kwargs)
 
-            async for chunk in stream:
-                # Handle chunks that may contain FunctionCall instead of text
-                # chunk.text raises ValueError if no valid text Part exists
-                try:
-                    if hasattr(chunk, 'text') and chunk.text:
-                        yield chunk.text
-                except ValueError:
-                    # This happens when response contains FunctionCall instead of text
-                    # For Gemini 2.5+, finish_reason=10 means invalid FunctionCall
-                    # Log and continue - the caller should handle function calls separately
-                    if hasattr(chunk, 'candidates') and chunk.candidates:
-                        candidate = chunk.candidates[0]
-                        finish_reason = getattr(candidate, 'finish_reason', None)
-                        if finish_reason:
-                            self.logger.warning(
-                                f"[GEMINI] Stream chunk has no text (finish_reason={finish_reason}). "
-                                f"Response may contain FunctionCall instead of text."
-                            )
-                    continue
+        self.logger.debug(
+            f"[GEMINI] Stream | model={self.model_name} | msgs={msg_count} | "
+            f"~{total_chars} chars | config={generation_config}"
+        )
 
-        except Exception as e:
-            self.logger.error(f"Error streaming Gemini completion: {str(e)}")
-            raise
+        for attempt in range(max_retries):
+            try:
+                gemini_messages = self._convert_messages(messages)
+
+                stream_start = time.time()
+                stream = await self.model.generate_content_async(
+                    gemini_messages,
+                    generation_config=generation_config,
+                    stream=True
+                )
+
+                first_chunk = True
+                chunk_count = 0
+
+                async for chunk in stream:
+                    # Handle chunks that may contain FunctionCall instead of text
+                    try:
+                        if hasattr(chunk, 'text') and chunk.text:
+                            if first_chunk:
+                                ttft = time.time() - stream_start
+                                self.logger.debug(
+                                    f"[GEMINI] First chunk | TTFT={ttft:.2f}s | model={self.model_name}"
+                                )
+                                first_chunk = False
+                            chunk_count += 1
+                            yield chunk.text
+                    except ValueError:
+                        # Response contains FunctionCall instead of text
+                        if hasattr(chunk, 'candidates') and chunk.candidates:
+                            candidate = chunk.candidates[0]
+                            finish_reason = getattr(candidate, 'finish_reason', None)
+                            if finish_reason:
+                                self.logger.warning(
+                                    f"[GEMINI] Stream chunk has no text "
+                                    f"(finish_reason={finish_reason}). "
+                                    f"May contain FunctionCall."
+                                )
+                        continue
+
+                # Log stream completion
+                total_time = time.time() - stream_start
+                self.logger.debug(
+                    f"[GEMINI] Stream complete | chunks={chunk_count} | "
+                    f"total={total_time:.2f}s | model={self.model_name}"
+                )
+                return  # Success, exit retry loop
+
+            except Exception as e:
+                error_msg = str(e).lower()
+                error_type = type(e).__name__
+
+                # Determine if error is retryable
+                is_rate_limit = any(x in error_msg for x in [
+                    'rate limit', 'quota', '429', 'resource exhausted'
+                ])
+                is_transient = any(x in error_msg for x in [
+                    'timeout', 'connection', 'unavailable', '503', '500'
+                ])
+                is_safety_block = any(x in error_msg for x in [
+                    'safety', 'blocked', 'harm'
+                ])
+
+                # Log with appropriate level
+                if is_safety_block:
+                    self.logger.warning(
+                        f"[GEMINI] Content blocked by safety filter | "
+                        f"model={self.model_name} | error={error_type}"
+                    )
+                    raise  # Don't retry safety blocks
+
+                if is_rate_limit or is_transient:
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff
+                        self.logger.warning(
+                            f"[GEMINI] Retryable error (attempt {attempt + 1}/{max_retries}) | "
+                            f"type={error_type} | retry in {delay:.1f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                # Non-retryable or max retries reached
+                self.logger.error(
+                    f"[GEMINI] Stream failed | model={self.model_name} | "
+                    f"type={error_type} | attempt={attempt + 1}/{max_retries} | "
+                    f"error={str(e)}"
+                )
+                raise
 
     def supports_feature(self, feature_name: str) -> bool:
         """Check if provider supports a specific feature"""

@@ -68,13 +68,13 @@ class StreamingConfig:
 
     # Content limits
     max_tool_preview_length: int = 500
-    
+
     # Buffer settings
     text_chunk_min_size: int = 5  # Minimum chars before emitting text chunk
-    
+
     # Persistence
     save_messages: bool = True
-    
+
     # Context compaction (matching ChatHandler)
     enable_compaction: bool = True
     max_context_tokens: int = 80000  # tokens
@@ -83,6 +83,10 @@ class StreamingConfig:
     cancellation_check_interval: float = 0.1
     enable_heartbeat: bool = True
     heartbeat_interval: int = 30
+
+    # LLM generation settings
+    max_output_tokens: int = 8192  # Max tokens for response generation
+    temperature: float = 0.7  # Default temperature for response
 
 
 class CancellationToken:
@@ -1633,18 +1637,28 @@ IMPORTANT: Analyze ONLY these symbol(s). Do NOT confuse with history!
         
         from src.providers.provider_factory import ModelProviderFactory
         api_key = ModelProviderFactory._get_api_key(provider_type)
-        
+
         complete_response = ""
         char_buffer = ""
         start_time = time.time()
-        
-        async for chunk in self.llm_provider.stream_response(
-            model_name=model_name,
-            messages=messages,
-            provider_type=provider_type,
-            api_key=api_key,
-            clean_thinking=True
-        ):
+
+        # Prepare streaming parameters with max_tokens
+        stream_params = {
+            "model_name": model_name,
+            "messages": messages,
+            "provider_type": provider_type,
+            "api_key": api_key,
+            "clean_thinking": True,
+            "max_tokens": self.config.max_output_tokens,
+            "temperature": self.config.temperature,
+        }
+
+        self.logger.debug(
+            f"[{flow_id}] LLM stream params | model={model_name} | "
+            f"max_tokens={self.config.max_output_tokens} | msgs={len(messages)}"
+        )
+
+        async for chunk in self.llm_provider.stream_response(**stream_params):
             if chunk:
                 char_buffer += chunk
                 
