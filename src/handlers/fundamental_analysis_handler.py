@@ -1469,10 +1469,10 @@ Focus on the most significant trends and their implications for investors."""
             dcf_val = intrinsic_value.get('dcf_value')
             current_price = intrinsic_value.get('current_price')
             verdict = intrinsic_value.get('verdict', 'N/A')
-            pe_analysis = intrinsic_value.get('pe_analysis', {})
-            methodology_notes = intrinsic_value.get('methodology_notes', [])
-            dcf_details = intrinsic_value.get('dcf_details', {})
-            graham_details = intrinsic_value.get('graham_details', {})
+            pe_analysis = intrinsic_value.get('pe_analysis') or {}
+            methodology_notes = intrinsic_value.get('methodology_notes') or []
+            dcf_details = intrinsic_value.get('dcf_details') or {}
+            graham_details = intrinsic_value.get('graham_details') or {}
 
             # Pre-format values to handle None safely
             price_str = f"${current_price:.2f}" if current_price else "N/A"
