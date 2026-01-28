@@ -472,6 +472,36 @@ class UIContextRequest(BaseModel):
     )
 
 
+class ReplyContext(BaseModel):
+    """
+    Context for when user replies to a specific part of a previous message.
+
+    This enables the "reply to message" feature where users can click on
+    highlighted text (like a company name or data point) to ask follow-up
+    questions about that specific content.
+
+    Example:
+        User sees response: "Microsoft (MSFT) is trading at $450..."
+        User clicks on "Microsoft (MSFT)" and types: "tìm hiểu rõ hơn"
+        -> reply_to.content = "Microsoft (MSFT)"
+        -> query = "tìm hiểu rõ hơn"
+    """
+    content: str = Field(
+        ...,
+        description="The text/content being replied to from previous message",
+        examples=["Microsoft (MSFT)", "P/E ratio of 35.2", "RSI is overbought at 78"]
+    )
+    message_id: Optional[str] = Field(
+        default=None,
+        description="Optional ID of the message being replied to for tracking"
+    )
+    context_type: Optional[str] = Field(
+        default=None,
+        description="Type of content: 'symbol', 'metric', 'statement', 'data_point'",
+        examples=["symbol", "metric", "statement", "data_point"]
+    )
+
+
 class ChatRequest(BaseModel):
     """Chat request schema."""
 
@@ -551,6 +581,12 @@ class ChatRequest(BaseModel):
     images: Optional[List[ImageInput]] = Field(
         default=None,
         description="Optional list of images for multimodal analysis (charts, screenshots, financial reports)"
+    )
+    # Reply context: when user replies to a specific part of previous message
+    reply_to: Optional[ReplyContext] = Field(
+        default=None,
+        description="Context when user replies to specific content from previous message. "
+                    "Used for follow-up questions about highlighted text like company names, metrics, etc."
     )
 
     class Config:
@@ -679,6 +715,57 @@ async def _load_conversation_history(session_id: str, limit: int = 10) -> List[D
     except Exception as e:
         _logger.warning(f"[CHAT] Failed to load conversation history: {e}")
         return []
+
+
+def _format_query_with_reply_context(
+    query: str,
+    reply_to: Optional["ReplyContext"],
+) -> str:
+    """
+    Format user query with reply context for better LLM understanding.
+
+    When user replies to a specific part of a previous message (e.g., clicking
+    on "Microsoft (MSFT)" highlighted text and asking "tìm hiểu rõ hơn"),
+    this function formats the query to include that context.
+
+    Args:
+        query: The user's current question/message
+        reply_to: Optional ReplyContext containing the content being replied to
+
+    Returns:
+        Formatted query string with reply context if applicable
+
+    Example:
+        Input:
+            query = "tìm hiểu rõ hơn"
+            reply_to.content = "Microsoft (MSFT)"
+        Output:
+            "[Regarding: Microsoft (MSFT)]
+
+            tìm hiểu rõ hơn"
+    """
+    if not reply_to or not reply_to.content:
+        return query
+
+    # Clean the replied content (remove excessive whitespace)
+    replied_content = reply_to.content.strip()
+
+    # Truncate very long replied content (keep it readable)
+    if len(replied_content) > 500:
+        replied_content = replied_content[:500] + "..."
+
+    # Format with clear context marker that LLM can understand
+    # Using a format that works well across different languages
+    formatted_query = f"""[Regarding: {replied_content}]
+
+{query}"""
+
+    _logger.debug(
+        f"[CHAT] Reply context applied: replied_to='{replied_content[:50]}...' "
+        f"query='{query[:50]}...'"
+    )
+
+    return formatted_query
 
 
 # =============================================================================
@@ -962,7 +1049,18 @@ async def stream_chat_legacy(
             detail="Either question_input or images must be provided"
         )
 
-    query = data.query or "Analyze this image"
+    # Default query for image-only requests
+    raw_query = data.query or "Analyze this image"
+
+    # Apply reply context if user is replying to specific content
+    query = _format_query_with_reply_context(raw_query, data.reply_to)
+
+    if data.reply_to:
+        _logger.info(
+            f"[CHAT] Reply context detected: "
+            f"replied_to='{data.reply_to.content[:80]}...' | "
+            f"type={data.reply_to.context_type or 'unknown'}"
+        )
 
     session_id = data.session_id
     if not session_id:
@@ -1205,7 +1303,18 @@ async def stream_chat_v2(
         )
 
     # Default query for image-only requests
-    query = data.query or "Analyze this image"
+    raw_query = data.query or "Analyze this image"
+
+    # Apply reply context if user is replying to specific content
+    # This formats the query to include context about what's being referred to
+    query = _format_query_with_reply_context(raw_query, data.reply_to)
+
+    if data.reply_to:
+        _logger.info(
+            f"[CHAT/V2] Reply context detected: "
+            f"replied_to='{data.reply_to.content[:80]}...' | "
+            f"type={data.reply_to.context_type or 'unknown'}"
+        )
 
     session_id = data.session_id
     if not session_id:
