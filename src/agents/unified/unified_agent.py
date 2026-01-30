@@ -2937,8 +2937,15 @@ IMPORTANT:
                     called_tool_names <= {"tool_search"}
                 )
 
+                # AUTO web search triggers ONLY when news tools are called
+                # (to supplement news with broader web context).
+                # When enable_web_search=True, the LLM can call webSearch itself
+                # via the prompt instruction — no need to force it automatically.
+                # This prevents unnecessary web searches when internal data tools
+                # (getStockPrice, getTechnicalIndicators, etc.) already provide
+                # sufficient real-time data.
                 should_auto_search = (
-                    (enable_web_search or news_tools_called) and
+                    news_tools_called and
                     not web_search_already_called and
                     not web_search_ever_called and
                     not is_discovery_only_turn  # Don't block during tool discovery
@@ -2962,7 +2969,7 @@ IMPORTANT:
                             enable_streaming=enable_reasoning,
                         )
                     )
-                elif is_discovery_only_turn and (enable_web_search or news_tools_called):
+                elif is_discovery_only_turn and news_tools_called:
                     self.logger.info(
                         f"[{flow_id}] 🌐 AUTO WEB SEARCH deferred: "
                         f"discovery-only turn (tool_search), will trigger on next data turn"
@@ -3316,49 +3323,59 @@ is a critical error. Always think first, act second."""
 
         # Add web search instruction based on mode
         if enable_web_search:
-            # FORCED mode: always use web search
+            # ENABLED mode: web search available but INTERNAL TOOLS FIRST
             system_prompt += """
 
-**Web Search (⚠️ MANDATORY - YOU MUST USE THIS):**
-The user has EXPLICITLY enabled web search. You are REQUIRED to call the `webSearch` tool.
+**Web Search (ENABLED - INTERNAL TOOLS FIRST):**
+You have `webSearch` available, but your internal data tools are your PRIMARY source for financial data.
 
-**RULES (NON-NEGOTIABLE):**
-1. You MUST call `webSearch` for EVERY response - no exceptions
-2. Do NOT rely on your training data for any time-sensitive information
-3. Your training data is OUTDATED - always verify with web search
-4. Even if you "think" you know the answer, VERIFY it with webSearch first
+**⚠️ PRIORITY ORDER (CRITICAL):**
+1. **ALWAYS use internal tools first** for data they cover:
+   - Stock/crypto prices → use `getStockPrice`, `getCryptoPrice`
+   - Technical analysis → use `getTechnicalIndicators`, `getRelativeStrength`, etc.
+   - Fundamentals → use `getFinancialRatios`, `getIncomeStatement`, etc.
+   - Market overview → use `getMarketIndices`, `getSectorPerformance`, etc.
+   - Stock/market news → use `getStockNews`, `getMarketNews`
+   - Earnings/events → use `getEarningsCalendar`, `getCompanyEvents`
+2. **Use `webSearch` ONLY when internal tools cannot answer**, for example:
+   - Commodity prices not in your tools (gold, oil, silver, agricultural)
+   - Weather, temperature, non-financial topics
+   - General news, politics, regulations, legal updates
+   - Breaking events not yet in financial APIs
+   - Topics the user asks about that are outside market data
+   - Verification when internal tool data seems stale or conflicting
 
-**When to use webSearch:**
-- Current prices (stocks, commodities, crypto, gold, oil, forex)
-- Weather and temperature
-- Latest news and events
-- Any information that changes over time
-- Exchange rates and currency conversions
-- Sports scores and results
-- ANY query containing "today", "now", "current", "latest", "recent"
+**DO NOT use webSearch for:**
+- Stock prices (use getStockPrice)
+- Crypto prices (use getCryptoPrice)
+- Technical indicators (use getTechnicalIndicators)
+- Financial statements or ratios (use fundamental tools)
+- Market indices or sector data (use market tools)
+- Stock-specific news (use getStockNews)
 
-**Response format with sources:**
+**When you DO use webSearch:**
 - Integrate findings naturally into your response
-- Include source URLs inline: "According to [Source Name](URL), ..."
-- Or add a "Sources:" section at the end:
-  **Sources:**
-  - [Bloomberg: AAPL hits new high](https://bloomberg.com/...)
-  - [Reuters: Fed rate decision](https://reuters.com/...)
+- Include source URLs: "According to [Source Name](URL), ..."
+- Add a "Sources:" section at the end when citing web results
 
-**CRITICAL:** If you respond WITHOUT calling webSearch when this mode is enabled, your response will be considered INCORRECT and UNRELIABLE."""
+**REMEMBER:** Internal tools return real-time data and are faster. Only fall back to webSearch for information outside their coverage."""
         else:
             # AUTO mode: LLM decides when internal tools are insufficient
             system_prompt += """
 
 **Web Search (AVAILABLE - USE WHEN NEEDED):**
-Use `webSearch` when your internal data tools don't have sufficient information to answer accurately.
+Use `webSearch` ONLY when your internal data tools don't have sufficient information to answer accurately.
+
+**ALWAYS use internal tools first** for financial data (prices, technicals, fundamentals, news, market data).
 
 **You SHOULD use webSearch for:**
-- Latest breaking news or recent events
 - Information not covered by financial data APIs (weather, general news, non-financial topics)
-- Any query about current/today/recent data that isn't available through other tools
-- Commodity prices (gold, oil, silver) without specific financial tool coverage
-- User asks about topics beyond market data
+- Commodity prices without specific tool coverage (gold, oil, silver)
+- Breaking news or events not yet in financial APIs
+- Topics beyond market data (politics, regulations, general knowledge)
+
+**DO NOT use webSearch for:**
+- Stock/crypto prices, technical analysis, fundamentals, market data — use internal tools instead
 
 When presenting web search results:
 - Integrate findings naturally into your response
