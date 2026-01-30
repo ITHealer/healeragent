@@ -1894,6 +1894,39 @@ IMPORTANT:
                 "error": str(e),
             }
 
+    async def _collect_auto_web_search(
+        self,
+        query: str,
+        symbols: List[str],
+        flow_id: str,
+        enable_streaming: bool = True,
+    ) -> tuple:
+        """
+        Collect auto web search events into a list for parallel execution.
+
+        Returns:
+            Tuple of (sse_events, web_search_result):
+            - sse_events: List of SSE events to forward to UI
+            - web_search_result: The final web_search_result event, or None
+        """
+        sse_events = []
+        web_search_result = None
+
+        async for ws_event in self._execute_auto_web_search(
+            query=query,
+            symbols=symbols,
+            flow_id=flow_id,
+            enable_streaming=enable_streaming,
+        ):
+            ws_type = ws_event.get("type", "")
+
+            if ws_type in ["web_search_start", "web_search_progress", "web_search_complete"]:
+                sse_events.append(ws_event)
+            elif ws_type == "web_search_result":
+                web_search_result = ws_event
+
+        return sse_events, web_search_result
+
     def _infer_tool_arguments(
         self,
         tool_name: str,
@@ -2884,7 +2917,58 @@ IMPORTANT:
                         ],
                     }
 
-                # Execute data tools only
+                # ============================================================
+                # AUTO WEB SEARCH: Determine early & run in PARALLEL with tools
+                # ============================================================
+                called_tool_names = {tc.name for tc in data_tool_calls}
+                news_tools_called = called_tool_names & NEWS_TOOL_NAMES
+                web_search_already_called = "webSearch" in called_tool_names
+
+                # Track cumulative web search state across turns
+                if web_search_already_called:
+                    web_search_ever_called = True
+
+                # FIX: Skip auto web search during tool_search discovery phase.
+                # When the only data tool call is tool_search, the LLM is still
+                # discovering available tools. Give it a chance to call webSearch
+                # itself on the next turn with the full tool set.
+                is_discovery_only_turn = (
+                    enable_tool_search_mode and
+                    called_tool_names <= {"tool_search"}
+                )
+
+                should_auto_search = (
+                    (enable_web_search or news_tools_called) and
+                    not web_search_already_called and
+                    not web_search_ever_called and
+                    not is_discovery_only_turn  # Don't block during tool discovery
+                )
+
+                # FIX: Start web search as background task BEFORE executing data tools.
+                # This runs web search in PARALLEL with data tool execution,
+                # eliminating the sequential blocking delay (~60-70s saved).
+                pending_web_search_task = None
+                if should_auto_search:
+                    self.logger.info(
+                        f"[{flow_id}] 🌐 AUTO WEB SEARCH triggered (parallel): "
+                        f"enable_web_search={enable_web_search} | "
+                        f"news_tools={news_tools_called}"
+                    )
+                    pending_web_search_task = asyncio.create_task(
+                        self._collect_auto_web_search(
+                            query=query,
+                            symbols=merged_symbols,
+                            flow_id=flow_id,
+                            enable_streaming=enable_reasoning,
+                        )
+                    )
+                elif is_discovery_only_turn and (enable_web_search or news_tools_called):
+                    self.logger.info(
+                        f"[{flow_id}] 🌐 AUTO WEB SEARCH deferred: "
+                        f"discovery-only turn (tool_search), will trigger on next data turn"
+                    )
+
+                # Execute data tools (runs in PARALLEL with auto web search if started)
                 if data_tool_calls:
                     data_tool_results = await self._execute_tool_calls(
                         tool_calls=data_tool_calls,
@@ -2933,85 +3017,54 @@ IMPORTANT:
                             )
 
                 # ============================================================
-                # AUTO WEB SEARCH: When news tools are called OR enable_web_search=True
-                # Uses WebSearchTool (OpenAI primary, Tavily fallback)
-                # Triggers on ANY turn where webSearch hasn't been called yet,
-                # not just turn 1. This ensures web search is always executed
-                # when the user explicitly enables it.
+                # COLLECT PARALLEL WEB SEARCH RESULTS
+                # Web search was started before tool execution, now collect results
                 # ============================================================
-                called_tool_names = {tc.name for tc in data_tool_calls}
-                news_tools_called = called_tool_names & NEWS_TOOL_NAMES
-                web_search_already_called = "webSearch" in called_tool_names
+                if pending_web_search_task:
+                    try:
+                        ws_events, web_search_result = await pending_web_search_task
 
-                # Track cumulative web search state across turns
-                if web_search_already_called:
-                    web_search_ever_called = True
-
-                should_auto_search = (
-                    (enable_web_search or news_tools_called) and
-                    not web_search_already_called and
-                    not web_search_ever_called  # Only auto-search if never called in any turn
-                )
-
-                if should_auto_search:
-                    self.logger.info(
-                        f"[{flow_id}] 🌐 AUTO WEB SEARCH triggered: "
-                        f"enable_web_search={enable_web_search} | "
-                        f"news_tools={news_tools_called}"
-                    )
-
-                    # Execute web search with SSE events (OpenAI primary, Tavily fallback)
-                    web_search_result = None
-                    async for ws_event in self._execute_auto_web_search(
-                        query=query,
-                        symbols=merged_symbols,
-                        flow_id=flow_id,
-                        enable_streaming=enable_reasoning,
-                    ):
-                        ws_type = ws_event.get("type", "")
-
-                        # Forward SSE events for UI
-                        if ws_type in ["web_search_start", "web_search_progress", "web_search_complete"]:
+                        # Yield collected SSE events for UI
+                        for ws_event in ws_events:
                             yield ws_event
 
-                        # Capture final result
-                        elif ws_type == "web_search_result":
-                            web_search_result = ws_event
+                        # Add web search result to tool results for LLM context
+                        if web_search_result and web_search_result.get("status") == "success":
+                            web_search_tc_id = f"ws_{uuid.uuid4().hex[:8]}"
 
-                    # Add web search result to tool results for LLM context
-                    if web_search_result and web_search_result.get("status") == "success":
-                        # Create a virtual tool call for the web search
-                        web_search_tc_id = f"ws_{uuid.uuid4().hex[:8]}"
+                            messages.append({
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [{
+                                    "id": web_search_tc_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": "webSearch",
+                                        "arguments": json.dumps({"query": query}),
+                                    },
+                                }],
+                            })
 
-                        # Add to messages as a tool result
-                        messages.append({
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{
-                                "id": web_search_tc_id,
-                                "type": "function",
-                                "function": {
-                                    "name": "webSearch",
-                                    "arguments": json.dumps({"query": query}),
-                                },
-                            }],
-                        })
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": web_search_tc_id,
+                                "content": json.dumps({
+                                    "tool_name": "webSearch",
+                                    "status": "success",
+                                    "data": web_search_result.get("data", {}),
+                                    "formatted_context": web_search_result.get("formatted_context", ""),
+                                }, ensure_ascii=False),
+                            })
 
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": web_search_tc_id,
-                            "content": json.dumps({
-                                "tool_name": "webSearch",
-                                "status": "success",
-                                "data": web_search_result.get("data", {}),
-                                "formatted_context": web_search_result.get("formatted_context", ""),
-                            }, ensure_ascii=False),
-                        })
-
-                        total_tool_calls += 1
-                        web_search_ever_called = True  # Prevent re-triggering on subsequent turns
-                        self.logger.info(
-                            f"[{flow_id}] ✅ Web search result added to context"
+                            total_tool_calls += 1
+                            web_search_ever_called = True
+                            self.logger.info(
+                                f"[{flow_id}] ✅ Web search result added to context (parallel)"
+                            )
+                    except Exception as e:
+                        self.logger.error(
+                            f"[{flow_id}] ❌ Parallel web search failed: {e}",
+                            exc_info=True,
                         )
 
                 # Emit results
