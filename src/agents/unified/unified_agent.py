@@ -2609,6 +2609,7 @@ Respond naturally and helpfully while staying in character."""
 
             total_tool_calls = 0
             tool_search_called = False  # Track if tool_search was ever called
+            web_search_ever_called = False  # Track if webSearch was ever called across all turns
 
             for turn_num in range(1, max_turns + 1):
                 yield {"type": "turn_start", "turn": turn_num}
@@ -2934,15 +2935,22 @@ IMPORTANT:
                 # ============================================================
                 # AUTO WEB SEARCH: When news tools are called OR enable_web_search=True
                 # Uses WebSearchTool (OpenAI primary, Tavily fallback)
+                # Triggers on ANY turn where webSearch hasn't been called yet,
+                # not just turn 1. This ensures web search is always executed
+                # when the user explicitly enables it.
                 # ============================================================
                 called_tool_names = {tc.name for tc in data_tool_calls}
                 news_tools_called = called_tool_names & NEWS_TOOL_NAMES
                 web_search_already_called = "webSearch" in called_tool_names
 
+                # Track cumulative web search state across turns
+                if web_search_already_called:
+                    web_search_ever_called = True
+
                 should_auto_search = (
                     (enable_web_search or news_tools_called) and
                     not web_search_already_called and
-                    turn_num == 1  # Only auto-search on first turn
+                    not web_search_ever_called  # Only auto-search if never called in any turn
                 )
 
                 if should_auto_search:
@@ -3001,6 +3009,7 @@ IMPORTANT:
                         })
 
                         total_tool_calls += 1
+                        web_search_ever_called = True  # Prevent re-triggering on subsequent turns
                         self.logger.info(
                             f"[{flow_id}] ✅ Web search result added to context"
                         )
@@ -3231,42 +3240,73 @@ You have access to various data tools. Use them to gather real data before respo
         if enable_think_tool:
             system_prompt += """
 
-**Thinking Process (MANDATORY - ALWAYS USE):**
-You MUST use the `think` tool for EVERY response. This is NOT optional.
+**⚠️ THINKING PROCESS (MANDATORY - NON-NEGOTIABLE):**
+The user has EXPLICITLY enabled thinking mode. You MUST call the `think` tool.
 
-REQUIRED Pattern for EVERY question:
-1. think(planning) → Plan your approach and what data you need
-2. Call data tools → Gather information
-3. think(analyzing) → Analyze results, synthesize insights
-4. Respond → Give your final answer
+**REQUIRED EXECUTION PATTERN (EVERY RESPONSE):**
+```
+Step 1: think(reasoning_type="planning")    → Plan approach, identify needed data
+Step 2: Call data/search tools              → Gather information
+Step 3: think(reasoning_type="analyzing")   → Analyze results, form insights
+Step 4: Generate final response             → Present findings to user
+```
 
-Even for simple questions, ALWAYS call think() at least once before responding.
-The user has explicitly enabled thinking mode to see your reasoning process."""
+**RULES:**
+- You MUST call `think()` at LEAST TWICE per response (before AND after data gathering)
+- Even for simple questions, call think() at least once before responding
+- The `think` tool is FREE (no extra cost) - use it liberally
+- The user WANTS to see your reasoning process - that's why they enabled it
+- NEVER skip the think step - it is the FIRST tool you should call
+
+**VIOLATION:** Responding without calling `think()` when thinking mode is enabled
+is a critical error. Always think first, act second."""
 
         # Add web search instruction based on mode
         if enable_web_search:
             # FORCED mode: always use web search
             system_prompt += """
 
-**Web Search (REQUIRED - ENABLED):**
-You MUST use `webSearch` to get latest news and real-time information.
-When presenting web search results:
+**Web Search (⚠️ MANDATORY - YOU MUST USE THIS):**
+The user has EXPLICITLY enabled web search. You are REQUIRED to call the `webSearch` tool.
+
+**RULES (NON-NEGOTIABLE):**
+1. You MUST call `webSearch` for EVERY response - no exceptions
+2. Do NOT rely on your training data for any time-sensitive information
+3. Your training data is OUTDATED - always verify with web search
+4. Even if you "think" you know the answer, VERIFY it with webSearch first
+
+**When to use webSearch:**
+- Current prices (stocks, commodities, crypto, gold, oil, forex)
+- Weather and temperature
+- Latest news and events
+- Any information that changes over time
+- Exchange rates and currency conversions
+- Sports scores and results
+- ANY query containing "today", "now", "current", "latest", "recent"
+
+**Response format with sources:**
 - Integrate findings naturally into your response
-- Include relevant source URLs inline or in a "Sources:" section at the end
-- Format: "According to [Source Name](URL), ..." or list sources at the end
-- Example Sources section:
+- Include source URLs inline: "According to [Source Name](URL), ..."
+- Or add a "Sources:" section at the end:
   **Sources:**
   - [Bloomberg: AAPL hits new high](https://bloomberg.com/...)
-  - [Reuters: Fed rate decision](https://reuters.com/...)"""
+  - [Reuters: Fed rate decision](https://reuters.com/...)
+
+**CRITICAL:** If you respond WITHOUT calling webSearch when this mode is enabled, your response will be considered INCORRECT and UNRELIABLE."""
         else:
             # AUTO mode: LLM decides when internal tools are insufficient
             system_prompt += """
 
 **Web Search (AVAILABLE - USE WHEN NEEDED):**
-Use `webSearch` when your internal data tools don't have sufficient information to answer accurately:
-- Latest breaking news or recent events (last 24-48 hours)
-- Information not covered by financial data APIs
+Use `webSearch` when your internal data tools don't have sufficient information to answer accurately.
+
+**You SHOULD use webSearch for:**
+- Latest breaking news or recent events
+- Information not covered by financial data APIs (weather, general news, non-financial topics)
+- Any query about current/today/recent data that isn't available through other tools
+- Commodity prices (gold, oil, silver) without specific financial tool coverage
 - User asks about topics beyond market data
+
 When presenting web search results:
 - Integrate findings naturally into your response
 - Include relevant source URLs in a "Sources:" section

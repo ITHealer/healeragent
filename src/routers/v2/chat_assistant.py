@@ -1475,6 +1475,23 @@ async def stream_chat_v2(
                 conversation_summary=conversation_summary,  # Older messages (compressed)
             )
 
+            # =============================================================
+            # CRITICAL FIX: Force agent_loop when web search is enabled
+            # When enable_web_search=True, the user explicitly wants
+            # real-time data. We MUST enter the agent loop so webSearch
+            # tool is available, even for "general" or "direct" queries
+            # like weather, gold prices, news, etc.
+            # =============================================================
+            if data.enable_web_search and not intent_result.requires_tools:
+                _logger.info(
+                    f"[CHAT] Overriding requires_tools=True because enable_web_search=True "
+                    f"(was: complexity={intent_result.complexity.value}, "
+                    f"query_type={intent_result.query_type})"
+                )
+                intent_result.requires_tools = True
+                from src.agents.classification.intent_classifier import IntentComplexity
+                intent_result.complexity = IntentComplexity.AGENT_LOOP
+
             # Timeline: Classification complete with results
             symbols_display = ", ".join(intent_result.validated_symbols) if intent_result.validated_symbols else "none"
             thinking_timeline.add_step(

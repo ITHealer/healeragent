@@ -171,6 +171,11 @@ class IntentResult:
             "technical_analysis", "news", "financial_data"
         }
 
+        # Force for query_type that always needs tools (even without symbols)
+        if not requires_tools and query_type in tool_required_query_types:
+            requires_tools = True
+            complexity = IntentComplexity.AGENT_LOOP
+
         if validated_symbols and not requires_tools:
             if query_type in tool_required_query_types:
                 requires_tools = True
@@ -188,6 +193,22 @@ class IntentResult:
             if any(kw in intent_lower for kw in data_keywords):
                 requires_tools = True
                 complexity = IntentComplexity.AGENT_LOOP
+
+        # Realtime data validation (weather, commodity prices, news, etc.)
+        if not requires_tools:
+            intent_lower = data.get("intent_summary", "").lower()
+            realtime_keywords = [
+                "today", "hôm nay", "now", "bây giờ", "hiện tại", "current",
+                "latest", "mới nhất", "gần đây", "recent",
+                "weather", "thời tiết", "nhiệt độ", "temperature",
+                "gold price", "giá vàng", "oil price", "giá dầu",
+                "exchange rate", "tỷ giá", "breaking news", "tin nóng",
+            ]
+            if any(kw in intent_lower for kw in realtime_keywords):
+                requires_tools = True
+                complexity = IntentComplexity.AGENT_LOOP
+                if query_type in ("general_knowledge", "conversational", "general"):
+                    query_type = "real_time_info"
 
         return cls(
             intent_summary=data.get("intent_summary", ""),
@@ -651,15 +672,20 @@ If unsure about a symbol, make your best guess based on context.
 "direct" - NO tools needed:
 - Greetings, thanks, goodbye
 - Static financial concepts (what is P/E ratio?)
-- General knowledge that doesn't change
+- General knowledge that NEVER changes (definitions, formulas, historical facts with specific dates)
 
 "agent_loop" - Tools NEEDED:
-- Real-time prices, quotes
+- Real-time prices, quotes, market data
 - Technical analysis (RSI, MACD, etc.)
 - Fundamental data (earnings, financials)
-- News and current events
+- News and current events (ANY news query)
 - Stock screening
 - Any query about current state of markets
+- **Weather, temperature, climate conditions** (requires real-time data)
+- **Commodity prices** (gold/vàng, oil/dầu, silver/bạc - requires real-time data)
+- **Exchange rates, forex** (requires real-time data)
+- **Any question implying "today", "now", "current", "latest", "recent", "hôm nay", "hiện tại", "mới nhất", "gần đây"**
+- **Any question where the answer changes over time** (e.g., "who is the CEO of X?", "what is the GDP of Y?")
 
 ## STEP 5: Determine Analysis Type (CRITICAL for skill routing)
 Classify what TYPE of analysis the user wants:
@@ -823,6 +849,33 @@ NVDA is a stock. General analysis request → analysis_type is "technical" (defa
 </reasoning>
 <classification>
 {{"intent_summary": "Analysis of NVIDIA stock (referenced from context)", "validated_symbols": ["NVDA"], "market_type": "stock", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "technical", "response_language": "vi", "query_type": "stock_analysis", "confidence": 0.88}}
+</classification>
+
+Example 11 - Real-time Information (Weather):
+Query: "Thời tiết hôm nay ở thành phố Hồ Chí Minh"
+<reasoning>
+User asks about today's weather in Ho Chi Minh City. Weather is real-time data that changes constantly. This REQUIRES tools (web search) to get current, accurate information. The model's training data does NOT contain today's weather. This is NOT general knowledge - it is real-time information.
+</reasoning>
+<classification>
+{{"intent_summary": "Current weather in Ho Chi Minh City", "validated_symbols": [], "market_type": "none", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "general", "response_language": "vi", "query_type": "real_time_info", "confidence": 0.95}}
+</classification>
+
+Example 12 - Real-time Information (Commodity Price):
+Query: "Giá vàng hôm nay"
+<reasoning>
+User asks about today's gold price. Gold price changes in real-time and requires web search or data tools to get current, accurate price. The model cannot know today's gold price from training data alone.
+</reasoning>
+<classification>
+{{"intent_summary": "Current gold price today", "validated_symbols": [], "market_type": "none", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "general", "response_language": "vi", "query_type": "real_time_info", "confidence": 0.95}}
+</classification>
+
+Example 13 - Real-time Information (News):
+Query: "Tin tức mới nhất về kinh tế Việt Nam"
+<reasoning>
+User asks for latest economic news about Vietnam. News is time-sensitive real-time information. MUST use tools (web search) to get current, up-to-date news. Model's training data is outdated for this.
+</reasoning>
+<classification>
+{{"intent_summary": "Latest economic news about Vietnam", "validated_symbols": [], "market_type": "none", "complexity": "agent_loop", "requires_tools": true, "analysis_type": "general", "response_language": "vi", "query_type": "real_time_info", "confidence": 0.94}}
 </classification>
 </few_shot_examples>
 
@@ -1054,6 +1107,15 @@ Now analyze the query and provide your classification:
             "technical_analysis", "news", "financial_data"
         }
 
+        # VALIDATION 1: query_type indicates tools needed
+        if not requires_tools and query_type in tool_required_query_types:
+            self.logger.warning(
+                f"[INTENT_CLASSIFIER] Forcing requires_tools=True "
+                f"(query_type={query_type})"
+            )
+            requires_tools = True
+            complexity = IntentComplexity.AGENT_LOOP
+
         if validated_symbols and not requires_tools:
             # If symbols are present AND query type suggests data retrieval
             if query_type in tool_required_query_types:
@@ -1081,6 +1143,46 @@ Now analyze the query and provide your classification:
                     )
                     requires_tools = True
                     complexity = IntentComplexity.AGENT_LOOP
+
+        # =====================================================================
+        # VALIDATION 2: Force requires_tools=True for realtime-data queries
+        # Queries about weather, commodity prices, news, current events, etc.
+        # ALWAYS need tools (web search) even without financial symbols.
+        # The model's training data cannot answer these accurately.
+        # =====================================================================
+        if not requires_tools:
+            intent_lower = data.get("intent_summary", "").lower()
+            query_lower = data.get("_original_query", "").lower() if "_original_query" in data else intent_lower
+
+            realtime_keywords = [
+                # Time-sensitive indicators
+                "today", "hôm nay", "now", "bây giờ", "hiện tại", "current",
+                "latest", "mới nhất", "gần đây", "recent", "this week", "tuần này",
+                "this month", "tháng này", "tonight", "tối nay",
+                # Weather
+                "weather", "thời tiết", "nhiệt độ", "temperature", "forecast",
+                "dự báo", "mưa", "rain", "nắng", "sunny",
+                # Commodity prices (without specific symbols)
+                "gold price", "giá vàng", "oil price", "giá dầu", "giá xăng",
+                "silver price", "giá bạc", "gas price",
+                # Exchange rates
+                "exchange rate", "tỷ giá", "USD/VND", "EUR/USD",
+                # News/events
+                "breaking news", "tin nóng", "tin mới", "happening",
+                "đang xảy ra", "diễn biến",
+                # Sports/events
+                "score", "tỷ số", "kết quả", "result",
+            ]
+
+            if any(kw in intent_lower for kw in realtime_keywords):
+                self.logger.warning(
+                    f"[INTENT_CLASSIFIER] Forcing requires_tools=True for realtime query "
+                    f"(intent={intent_lower[:80]}...)"
+                )
+                requires_tools = True
+                complexity = IntentComplexity.AGENT_LOOP
+                if query_type in ("general_knowledge", "conversational", "general"):
+                    query_type = "real_time_info"
 
         return IntentResult(
             intent_summary=data.get("intent_summary", ""),
