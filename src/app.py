@@ -68,6 +68,9 @@ class IncludeAPIRouter(object):
         # Live Analysis
         from src.routers.v2.equity_forecast import router as router_equity_forecast
         from src.routers.smc_analysis import router as router_smc_analysis
+
+        # Invest Agent V3 - Modular AI Chatbot
+        from src.invest_agent.router import router as router_invest_agent
         
         # Data provider routers
         from src.routers.v2.data_providers.fmp.company_search import router as router_company_search
@@ -147,6 +150,9 @@ class IncludeAPIRouter(object):
         # Data provider routers
         router.include_router(router_company_search, tags=["TOL Data Provider - FMP"])
         router.include_router(router_symbol_directory, tags=["TOL Data Provider - FMP"])
+
+        # Invest Agent V3 - Modular AI Chatbot (isolated module)
+        router.include_router(router_invest_agent, tags=['Invest Agent - V3 Mode System'])
 
         # =============================================================================
         # API V1 - TASK SYSTEM
