@@ -943,7 +943,6 @@ class MarketScannerHandler(LoggerMixin):
                 }
 
             rs_data = result.data or {}
-            rs_formatted_context = result.formatted_context or ""
 
             # ═══════════════════════════════════════════════════════════════════
             # STEP 2: Get sector context (company sector + sector performance)
@@ -957,8 +956,7 @@ class MarketScannerHandler(LoggerMixin):
                 symbol=symbol,
                 benchmark=benchmark,
                 rs_data=rs_data,
-                sector_context=sector_context,
-                rs_formatted_context=rs_formatted_context
+                sector_context=sector_context
             )
 
             return {
@@ -1168,8 +1166,7 @@ class MarketScannerHandler(LoggerMixin):
         symbol: str,
         benchmark: str,
         rs_data: Dict[str, Any],
-        sector_context: Optional[Dict[str, Any]],
-        rs_formatted_context: str = ""
+        sector_context: Optional[Dict[str, Any]]
     ) -> str:
         """
         Build comprehensive LLM-friendly market position summary.
@@ -1184,8 +1181,8 @@ class MarketScannerHandler(LoggerMixin):
             ""
         ]
 
-        # RS Summary from tool's formatted_context (contains multi-timeframe RS analysis)
-        rs_summary = rs_formatted_context or rs_data.get("llm_summary", "")
+        # RS Summary from tool
+        rs_summary = rs_data.get("llm_summary", "")
         if rs_summary:
             lines.extend([
                 "RELATIVE STRENGTH DATA (Multi-timeframe: 21d, 63d, 126d, 252d):",
