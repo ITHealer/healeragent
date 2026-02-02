@@ -72,6 +72,25 @@ from src.utils.graceful_degradation import (
 # Web Search Tool (OpenAI primary, Tavily fallback)
 from src.agents.tools.web.web_search import WebSearchTool
 
+# Two-Tier Context Management (summaries for loop, full data for final answer)
+from src.agents.unified.context_manager import (
+    ToolDataStore,
+    ToolResultEntry,
+    generate_tool_summary,
+    build_final_context,
+    select_relevant_results,
+    DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+)
+
+# Anti-Loop / Tool Validation (soft warnings)
+from src.agents.unified.tool_validator import ToolValidator
+
+# Lightweight Scratchpad Debug (optional JSONL trace)
+from src.agents.unified.scratchpad import AgentScratchpad
+
+# SKILL.md Workflow System
+from src.agents.skills.workflows.registry import get_workflow_registry
+
 # News tools that should trigger auto web search
 NEWS_TOOL_NAMES = {
     "getStockNews",
@@ -128,6 +147,44 @@ Example:
                 },
             },
             "required": ["thought"],
+        },
+    },
+}
+
+
+# ============================================================================
+# INVOKE WORKFLOW TOOL DEFINITION
+# ============================================================================
+# Allows the agent to load SKILL.md workflow instructions mid-conversation
+# when it recognizes a complex analysis task that needs step-by-step guidance.
+
+INVOKE_WORKFLOW_TOOL_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": "invoke_workflow",
+        "description": """Load specialized workflow instructions for complex analysis tasks.
+
+WHEN TO USE:
+- For DCF/valuation analysis → workflow_name="dcf-valuation"
+- For deep technical analysis → workflow_name="technical-deep-dive"
+- For portfolio optimization → workflow_name="portfolio-analysis"
+- For crypto fundamental analysis → workflow_name="crypto-fundamental"
+
+This returns step-by-step instructions. Follow them to produce a comprehensive analysis.
+Only invoke ONCE per query - the instructions guide your entire analysis process.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_name": {
+                    "type": "string",
+                    "description": "Name of the workflow to load (e.g., 'dcf-valuation', 'portfolio-analysis')",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional context like ticker symbol or specific parameters",
+                },
+            },
+            "required": ["workflow_name"],
         },
     },
 }
@@ -2634,12 +2691,28 @@ Respond naturally and helpfully while staying in character."""
             all_web_citations = []  # List of {"title": str, "url": str}
 
             # ================================================================
+            # TWO-TIER CONTEXT: Initialize data store for tool results
+            # Summaries go to messages (iteration), full data for final answer
+            # ================================================================
+            tool_data_store = ToolDataStore()
+
+            # ================================================================
+            # ANTI-LOOP: Initialize tool validator for soft warnings
+            # ================================================================
+            tool_validator = ToolValidator()
+
+            # ================================================================
+            # SCRATCHPAD: Initialize debug trace (controlled by env flag)
+            # ================================================================
+            scratchpad = AgentScratchpad(query=query, flow_id=flow_id)
+
+            # ================================================================
             # TOOL LOADING STRATEGY
             # ================================================================
             if enable_tool_search_mode:
-                # TOOL SEARCH MODE: Start with ONLY tool_search + think for token savings
+                # TOOL SEARCH MODE: Start with ONLY tool_search + think + invoke_workflow for token savings
                 # GPT must call tool_search to discover available tools
-                tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION]
+                tools = [TOOL_SEARCH_DEFINITION, THINK_TOOL_DEFINITION, INVOKE_WORKFLOW_TOOL_DEFINITION]
                 discovered_tool_names = set()  # No tools discovered yet
 
                 # FORCE INJECT: Web search tool when enabled
@@ -2670,9 +2743,10 @@ Respond naturally and helpfully while staying in character."""
                 tools = self.catalog.get_openai_functions(all_tool_names)
                 tools.append(TOOL_SEARCH_DEFINITION)  # Also add tool_search
                 tools.append(THINK_TOOL_DEFINITION)   # Add think tool for explicit reasoning
+                tools.append(INVOKE_WORKFLOW_TOOL_DEFINITION)  # Add workflow invocation
                 discovered_tool_names = set(all_tool_names)
 
-                self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search, think)")
+                self.logger.info(f"[{flow_id}] Agent sees {len(tools)} tools (including tool_search, think, invoke_workflow)")
 
                 # Log when special modes are enabled
                 if enable_web_search:
@@ -2830,8 +2904,72 @@ Respond naturally and helpfully while staying in character."""
                     # - Works consistently for OpenAI, Gemini, Claude
                     # ============================================================
 
-                    # Build synthesis prompt to guide final response generation
-                    synthesis_instruction = """Please provide your COMPREHENSIVE final response based on all the information gathered.
+                    # ============================================================
+                    # TWO-TIER CONTEXT: Build FULL data context for final answer
+                    # Instead of streaming with full message history (which has
+                    # only summaries), we build fresh messages with FULL tool data
+                    # from ToolDataStore. This ensures the final answer has access
+                    # to all specific numbers, metrics, and details.
+                    # ============================================================
+                    if tool_data_store.total_entries > 0:
+                        # Build full context from tool data store
+                        total_tokens = tool_data_store.total_estimated_tokens
+                        self.logger.info(
+                            f"[{flow_id}] 📊 TWO-TIER CONTEXT: Building final answer from "
+                            f"{tool_data_store.total_entries} tool results "
+                            f"(~{total_tokens:,} tokens of data)"
+                        )
+
+                        scratchpad.log_context_decision(
+                            total_tokens=total_tokens,
+                            budget_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                            strategy="full" if total_tokens <= DEFAULT_FINAL_CONTEXT_MAX_TOKENS else "truncated",
+                        )
+
+                        if total_tokens > DEFAULT_FINAL_CONTEXT_MAX_TOKENS * 1.5:
+                            # Very large context: use LLM to select relevant results
+                            full_context = await select_relevant_results(
+                                query=query,
+                                tool_data_store=tool_data_store,
+                                max_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                                llm_provider=self.llm_provider,
+                            )
+                        else:
+                            # Normal/large context: include all with smart truncation
+                            full_context = build_final_context(
+                                tool_data_store=tool_data_store,
+                                max_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                            )
+
+                        # Extract system prompt from original messages
+                        system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
+                        system_content = system_msg["content"] if system_msg else ""
+
+                        # Build fresh final messages with FULL data
+                        final_messages = [
+                            {"role": "system", "content": system_content},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"User query: {query}\n\n"
+                                    f"## Complete Data From Tool Calls\n\n"
+                                    f"{full_context}\n\n"
+                                    f"## Instructions\n"
+                                    f"Please provide your COMPREHENSIVE final response based on ALL the data above.\n\n"
+                                    f"IMPORTANT:\n"
+                                    f"- Include ALL important data points and numbers from the tool results\n"
+                                    f"- For financial queries: provide price, technical signals, fundamental metrics\n"
+                                    f"- Give clear insights and actionable recommendations\n"
+                                    f"- Be thorough - don't truncate or summarize important details\n"
+                                    f"- Use proper markdown formatting for readability\n"
+                                    f"- Match the user's language"
+                                ),
+                            },
+                        ]
+                    else:
+                        # No tool data - use original messages (direct response)
+                        final_messages = messages
+                        synthesis_instruction = """Please provide your COMPREHENSIVE final response based on all the information gathered.
 
 IMPORTANT:
 - Include ALL important data points and numbers from tool results
@@ -2839,12 +2977,10 @@ IMPORTANT:
 - Give clear insights and actionable recommendations
 - Be thorough - don't truncate or summarize important details
 - Use proper markdown formatting for readability"""
-
-                    # Add synthesis instruction as user message
-                    messages.append({
-                        "role": "user",
-                        "content": synthesis_instruction
-                    })
+                        final_messages.append({
+                            "role": "user",
+                            "content": synthesis_instruction
+                        })
 
                     self.logger.info(
                         f"[{flow_id}] 🎯 REAL STREAMING: Starting final synthesis "
@@ -2854,7 +2990,7 @@ IMPORTANT:
                     chunk_count = 0
                     async for chunk in self.llm_provider.stream_response(
                         model_name=effective_model,
-                        messages=messages,
+                        messages=final_messages,
                         provider_type=effective_provider,
                         api_key=self.api_key,
                         max_tokens=STREAMING_MAX_TOKENS,
@@ -2904,6 +3040,9 @@ IMPORTANT:
                     # Signal end of content stream
                     yield {"type": "content", "content": "", "is_final": True}
 
+                    # Finalize scratchpad
+                    scratchpad.finalize(total_turns=turn_num, total_tool_calls=total_tool_calls)
+
                     yield {
                         "type": "done",
                         "total_turns": turn_num,
@@ -2912,11 +3051,14 @@ IMPORTANT:
                     return
 
                 # ============================================================
-                # SEPARATE THINK TOOL CALLS FROM DATA TOOL CALLS
-                # Think tool is handled inline (no actual execution needed)
+                # SEPARATE TOOL CALLS BY TYPE
+                # - think: inline reasoning (no execution)
+                # - invoke_workflow: load SKILL.md instructions
+                # - data tools: actual tool execution
                 # ============================================================
                 think_calls = [tc for tc in tool_calls if tc.name == "think"]
-                data_tool_calls = [tc for tc in tool_calls if tc.name != "think"]
+                workflow_calls = [tc for tc in tool_calls if tc.name == "invoke_workflow"]
+                data_tool_calls = [tc for tc in tool_calls if tc.name not in ("think", "invoke_workflow")]
 
                 # Debug: Log tool call breakdown
                 self.logger.debug(
@@ -2937,6 +3079,7 @@ IMPORTANT:
 
                     # Log the thought
                     self.logger.info(f"[{flow_id}] 💭 THINK [{reasoning_type}]: {thought[:100]}...")
+                    scratchpad.log_thinking(f"[{reasoning_type}] {thought}")
 
                     # Emit thinking event for frontend
                     yield {
@@ -2957,6 +3100,54 @@ IMPORTANT:
                         "message": f"Thought recorded ({reasoning_type})",
                     })
 
+                # ============================================================
+                # INVOKE_WORKFLOW: Process workflow calls (load SKILL.md)
+                # ============================================================
+                workflow_results = []
+                for tc in workflow_calls:
+                    wf_name = tc.arguments.get("workflow_name", "")
+                    wf_context = tc.arguments.get("context", "")
+
+                    self.logger.info(f"[{flow_id}] 📋 INVOKE WORKFLOW: {wf_name}")
+                    scratchpad.log_thinking(f"invoke_workflow: {wf_name} (context: {wf_context})")
+
+                    try:
+                        workflow_registry = get_workflow_registry()
+                        workflow_def = workflow_registry.get_workflow(wf_name)
+
+                        if workflow_def:
+                            instructions = workflow_def.instructions
+                            if wf_context:
+                                instructions = f"**Context:** {wf_context}\n\n{instructions}"
+
+                            workflow_results.append({
+                                "status": "success",
+                                "data": {
+                                    "workflow_name": workflow_def.name,
+                                    "instructions": instructions,
+                                },
+                                "formatted_context": (
+                                    f"## Workflow: {workflow_def.name}\n\n"
+                                    f"{instructions}"
+                                ),
+                            })
+                            self.logger.info(
+                                f"[{flow_id}] ✅ Loaded workflow '{wf_name}' "
+                                f"({len(instructions)} chars)"
+                            )
+                        else:
+                            available = workflow_registry.get_workflow_names()
+                            workflow_results.append({
+                                "status": "error",
+                                "error": f"Workflow '{wf_name}' not found. Available: {', '.join(available)}",
+                            })
+                    except Exception as e:
+                        self.logger.error(f"[{flow_id}] ❌ Workflow load failed: {e}")
+                        workflow_results.append({
+                            "status": "error",
+                            "error": f"Failed to load workflow: {e}",
+                        })
+
                 # Emit tool calls (data tools only for cleaner display)
                 if data_tool_calls:
                     if enable_reasoning:
@@ -2974,6 +3165,26 @@ IMPORTANT:
                             for tc in data_tool_calls
                         ],
                     }
+
+                # ============================================================
+                # ANTI-LOOP: Validate tool calls before execution
+                # ============================================================
+                if data_tool_calls:
+                    validation_warnings = tool_validator.validate_tool_calls([
+                        {"name": tc.name, "arguments": tc.arguments}
+                        for tc in data_tool_calls
+                    ])
+                    for warning in validation_warnings:
+                        self.logger.warning(f"[{flow_id}] ⚠️ ANTI-LOOP: {warning}")
+                        scratchpad.log_validation_warning(
+                            tool_name="batch",
+                            warning=warning,
+                        )
+                        # Inject soft warning for next LLM turn
+                        messages.append({
+                            "role": "system",
+                            "content": f"⚠️ {warning}",
+                        })
 
                 # ============================================================
                 # AUTO WEB SEARCH: Determine early & run in PARALLEL with tools
@@ -3044,19 +3255,75 @@ IMPORTANT:
                 else:
                     data_tool_results = []
 
-                # Combine results in original order
+                # Combine results in original order (think + workflow + data)
                 tool_results = []
                 think_idx = 0
+                workflow_idx = 0
                 data_idx = 0
                 for tc in tool_calls:
                     if tc.name == "think":
                         tool_results.append(think_results[think_idx])
                         think_idx += 1
+                    elif tc.name == "invoke_workflow":
+                        tool_results.append(workflow_results[workflow_idx])
+                        workflow_idx += 1
                     else:
                         tool_results.append(data_tool_results[data_idx])
                         data_idx += 1
 
                 total_tool_calls += len(tool_calls)
+
+                # ============================================================
+                # ANTI-LOOP: Record tool calls after execution
+                # ============================================================
+                if data_tool_calls:
+                    tool_validator.record_tool_calls([
+                        {"name": tc.name, "arguments": tc.arguments}
+                        for tc in data_tool_calls
+                    ])
+
+                # ============================================================
+                # TWO-TIER CONTEXT: Generate summaries + store full results
+                # Summaries go to messages, full data to ToolDataStore
+                # ============================================================
+                for tc, result in zip(tool_calls, tool_results):
+                    # Skip think/workflow - they don't need summary treatment
+                    if tc.name in ("think", "invoke_workflow"):
+                        continue
+
+                    # Generate concise summary for iteration loop
+                    try:
+                        summary = await generate_tool_summary(
+                            query=query,
+                            tool_name=tc.name,
+                            tool_args=tc.arguments,
+                            result=result,
+                            llm_provider=self.llm_provider,
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"[{flow_id}] Summary generation failed: {e}")
+                        # Extractive fallback
+                        fc = result.get("formatted_context", "")
+                        summary = f"{tc.name} → {fc[:250]}..." if fc else f"{tc.name} → completed"
+
+                    # Store full result + summary in data store
+                    tool_data_store.add(ToolResultEntry(
+                        tool_name=tc.name,
+                        tool_call_id=tc.id,
+                        arguments=tc.arguments,
+                        full_result=result,
+                        summary=summary,
+                        execution_ms=result.get("execution_ms", 0),
+                    ))
+
+                    # Log to scratchpad
+                    scratchpad.log_tool_result(
+                        tool_name=tc.name,
+                        args=tc.arguments,
+                        result=result,
+                        summary=summary,
+                        exec_ms=result.get("execution_ms", 0),
+                    )
 
                 # ============================================================
                 # DYNAMIC TOOL INJECTION from tool_search results
@@ -3110,21 +3377,44 @@ IMPORTANT:
                                 }],
                             })
 
+                            # TWO-TIER: Generate summary + store full result
+                            ws_full_result = {
+                                "tool_name": "webSearch",
+                                "status": "success",
+                                "data": web_search_result.get("data", {}),
+                                "formatted_context": web_search_result.get("formatted_context", ""),
+                            }
+                            try:
+                                ws_summary = await generate_tool_summary(
+                                    query=query,
+                                    tool_name="webSearch",
+                                    tool_args={"query": query},
+                                    result=ws_full_result,
+                                    llm_provider=self.llm_provider,
+                                )
+                            except Exception:
+                                fc = ws_full_result.get("formatted_context", "")
+                                ws_summary = f"webSearch → {fc[:250]}" if fc else "webSearch → completed"
+
+                            tool_data_store.add(ToolResultEntry(
+                                tool_name="webSearch",
+                                tool_call_id=web_search_tc_id,
+                                arguments={"query": query},
+                                full_result=ws_full_result,
+                                summary=ws_summary,
+                            ))
+
+                            # Use summary for iteration messages (not full JSON)
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": web_search_tc_id,
-                                "content": json.dumps({
-                                    "tool_name": "webSearch",
-                                    "status": "success",
-                                    "data": web_search_result.get("data", {}),
-                                    "formatted_context": web_search_result.get("formatted_context", ""),
-                                }, ensure_ascii=False),
+                                "content": ws_summary,
                             })
 
                             total_tool_calls += 1
                             web_search_ever_called = True
                             self.logger.info(
-                                f"[{flow_id}] ✅ Web search result added to context (parallel)"
+                                f"[{flow_id}] ✅ Web search result stored + summary added (parallel)"
                             )
                     except Exception as e:
                         self.logger.error(
@@ -3156,7 +3446,10 @@ IMPORTANT:
                                 f"total: {len(all_web_citations)}"
                             )
 
-                # Update messages (preserves thought_signature for Gemini 3+)
+                # ============================================================
+                # TWO-TIER CONTEXT: Append SUMMARIES to messages (not full)
+                # Full results are preserved in tool_data_store for synthesis
+                # ============================================================
                 messages.append({
                     "role": "assistant",
                     "content": assistant_content,
@@ -3164,11 +3457,41 @@ IMPORTANT:
                 })
 
                 for tc, result in zip(tool_calls, tool_results):
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
+                    if tc.name in ("think", "invoke_workflow"):
+                        # Think and workflow results are small - keep as-is
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        })
+                    else:
+                        # Data tools: use summary for iteration loop context
+                        # Find the matching entry in tool_data_store
+                        matching_entry = None
+                        for entry in tool_data_store.entries:
+                            if entry.tool_call_id == tc.id:
+                                matching_entry = entry
+                                break
+
+                        if matching_entry:
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": matching_entry.summary,
+                            })
+                        else:
+                            # Fallback: use full result if not in store
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(result, ensure_ascii=False),
+                            })
+
+                self.logger.info(
+                    f"[{flow_id}] 📊 Turn {turn_num} complete: "
+                    f"{tool_data_store.total_entries} results stored, "
+                    f"~{tool_data_store.total_estimated_tokens:,} tokens of full data"
+                )
 
             # Max turns reached
             self.logger.info(f"[{flow_id}] Max turns ({max_turns}) reached - generating final response")
@@ -3182,17 +3505,73 @@ IMPORTANT:
                     "content": f"Max turns ({max_turns}) reached - synthesizing final response",
                 }
 
-            messages.append({
-                "role": "user",
-                "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
+            # ============================================================
+            # TWO-TIER CONTEXT: Build FULL data context for max_turns path
+            # Same logic as early-exit path - use full data for final answer
+            # ============================================================
+            if tool_data_store.total_entries > 0:
+                total_tokens = tool_data_store.total_estimated_tokens
+                self.logger.info(
+                    f"[{flow_id}] 📊 TWO-TIER CONTEXT (max_turns): Building final answer from "
+                    f"{tool_data_store.total_entries} tool results "
+                    f"(~{total_tokens:,} tokens of data)"
+                )
+
+                scratchpad.log_context_decision(
+                    total_tokens=total_tokens,
+                    budget_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                    strategy="full" if total_tokens <= DEFAULT_FINAL_CONTEXT_MAX_TOKENS else "truncated",
+                )
+
+                if total_tokens > DEFAULT_FINAL_CONTEXT_MAX_TOKENS * 1.5:
+                    full_context = await select_relevant_results(
+                        query=query,
+                        tool_data_store=tool_data_store,
+                        max_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                        llm_provider=self.llm_provider,
+                    )
+                else:
+                    full_context = build_final_context(
+                        tool_data_store=tool_data_store,
+                        max_tokens=DEFAULT_FINAL_CONTEXT_MAX_TOKENS,
+                    )
+
+                # Extract system prompt
+                system_msg = messages[0] if messages and messages[0].get("role") == "system" else None
+                system_content = system_msg["content"] if system_msg else ""
+
+                final_messages = [
+                    {"role": "system", "content": system_content},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"User query: {query}\n\n"
+                            f"## Complete Data From Tool Calls\n\n"
+                            f"{full_context}\n\n"
+                            f"## Instructions\n"
+                            f"Please provide your COMPREHENSIVE final response based on ALL the data above.\n\n"
+                            f"IMPORTANT:\n"
+                            f"- Include ALL important data points and numbers from the tool results\n"
+                            f"- For financial queries: provide price, technical signals, fundamental metrics\n"
+                            f"- Give clear insights and actionable recommendations\n"
+                            f"- Be thorough - don't truncate or summarize important details\n"
+                            f"- Use proper markdown formatting for readability\n"
+                            f"- Match the user's language"
+                        ),
+                    },
+                ]
+            else:
+                final_messages = messages
+                final_messages.append({
+                    "role": "user",
+                    "content": """Please provide your COMPREHENSIVE final response based on all the information gathered.
 
 IMPORTANT:
 - Include ALL important data points and numbers from tool results
 - For each symbol, provide: price, technical signals (RSI, MACD), fundamental metrics (P/E, ROE)
 - Give clear insights and actionable recommendations
-- Don't truncate or summarize - be as detailed as needed for a thorough analysis
-- End with 2-3 follow-up questions""",
-            })
+- Don't truncate or summarize - be as detailed as needed for a thorough analysis""",
+                })
 
             # Use centralized streaming config constants
             self.logger.info(
@@ -3203,7 +3582,7 @@ IMPORTANT:
             chunk_count = 0
             async for chunk in self.llm_provider.stream_response(
                 model_name=effective_model,
-                messages=messages,
+                messages=final_messages,
                 provider_type=effective_provider,
                 api_key=self.api_key,
                 max_tokens=STREAMING_MAX_TOKENS,
@@ -3215,6 +3594,9 @@ IMPORTANT:
             self.logger.info(
                 f"[{flow_id}] ✅ REAL STREAMING (max_turns) complete: {chunk_count} chunks"
             )
+
+            # Finalize scratchpad
+            scratchpad.finalize(total_turns=max_turns, total_tool_calls=total_tool_calls)
 
             # ============================================================
             # APPEND WEB SEARCH SOURCES SECTION (ChatGPT-style)
@@ -3347,6 +3729,42 @@ You have access to various data tools. Use them to gather real data before respo
 - **Match the user's language** - If they write in Vietnamese, respond in Vietnamese. If English, respond in English.
 - **Never switch languages mid-conversation** unless the user does first
 - Be consistent throughout your entire response"""
+
+        # ================================================================
+        # SKILL.md WORKFLOW SYSTEM: Auto-inject + workflow list
+        # ================================================================
+        try:
+            workflow_registry = get_workflow_registry()
+
+            # Add available workflows list to system prompt
+            workflow_list = workflow_registry.build_workflow_list_for_prompt()
+            if workflow_list:
+                system_prompt += f"\n\n{workflow_list}"
+
+            # Auto-inject: Check if query matches a workflow based on analysis_type
+            analysis_type = getattr(intent_result, 'analysis_type', None)
+            if analysis_type and hasattr(analysis_type, 'value'):
+                analysis_type = analysis_type.value
+
+            market_type_str = market_type if isinstance(market_type, str) else str(market_type)
+
+            matched_workflow = workflow_registry.match_query(
+                query=query,
+                analysis_type=analysis_type,
+                market_type=market_type_str,
+            )
+            if matched_workflow:
+                system_prompt += (
+                    f"\n\n## Active Workflow: {matched_workflow.name}\n"
+                    f"Follow these step-by-step instructions for your analysis:\n\n"
+                    f"{matched_workflow.instructions}"
+                )
+                self.logger.info(
+                    f"[_build_messages] Auto-injected workflow: {matched_workflow.name} "
+                    f"(analysis_type={analysis_type}, market_type={market_type_str})"
+                )
+        except Exception as e:
+            self.logger.warning(f"[_build_messages] Workflow integration failed: {e}")
 
         # Add think tool instruction if enabled (works for both GPT and Gemini)
         if enable_think_tool:
