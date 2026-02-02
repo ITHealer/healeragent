@@ -3,18 +3,31 @@ Stock Skill - Domain Expert for Equity Analysis
 
 Provides domain-specific expertise for stock/equity analysis with
 natural, conversational responses like ChatGPT/Claude.
+
+Supports hierarchical synthesis: phases of tool execution with
+intermediate LLM synthesis to prevent information loss.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from src.agents.skills.skill_base import BaseSkill, SkillConfig
+from src.agents.skills.skill_base import (
+    BaseSkill,
+    Phase,
+    PhaseSummary,
+    PhaseType,
+    SkillConfig,
+    SkillContext,
+)
 
 
 class StockSkill(BaseSkill):
     """
     Domain expert for stock/equity analysis.
 
-    Designed for natural, conversational responses without rigid formatting.
+    Supports hierarchical synthesis with 3 phases:
+    1. Technical: Price, indicators, patterns, support/resistance
+    2. Fundamental: Financial statements, ratios, growth metrics
+    3. Context: News, sentiment, analyst ratings, risk
     """
 
     def __init__(self):
@@ -35,16 +48,168 @@ class StockSkill(BaseSkill):
                 "getCashFlow",
                 "getFinancialRatios",
                 "getGrowthMetrics",
-                "getAnalystRatings",  # Wall Street consensus & price targets
+                "getAnalystRatings",
                 "getStockNews",
                 "getSentiment",
                 "assessRisk",
                 "getVolumeProfile",
                 "suggestStopLoss",
             ],
-            version="2.0.0",
+            version="3.0.0",
+            enable_hierarchical_synthesis=True,
         )
         super().__init__(config)
+
+    # ====================================================================
+    # Hierarchical Synthesis: Phases
+    # ====================================================================
+
+    def get_phases(self, context: Optional[SkillContext] = None) -> List[Phase]:
+        """Define stock analysis execution phases."""
+        categories = context.categories if context else []
+
+        phases = []
+
+        # Phase 1: Technical Analysis (price + indicators)
+        technical_tools = [
+            "getStockPrice",
+            "getStockPerformance",
+            "getTechnicalIndicators",
+            "detectChartPatterns",
+            "getSupportResistance",
+            "getVolumeProfile",
+        ]
+        # Only include tools whose categories are relevant
+        if not categories or any(c in categories for c in ["price", "technical"]):
+            phases.append(Phase(
+                name="technical",
+                display_name="Technical Analysis",
+                phase_type=PhaseType.TECHNICAL,
+                tools=technical_tools,
+                synthesis_focus=(
+                    "Summarize price action, trend direction, momentum indicators "
+                    "(RSI, MACD, Moving Averages), support/resistance levels, "
+                    "volume profile, and chart patterns. Include exact numbers."
+                ),
+                max_summary_tokens=500,
+                priority=1,
+            ))
+
+        # Phase 2: Fundamental Analysis (financials + valuation)
+        fundamental_tools = [
+            "getIncomeStatement",
+            "getBalanceSheet",
+            "getCashFlow",
+            "getFinancialRatios",
+            "getGrowthMetrics",
+        ]
+        if not categories or any(c in categories for c in ["fundamentals"]):
+            phases.append(Phase(
+                name="fundamental",
+                display_name="Fundamental Analysis",
+                phase_type=PhaseType.FUNDAMENTAL,
+                tools=fundamental_tools,
+                synthesis_focus=(
+                    "Summarize financial performance (revenue, EPS, margins), "
+                    "balance sheet health (cash, debt), valuation metrics "
+                    "(P/E, PEG, P/B, EV/EBITDA), and growth trajectory. "
+                    "Preserve multi-period comparison data in tables."
+                ),
+                max_summary_tokens=600,
+                priority=1,
+            ))
+
+        # Phase 3: Market Context (news + sentiment + ratings)
+        context_tools = [
+            "getAnalystRatings",
+            "getStockNews",
+            "getSentiment",
+            "assessRisk",
+            "suggestStopLoss",
+        ]
+        if not categories or any(c in categories for c in ["news", "risk"]):
+            phases.append(Phase(
+                name="context",
+                display_name="Market Context",
+                phase_type=PhaseType.CONTEXT,
+                tools=context_tools,
+                synthesis_focus=(
+                    "Summarize analyst consensus (buy/hold/sell breakdown, "
+                    "price target range), recent news and catalysts, market "
+                    "sentiment, risk factors, and suggested stop-loss levels."
+                ),
+                max_summary_tokens=400,
+                priority=2,
+            ))
+
+        return phases
+
+    def get_phase_synthesis_prompt(
+        self,
+        phase: Phase,
+        context: Optional[SkillContext] = None,
+    ) -> str:
+        """Get phase-specific synthesis prompt for stock analysis."""
+        # Phase-specific structured templates
+        phase_templates = {
+            "technical": (
+                "Create a structured technical analysis summary:\n"
+                "1. Current Price & Trend (price, daily/weekly change, 52-week range)\n"
+                "2. Key Indicators (RSI, MACD, Stochastic - with exact values)\n"
+                "3. Moving Averages (price vs 50/200 MA, golden/death cross status)\n"
+                "4. Support/Resistance Levels (specific price levels)\n"
+                "5. Volume & Patterns (volume trend, any detected patterns)\n"
+                "6. Technical Outlook (1-2 sentences: bullish/bearish/neutral with reasoning)"
+            ),
+            "fundamental": (
+                "Create a structured fundamental analysis summary:\n"
+                "1. Revenue & Earnings (latest quarter/annual, YoY growth, beat/miss)\n"
+                "2. Profitability (gross margin, operating margin, net margin)\n"
+                "3. Balance Sheet (cash position, debt levels, current ratio)\n"
+                "4. Valuation (P/E, PEG, P/B, EV/EBITDA vs sector averages)\n"
+                "5. Growth Metrics (revenue growth, EPS growth, forward guidance)\n"
+                "6. Financial Outlook (1-2 sentences: strong/weak with key drivers)\n"
+                "\nIMPORTANT: If tool data includes multi-period tables, "
+                "preserve the full comparison in a markdown table."
+            ),
+            "context": (
+                "Create a structured market context summary:\n"
+                "1. Analyst Consensus (Buy/Hold/Sell count, consensus target, range)\n"
+                "2. Recent News (top 2-3 material news items with impact assessment)\n"
+                "3. Sentiment (overall market sentiment toward this stock)\n"
+                "4. Risk Factors (key risks identified, severity assessment)\n"
+                "5. Trading Levels (suggested stop-loss, risk/reward ratio)\n"
+                "6. Context Outlook (1-2 sentences: catalysts vs headwinds)"
+            ),
+        }
+
+        template = phase_templates.get(phase.name, "")
+        base_prompt = super().get_phase_synthesis_prompt(phase, context)
+
+        if template:
+            return f"{base_prompt}\n\nStructure:\n{template}"
+        return base_prompt
+
+    def get_final_synthesis_prompt(
+        self,
+        phase_summaries: Dict[str, PhaseSummary],
+        context: Optional[SkillContext] = None,
+    ) -> str:
+        """Get final synthesis prompt for comprehensive stock analysis."""
+        return super().get_final_synthesis_prompt(phase_summaries, context)
+
+    def _get_final_sections(self, context: Optional[SkillContext] = None) -> List[str]:
+        """Stock-specific final report sections."""
+        return [
+            "TL;DR (2-3 sentences: price, verdict, key action)",
+            "Price & Market Context (current price, performance, sector context)",
+            "Technical Analysis (momentum, trend, key levels)",
+            "Fundamental Health (valuation, profitability, growth)",
+            "Wall Street Consensus (analyst ratings, price targets)",
+            "Risk Assessment (key risks and mitigations)",
+            "Investment Thesis (bull case with target, bear case with risk)",
+            "Recommendation (buy/hold/sell with rationale and key levels)",
+        ]
 
     def get_system_prompt(self) -> str:
         """Get stock analysis system prompt - comprehensive and data-driven."""

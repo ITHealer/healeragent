@@ -3,18 +3,30 @@ Mixed Skill - Domain Expert for Cross-Asset Analysis
 
 Provides specialized expertise for queries spanning multiple asset classes,
 including stock vs crypto comparisons and portfolio analysis.
+
+Supports hierarchical synthesis with cross-asset phases.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from src.agents.skills.skill_base import BaseSkill, SkillConfig
+from src.agents.skills.skill_base import (
+    BaseSkill,
+    Phase,
+    PhaseSummary,
+    PhaseType,
+    SkillConfig,
+    SkillContext,
+)
 
 
 class MixedSkill(BaseSkill):
     """
     Domain expert for cross-asset and portfolio analysis.
 
-    Designed for natural, conversational responses without rigid formatting.
+    Supports hierarchical synthesis with 3 phases:
+    1. Stock Data: Price, technicals, financials for equity assets
+    2. Crypto Data: Price, technicals, on-chain for crypto assets
+    3. Context & Comparison: News, sentiment, risk, cross-asset context
     """
 
     def __init__(self):
@@ -40,9 +52,128 @@ class MixedSkill(BaseSkill):
                 "assessRisk",
                 "webSearch",
             ],
-            version="2.0.0",
+            version="3.0.0",
+            enable_hierarchical_synthesis=True,
         )
         super().__init__(config)
+
+    # ====================================================================
+    # Hierarchical Synthesis: Phases
+    # ====================================================================
+
+    def get_phases(self, context: Optional[SkillContext] = None) -> List[Phase]:
+        """Define cross-asset analysis execution phases."""
+        phases = []
+
+        # Phase 1: Stock Data Collection
+        phases.append(Phase(
+            name="stock_data",
+            display_name="Stock/Equity Analysis",
+            phase_type=PhaseType.TECHNICAL,
+            tools=[
+                "getStockPrice",
+                "getStockPerformance",
+                "getTechnicalIndicators",
+                "getFinancialRatios",
+            ],
+            synthesis_focus=(
+                "Summarize equity asset data: price, performance, "
+                "technical indicators, and key financial ratios. "
+                "Include exact numbers for comparison."
+            ),
+            max_summary_tokens=500,
+            priority=1,
+        ))
+
+        # Phase 2: Crypto Data Collection
+        phases.append(Phase(
+            name="crypto_data",
+            display_name="Crypto Asset Analysis",
+            phase_type=PhaseType.MARKET_STRUCTURE,
+            tools=[
+                "getCryptoPrice",
+                "getCryptoTechnicals",
+                "getCryptoInfo",
+            ],
+            synthesis_focus=(
+                "Summarize crypto asset data: price, performance, "
+                "technical indicators, tokenomics, and market metrics. "
+                "Include exact numbers for comparison."
+            ),
+            max_summary_tokens=500,
+            priority=1,
+        ))
+
+        # Phase 3: Cross-Asset Context
+        phases.append(Phase(
+            name="comparison_context",
+            display_name="Cross-Asset Context",
+            phase_type=PhaseType.COMPARISON,
+            tools=[
+                "getStockNews",
+                "getSentiment",
+                "assessRisk",
+                "webSearch",
+            ],
+            synthesis_focus=(
+                "Summarize cross-asset context: news for both assets, "
+                "comparative sentiment, risk assessment, and any macro "
+                "factors affecting both asset classes."
+            ),
+            max_summary_tokens=400,
+            priority=2,
+        ))
+
+        return phases
+
+    def get_phase_synthesis_prompt(
+        self,
+        phase: Phase,
+        context: Optional[SkillContext] = None,
+    ) -> str:
+        """Get phase-specific synthesis prompt for mixed analysis."""
+        phase_templates = {
+            "stock_data": (
+                "Create a structured stock/equity summary:\n"
+                "1. Price & Performance (current price, returns by timeframe)\n"
+                "2. Technical Signals (RSI, MACD, trend direction)\n"
+                "3. Valuation (P/E, P/B, key ratios vs sector)\n"
+                "4. Stock Assessment (1-2 sentences)"
+            ),
+            "crypto_data": (
+                "Create a structured crypto asset summary:\n"
+                "1. Price & Performance (price, 24h/7d/30d returns, market cap)\n"
+                "2. Technical Signals (RSI, MACD, trend direction)\n"
+                "3. Tokenomics (supply, inflation, utility)\n"
+                "4. Crypto Assessment (1-2 sentences)"
+            ),
+            "comparison_context": (
+                "Create a structured cross-asset context summary:\n"
+                "1. News Impact (key news for each asset class)\n"
+                "2. Sentiment Comparison (sentiment for each asset)\n"
+                "3. Risk Profile (volatility comparison, risk factors)\n"
+                "4. Macro Context (how macro affects each asset differently)\n"
+                "5. Correlation & Diversification (1-2 sentences)"
+            ),
+        }
+
+        template = phase_templates.get(phase.name, "")
+        base_prompt = super().get_phase_synthesis_prompt(phase, context)
+
+        if template:
+            return f"{base_prompt}\n\nStructure:\n{template}"
+        return base_prompt
+
+    def _get_final_sections(self, context: Optional[SkillContext] = None) -> List[str]:
+        """Cross-asset final report sections."""
+        return [
+            "TL;DR (2-3 sentences: verdict on each asset, recommended allocation)",
+            "Market Context (macro environment, correlation, risk sentiment)",
+            "Performance Comparison (side-by-side returns with table)",
+            "Risk Profile Comparison (volatility, drawdown, risk-adjusted metrics)",
+            "Scenario Analysis (bull/bear case for each asset with probabilities)",
+            "Action Plan (allocation by risk profile, entry/target/stop per asset)",
+        ]
 
     def get_system_prompt(self) -> str:
         """Get mixed/portfolio analysis system prompt - comprehensive and data-driven."""

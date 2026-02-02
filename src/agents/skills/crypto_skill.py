@@ -3,18 +3,29 @@ Crypto Skill - Domain Expert for Cryptocurrency Analysis
 
 Provides domain-specific expertise for cryptocurrency analysis with
 natural, conversational responses like ChatGPT/Claude.
+
+Supports hierarchical synthesis with crypto-specific phases.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
-from src.agents.skills.skill_base import BaseSkill, SkillConfig
+from src.agents.skills.skill_base import (
+    BaseSkill,
+    Phase,
+    PhaseSummary,
+    PhaseType,
+    SkillConfig,
+    SkillContext,
+)
 
 
 class CryptoSkill(BaseSkill):
     """
     Domain expert for cryptocurrency analysis.
 
-    Designed for natural, conversational responses without rigid formatting.
+    Supports hierarchical synthesis with 2 phases:
+    1. Technical & Price: Price data, technical indicators, chart patterns
+    2. Context & Fundamentals: Tokenomics, news, sentiment, market context
     """
 
     def __init__(self):
@@ -32,9 +43,94 @@ class CryptoSkill(BaseSkill):
                 "webSearch",
                 "getSentiment",
             ],
-            version="2.0.0",
+            version="3.0.0",
+            enable_hierarchical_synthesis=True,
         )
         super().__init__(config)
+
+    # ====================================================================
+    # Hierarchical Synthesis: Phases
+    # ====================================================================
+
+    def get_phases(self, context: Optional[SkillContext] = None) -> List[Phase]:
+        """Define crypto analysis execution phases."""
+        phases = []
+
+        # Phase 1: Technical & Price
+        phases.append(Phase(
+            name="technical",
+            display_name="Technical & Price Analysis",
+            phase_type=PhaseType.TECHNICAL,
+            tools=["getCryptoPrice", "getCryptoTechnicals"],
+            synthesis_focus=(
+                "Summarize current price, 24h/7d/30d performance, "
+                "technical indicators (RSI, MACD, MAs), support/resistance, "
+                "volume analysis, and chart patterns with exact numbers."
+            ),
+            max_summary_tokens=500,
+            priority=1,
+        ))
+
+        # Phase 2: Context & Fundamentals
+        phases.append(Phase(
+            name="context",
+            display_name="Market Context & Fundamentals",
+            phase_type=PhaseType.CONTEXT,
+            tools=["getCryptoInfo", "getStockNews", "getSentiment", "webSearch"],
+            synthesis_focus=(
+                "Summarize tokenomics (supply, market cap, rank), "
+                "recent news and catalysts, market sentiment, "
+                "and any fundamental developments."
+            ),
+            max_summary_tokens=400,
+            priority=2,
+        ))
+
+        return phases
+
+    def get_phase_synthesis_prompt(
+        self,
+        phase: Phase,
+        context: Optional[SkillContext] = None,
+    ) -> str:
+        """Get phase-specific synthesis prompt for crypto analysis."""
+        phase_templates = {
+            "technical": (
+                "Create a structured crypto technical summary:\n"
+                "1. Current Price (price, 24h change, market cap, rank)\n"
+                "2. Performance (24h, 7d, 30d, YTD returns)\n"
+                "3. Key Indicators (RSI, MACD with exact values)\n"
+                "4. Support/Resistance (specific price levels)\n"
+                "5. Volume (24h volume, vs average, buy/sell pressure)\n"
+                "6. Technical Outlook (1-2 sentences)"
+            ),
+            "context": (
+                "Create a structured market context summary:\n"
+                "1. Tokenomics (circulating/total supply, inflation, utility)\n"
+                "2. Recent News (top 2-3 material items with impact)\n"
+                "3. Sentiment (market mood, social mentions, fear/greed)\n"
+                "4. Catalysts & Risks (upcoming events, regulatory threats)\n"
+                "5. Context Outlook (1-2 sentences)"
+            ),
+        }
+
+        template = phase_templates.get(phase.name, "")
+        base_prompt = super().get_phase_synthesis_prompt(phase, context)
+
+        if template:
+            return f"{base_prompt}\n\nStructure:\n{template}"
+        return base_prompt
+
+    def _get_final_sections(self, context: Optional[SkillContext] = None) -> List[str]:
+        """Crypto-specific final report sections."""
+        return [
+            "TL;DR (2-3 sentences: price, verdict, key action)",
+            "Market Context (BTC dominance, macro, risk sentiment)",
+            "Technical Picture (momentum, trend, key levels)",
+            "Fundamental & On-Chain (tokenomics, network health)",
+            "Scenario Analysis (bull case with target, bear case with risk)",
+            "Action Plan (entry/target/stop with position type)",
+        ]
 
     def get_system_prompt(self) -> str:
         """Get crypto analysis system prompt - comprehensive and data-driven."""
