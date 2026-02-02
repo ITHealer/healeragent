@@ -1985,6 +1985,43 @@ class FinancialDataFormatter:
         health_status = "Excellent" if score == 4 else "Good" if score >= 2 else "Neutral"
         sections.append(f"\n**🏥 Quick Health Check:** {health_status} ({score}/4 checks passed)")
 
+        # ═══════════════════════════════════════════════════════════
+        # HISTORICAL COMPARISON (All periods)
+        # ═══════════════════════════════════════════════════════════
+        history = data.get('history', [])
+        if len(history) > 1:
+            sections.append(f"\n**📜 HISTORICAL TREND ({len(history)} periods):**")
+
+            def h_fmt(v, pct=False):
+                """Format a value for the history table."""
+                if v is None:
+                    return "    N/A"
+                try:
+                    if pct:
+                        return f"{float(v)*100:>7.1f}%"
+                    return f"{float(v):>8.2f}"
+                except (ValueError, TypeError):
+                    return "    N/A"
+
+            sections.append(
+                f"{'Period':<16} {'P/E':>8} {'P/B':>8} {'ROE%':>8} "
+                f"{'NetMar%':>8} {'Curr.R':>8} {'D/E':>8}"
+            )
+            sections.append("─" * 72)
+
+            for p in history:
+                date = (p.get('date') or 'N/A')[:10]
+                period_label = p.get('period', '')
+                sections.append(
+                    f"{date} {period_label:<4} "
+                    f"{h_fmt(p.get('pe_ratio'))} "
+                    f"{h_fmt(p.get('pb_ratio'))} "
+                    f"{h_fmt(p.get('roe'), pct=True)} "
+                    f"{h_fmt(p.get('net_margin'), pct=True)} "
+                    f"{h_fmt(p.get('current_ratio'))} "
+                    f"{h_fmt(p.get('debt_equity'))}"
+                )
+
         return "\n".join(sections)
     
     @staticmethod

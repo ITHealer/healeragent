@@ -88,10 +88,18 @@ class ContextManager:
 
         If the result was already offloaded by ArtifactManager, `result_content`
         will be the summary string. Otherwise, this method truncates long results.
+
+        NOTE: Limit raised from 3000 → 12000 to preserve full historical
+        comparison tables in financial reports (income statement, balance sheet,
+        cash flow). With 4-8 periods of data, formatted tables easily exceed
+        3000 chars but are essential for year-over-year / quarter-over-quarter
+        analysis.
         """
+        TOOL_RESULT_CHAR_LIMIT = 12000
+
         # Truncate if too long and not already a summary
-        if not is_summary and len(result_content) > 3000:
-            result_content = result_content[:3000] + "\n... [truncated, full data in artifact]"
+        if not is_summary and len(result_content) > TOOL_RESULT_CHAR_LIMIT:
+            result_content = result_content[:TOOL_RESULT_CHAR_LIMIT] + "\n... [truncated, full data in artifact]"
 
         self._messages.append({
             "role": "tool",

@@ -532,7 +532,13 @@ class Orchestrator:
             synthesis_instruction = (
                 "Based on all the data gathered above, provide a comprehensive and accurate "
                 f"response to the user's question. Language: {classification.response_language}. "
-                "Be specific with numbers and data. If some data was unavailable, acknowledge it."
+                "Be specific with numbers and data. If some data was unavailable, acknowledge it.\n\n"
+                "IMPORTANT — Financial Report Rules:\n"
+                "- When tool results include HISTORICAL data tables (multiple periods/years/quarters), "
+                "you MUST present the full comparison table in your response so the user can compare across periods.\n"
+                "- NEVER summarize multi-period financial data into a single number. Show ALL periods returned by the tools.\n"
+                "- Use markdown tables to display year-over-year or quarter-over-quarter comparisons.\n"
+                "- Include raw numbers from the tool results — do not round excessively or omit data points."
             )
             if gathered_data:
                 context_mgr.add_user_message(synthesis_instruction)

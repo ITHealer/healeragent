@@ -362,15 +362,33 @@ class GetFinancialRatiosTool(BaseTool):
         ✅ KEY FIX: Groups data into categories at the root level to match Schema.
         """
         
-        # Process history first (keep flat structure for history list)
+        # Process history — include all key ratios per period for comparison
         formatted_periods = []
         for item in raw_data[:limit]:
             formatted_periods.append({
                 "date": item.get("date"),
+                "period": item.get("period"),
+                "calendar_year": item.get("calendarYear"),
+                # Valuation
                 "pe_ratio": item.get("priceEarningsRatio"),
+                "pb_ratio": item.get("priceToBookRatio"),
+                "ps_ratio": item.get("priceToSalesRatio"),
+                "peg_ratio": item.get("priceEarningsToGrowthRatio"),
+                "ev_ebitda": item.get("enterpriseValueMultiple"),
+                # Profitability
+                "gross_margin": item.get("grossProfitMargin"),
+                "operating_margin": item.get("operatingProfitMargin"),
+                "net_margin": item.get("netProfitMargin"),
                 "roe": item.get("returnOnEquity"),
+                "roa": item.get("returnOnAssets"),
+                # Liquidity
                 "current_ratio": item.get("currentRatio"),
-                "debt_equity": item.get("debtEquityRatio")
+                "quick_ratio": item.get("quickRatio"),
+                # Leverage
+                "debt_equity": item.get("debtEquityRatio"),
+                "interest_coverage": item.get("interestCoverage"),
+                # Dividend
+                "dividend_yield": item.get("dividendYield"),
             })
         
         # Get latest period for the main grouped output

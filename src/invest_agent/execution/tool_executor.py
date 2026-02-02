@@ -209,22 +209,48 @@ class ToolExecutor:
         retries: int,
         session_id: Optional[str] = None,
     ) -> ToolExecutionResult:
-        """Convert a ToolOutput into a ToolExecutionResult, handling offloading."""
+        """Convert a ToolOutput into a ToolExecutionResult, handling offloading.
+
+        KEY FIX: formatted_context (the LLM-readable text) is always preserved
+        as the primary context for the LLM. Artifact offloading only saves raw
+        data to disk for potential later retrieval — it never replaces the
+        formatted_context that the LLM sees.
+        """
         elapsed_ms = int((time.time() - start_time) * 1000)
 
-        # Determine what goes into context
-        context_data = output.formatted_context or output.data or ""
+        # ── Step 1: Determine what the LLM sees ──
+        # Always prefer formatted_context (human-readable text from the formatter).
+        # Fall back to stringified raw data only when formatted_context is absent.
+        llm_context: str = ""
+        if output.formatted_context:
+            llm_context = output.formatted_context
+        elif output.data:
+            llm_context = str(output.data)
+        else:
+            llm_context = "No data returned"
+
+        # ── Step 2: Artifact offloading (save raw data to disk, don't touch llm_context) ──
         was_offloaded = False
         artifact_ref = None
 
-        # Try artifact offloading if manager is available and session exists
         if self._artifact_manager and session_id and output.data:
-            was_offloaded, context_data, artifact_ref = self._artifact_manager.maybe_offload(
-                session_id=session_id,
-                tool_name=call.resolved_name,
-                result_data=output.data,
-                custom_summary=output.formatted_context,
-            )
+            serialized = self._artifact_manager._serialize(output.data)
+            if len(serialized) > self._artifact_manager._offload_threshold:
+                try:
+                    artifact_ref = self._artifact_manager.save_artifact(
+                        session_id=session_id,
+                        tool_name=call.resolved_name,
+                        data=output.data,
+                        custom_summary=llm_context[:500] if llm_context else None,
+                    )
+                    was_offloaded = True
+                    logger.info(
+                        f"[ToolExecutor] Offloaded {call.resolved_name} raw data "
+                        f"({len(serialized)} chars) to artifact {artifact_ref.artifact_id}. "
+                        f"LLM still sees full formatted_context ({len(llm_context)} chars)."
+                    )
+                except Exception as e:
+                    logger.warning(f"[ToolExecutor] Artifact offload failed for {call.resolved_name}: {e}")
 
         return ToolExecutionResult(
             tool_name=call.resolved_name,
@@ -232,7 +258,7 @@ class ToolExecutor:
             success=(output.status in ("success", "partial")),
             data=output.data,
             error=output.error,
-            formatted_context=str(context_data) if context_data else None,
+            formatted_context=llm_context,
             execution_time_ms=elapsed_ms,
             retries_used=retries,
             was_offloaded=was_offloaded,
