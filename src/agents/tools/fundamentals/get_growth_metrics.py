@@ -31,6 +31,7 @@ from src.agents.tools.base import (
 )
 
 from src.agents.tools.fundamentals._financial_base import FinancialDataFetcher
+from src.helpers.data_formatter import FinancialDataFormatter
 
 
 class GetGrowthMetricsTool(BaseTool):
@@ -183,10 +184,17 @@ class GetGrowthMetricsTool(BaseTool):
                 f"[getGrowthMetrics] ✅ SUCCESS - Retrieved {formatted_data.get('period_count')} periods"
             )
             
-            # FIX: Pass tool_name as first argument, data as second
+            # Generate formatted_context for LLM consumption
+            try:
+                formatted_context = FinancialDataFormatter.format_growth_metrics(formatted_data)
+            except Exception as fmt_err:
+                self.logger.warning(f"[getGrowthMetrics] Formatter error: {fmt_err}")
+                formatted_context = None
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=formatted_context,
                 metadata={
                     "symbol_queried": symbol_upper,
                     "records_count": len(raw_data)

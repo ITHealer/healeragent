@@ -211,10 +211,80 @@ class UnifiedAgent(LoggerMixin):
     # Default tool timeout (increased for stability)
     DEFAULT_TOOL_TIMEOUT = 90.0
 
+    # Fundamental tools that produce financial data for chart sync
+    FINANCIAL_CHART_TOOLS = {
+        "getIncomeStatement", "getBalanceSheet", "getCashFlow",
+        "getFinancialRatios", "getGrowthMetrics",
+    }
+
     # Slow tools with longer timeouts (seconds)
     SLOW_TOOL_TIMEOUTS = {
         "webSearch": 180.0,     # Web search can take 60+ seconds with OpenAI Responses API
     }
+
+    @staticmethod
+    def _build_tool_results_event(tool_calls_list, tool_results_list) -> dict:
+        """
+        Build tool_results event with financial_data for chart sync.
+
+        For fundamental tools, includes the tool data so FE can render charts
+        using the same data that the AI analyzed (prevents data mismatch).
+        """
+        results = []
+        financial_data = {}
+
+        for tc_or_name, r in zip(tool_calls_list, tool_results_list):
+            # Support both ToolCall objects and dicts
+            tool_name = tc_or_name.name if hasattr(tc_or_name, 'name') else (
+                tc_or_name if isinstance(tc_or_name, str) else r.get("tool_name", "")
+            )
+            is_success = r.get("status") in ["success", "200"]
+
+            result_entry = {
+                "tool": tool_name,
+                "success": is_success,
+            }
+
+            # Include symbol if available
+            symbol = r.get("symbol") or (r.get("data", {}) or {}).get("symbol")
+            if symbol:
+                result_entry["symbol"] = symbol
+
+            results.append(result_entry)
+
+            # Collect financial data for chart sync
+            if tool_name in UnifiedAgent.FINANCIAL_CHART_TOOLS and is_success and r.get("data"):
+                data = r["data"]
+                financial_data[tool_name] = {
+                    "symbol": data.get("symbol", symbol),
+                    "period_type": data.get("period") or data.get("period_type", ""),
+                    "period_count": data.get("period_count", 0),
+                    # Include the actual data arrays for FE chart rendering
+                    "statements": data.get("statements"),           # income statement
+                    "periods": data.get("periods"),                 # balance sheet / cash flow
+                    "historical_periods": data.get("historical_periods"),  # growth metrics
+                    "growth_summary": data.get("growth_summary"),   # growth summary
+                    # Key metrics for quick display
+                    "latest_period": data.get("latest_period"),
+                    "profit_margins": data.get("profit_margins"),
+                    "valuation_ratios": data.get("valuation_ratios"),
+                    "profitability_ratios": data.get("profitability_ratios"),
+                }
+                # Remove None values to keep payload clean
+                financial_data[tool_name] = {
+                    k: v for k, v in financial_data[tool_name].items() if v is not None
+                }
+
+        event = {
+            "type": "tool_results",
+            "results": results,
+        }
+
+        # Include financial_data only when present (for chart sync)
+        if financial_data:
+            event["financial_data"] = financial_data
+
+        return event
 
     def __init__(
         self,
@@ -665,19 +735,13 @@ class UnifiedAgent(LoggerMixin):
             ],
         }
 
-        # Emit results
+        # Emit results (with financial data for chart sync)
         success_count = sum(1 for r in tool_results if r.get("status") in ["success", "200"])
-        yield {
-            "type": "tool_results",
-            "results": [
-                {
-                    "tool": r.get("tool_name", ""),
-                    "symbol": r.get("symbol"),
-                    "success": r.get("status") in ["success", "200"],
-                }
-                for r in tool_results
-            ],
-        }
+        # Use tool_name from results as "tool_calls_list" since we don't have ToolCall objects here
+        yield self._build_tool_results_event(
+            [r.get("tool_name", "") for r in tool_results],
+            tool_results
+        )
 
         if enable_reasoning:
             yield {
@@ -1054,14 +1118,8 @@ IMPORTANT:
                     self.logger.info(f"[{flow_id}]     📊 outlook={outlook.get('outlook')} | action={rec.get('overall_action')}")
             self.logger.info(f"[{flow_id}] ═══════════════════════════════════════════════════════")
 
-            # Emit results
-            yield {
-                "type": "tool_results",
-                "results": [
-                    {"tool": tc.name, "success": r.get("status") in ["success", "200"]}
-                    for tc, r in zip(tool_calls, tool_results)
-                ],
-            }
+            # Emit results (with financial data for chart sync)
+            yield self._build_tool_results_event(tool_calls, tool_results)
 
             # Update messages (preserves thought_signature for Gemini 3+)
             messages.append({
@@ -3074,14 +3132,8 @@ IMPORTANT:
                             exc_info=True,
                         )
 
-                # Emit results
-                yield {
-                    "type": "tool_results",
-                    "results": [
-                        {"tool": tc.name, "success": r.get("status") in ["success", "200"]}
-                        for tc, r in zip(tool_calls, tool_results)
-                    ],
-                }
+                # Emit results (with financial data for chart sync)
+                yield self._build_tool_results_event(tool_calls, tool_results)
 
                 # ============================================================
                 # EXTRACT CITATIONS FROM WEB SEARCH RESULTS

@@ -1267,114 +1267,144 @@ class FinancialDataFormatter:
     @staticmethod
     def format_income_statement(data: Dict[str, Any]) -> str:
         """
-        Format Income Statement
-        ✅ FIXED: Removed dependency on 'latest_period', reads directly from root keys
+        Format Income Statement - Comprehensive version with all periods
+        ✅ ENHANCED: Shows full historical data for accurate LLM analysis
         """
         if not data:
             return "No income statement data available"
-        
+
         sections = []
         symbol = data.get('symbol', 'N/A')
-        period_type = data.get('period', 'annual') # Key is 'period' in new schema
-        
+        period_type = data.get('period', 'annual')
+
         sections.append(f"📊 INCOME STATEMENT - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
-        
-        # ═══════════════════════════════════════════════════════════
-        # Check Data Availability (New Logic)
-        # ═══════════════════════════════════════════════════════════
+
         # Check if we have basic metrics at root level
         if 'revenue' not in data and 'net_income' not in data:
              return f"No financial data available for {symbol}"
 
         # ═══════════════════════════════════════════════════════════
-        # Revenue & Cost (Read directly from root)
+        # LATEST PERIOD SUMMARY (from root keys)
         # ═══════════════════════════════════════════════════════════
         revenue = data.get('revenue', 0)
-        # Note: Cost might not be in root if we didn't explicitly put it there in the tool fix, 
-        # but Revenue is guaranteed. Let's assume we want key metrics first.
         revenue_growth = data.get('revenue_growth', 0)
-        
-        sections.append(f"\n**💰 Revenue & Profitability:**")
+        net_income = data.get('net_income', 0)
+        eps = data.get('eps', 0)
+
+        statements = data.get('statements', [])
+        latest = statements[0] if statements else {}
+
+        sections.append(f"\n📅 **Latest Period:** {latest.get('date', 'N/A')} ({latest.get('period', '')} {latest.get('calendar_year', '')})")
+
+        sections.append(f"\n**💰 KEY METRICS (Latest):**")
         if revenue:
             sections.append(f"- Revenue: ${revenue:,.0f}")
         if revenue_growth:
             emoji = "📈" if revenue_growth > 0 else "📉"
-            sections.append(f"- Growth: {emoji} {revenue_growth:+.2f}%")
+            sections.append(f"- Revenue Growth (vs prior period): {emoji} {revenue_growth:+.2f}%")
+        if net_income:
+            sections.append(f"- Net Income: ${net_income:,.0f}")
+        if eps:
+            sections.append(f"- EPS: ${eps:.2f}")
 
-        # ═══════════════════════════════════════════════════════════
-        # Margins (From nested dictionary)
-        # ═══════════════════════════════════════════════════════════
+        # Margins
         margins = data.get('profit_margins', {})
         if isinstance(margins, dict):
             gross_margin = margins.get('gross', 0)
             op_margin = margins.get('operating', 0)
             net_margin = margins.get('net', 0)
-            
+
+            sections.append(f"\n**📊 PROFITABILITY MARGINS:**")
             if gross_margin: sections.append(f"- Gross Margin: {gross_margin*100:.1f}%")
             if op_margin: sections.append(f"- Operating Margin: {op_margin*100:.1f}%")
             if net_margin: sections.append(f"- Net Margin: {net_margin*100:.1f}%")
 
         # ═══════════════════════════════════════════════════════════
-        # Net Income & EPS (Read directly from root)
+        # FULL HISTORICAL DATA (All periods)
         # ═══════════════════════════════════════════════════════════
-        net_income = data.get('net_income', 0)
-        eps = data.get('eps', 0)
-        
-        sections.append(f"\n**💵 Net Income:**")
-        if net_income:
-            sections.append(f"- Net Income: ${net_income:,.0f}")
-        if eps:
-            sections.append(f"- EPS: ${eps:.2f}")
-        
-        # ═══════════════════════════════════════════════════════════
-        # Historical Comparison (From 'statements' list)
-        # ═══════════════════════════════════════════════════════════
-        statements = data.get('statements', [])
-        if len(statements) > 1:
-            sections.append(f"\n**📊 Historical Trend ({len(statements)} periods):**")
-            
-            # Show recent periods
-            for idx, period in enumerate(statements[:3]):
-                date = period.get('date', 'N/A')
-                rev = period.get('revenue', 0)
-                ni = period.get('net_income', 0)
-                sections.append(f"  {idx+1}. {date}: Revenue ${rev:,.0f}, Net Income ${ni:,.0f}")
-        
+        if statements:
+            sections.append(f"\n**📜 FULL STATEMENTS ({len(statements)} periods):**")
+            sections.append(f"{'Period':<16} {'Revenue':>16} {'Gross Profit':>16} {'Op. Income':>16} {'Net Income':>16} {'EPS':>8}")
+            sections.append("─" * 92)
+
+            for stmt in statements:
+                date = stmt.get('date', 'N/A')[:10]
+                period_label = f"{stmt.get('period', '')}"
+                rev = stmt.get('revenue', 0) or 0
+                gp = stmt.get('gross_profit', 0) or 0
+                oi = stmt.get('operating_income', 0) or 0
+                ni = stmt.get('net_income', 0) or 0
+                e = stmt.get('eps', 0) or 0
+
+                sections.append(
+                    f"{date} {period_label:<4} "
+                    f"${rev:>14,.0f} "
+                    f"${gp:>14,.0f} "
+                    f"${oi:>14,.0f} "
+                    f"${ni:>14,.0f} "
+                    f"${e:>6.2f}"
+                )
+
+            # Show additional detail for latest period
+            if latest:
+                sections.append(f"\n**📋 DETAILED BREAKDOWN (Latest: {latest.get('date', 'N/A')}):**")
+                detail_items = [
+                    ("Revenue", latest.get('revenue')),
+                    ("Cost of Revenue", latest.get('cost_of_revenue')),
+                    ("Gross Profit", latest.get('gross_profit')),
+                    ("R&D Expenses", latest.get('rd_expenses')),
+                    ("SG&A Expenses", latest.get('sg_and_a_expenses')),
+                    ("Operating Expenses", latest.get('operating_expenses')),
+                    ("Operating Income", latest.get('operating_income')),
+                    ("EBITDA", latest.get('ebitda')),
+                    ("Income Before Tax", latest.get('income_before_tax')),
+                    ("Income Tax Expense", latest.get('income_tax_expense')),
+                    ("Net Income", latest.get('net_income')),
+                    ("EPS (Basic)", latest.get('eps')),
+                    ("EPS (Diluted)", latest.get('eps_diluted')),
+                    ("Shares Outstanding", latest.get('weighted_average_shares')),
+                ]
+                for label, value in detail_items:
+                    if value is not None and value != 0:
+                        if isinstance(value, float) and abs(value) < 100:
+                            sections.append(f"- {label}: ${value:.2f}")
+                        else:
+                            sections.append(f"- {label}: ${value:,.0f}")
+
         return "\n".join(sections)
     
     @staticmethod
     def format_balance_sheet(data: Dict[str, Any]) -> str:
         """
-        Format balance sheet data for LLM
-        
-        Args:
-            data: Balance sheet data from GetBalanceSheetTool
-            
-        Returns:
-            Formatted text for LLM consumption
+        Format balance sheet data for LLM - Comprehensive version
+        ✅ ENHANCED: Shows all periods + detailed breakdown
         """
         if not data:
             return "No balance sheet data available"
-        
+
         sections = []
         symbol = data.get('symbol', 'N/A')
         period_type = data.get('period_type', 'annual')
-        
+
         sections.append(f"🏦 BALANCE SHEET - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
-        
+
         latest = data.get('latest_period', {})
-        
-        if not latest:
+        periods = data.get('periods', [])
+
+        if not latest and not periods:
             return "No balance sheet periods available"
-        
+
+        # If latest_period is empty but periods exist, use first period
+        if not latest and periods:
+            latest = periods[0]
+
         # ═══════════════════════════════════════════════════════════
         # Header Info
         # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
-        sections.append(f"**Fiscal Period:** {latest.get('period', 'N/A')} {latest.get('calendar_year', '')}")
-        
+        sections.append(f"\n📅 **Latest Period:** {latest.get('date', 'N/A')} ({latest.get('period', '')} {latest.get('calendar_year', '')})")
+
         # ═══════════════════════════════════════════════════════════
         # Assets
         # ═══════════════════════════════════════════════════════════
@@ -1385,12 +1415,12 @@ class FinancialDataFormatter:
         receivables = latest.get('net_receivables', 0)
         inventory = latest.get('inventory', 0)
         ppe = latest.get('property_plant_equipment', 0)
-        
+
         sections.append(f"\n**💎 ASSETS:**")
         if total_assets:
             sections.append(f"- **Total Assets: ${total_assets:,.0f}**")
-        
-        sections.append(f"\n  Current Assets:")
+
+        sections.append(f"  Current Assets:")
         if current_assets:
             sections.append(f"  - Total Current: ${current_assets:,.0f}")
         if cash:
@@ -1399,13 +1429,13 @@ class FinancialDataFormatter:
             sections.append(f"  - Receivables: ${receivables:,.0f}")
         if inventory:
             sections.append(f"  - Inventory: ${inventory:,.0f}")
-        
-        sections.append(f"\n  Non-Current Assets:")
+
+        sections.append(f"  Non-Current Assets:")
         if non_current_assets:
             sections.append(f"  - Total Non-Current: ${non_current_assets:,.0f}")
         if ppe:
             sections.append(f"  - Property, Plant & Equipment: ${ppe:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Liabilities
         # ═══════════════════════════════════════════════════════════
@@ -1417,99 +1447,119 @@ class FinancialDataFormatter:
         long_term_debt = latest.get('long_term_debt', 0)
         total_debt = latest.get('total_debt', 0)
         net_debt = latest.get('net_debt', 0)
-        
+
         sections.append(f"\n**⚖️ LIABILITIES:**")
         if total_liabilities:
             sections.append(f"- **Total Liabilities: ${total_liabilities:,.0f}**")
-        
-        sections.append(f"\n  Current Liabilities:")
+
+        sections.append(f"  Current Liabilities:")
         if current_liabilities:
             sections.append(f"  - Total Current: ${current_liabilities:,.0f}")
         if accounts_payable:
             sections.append(f"  - Accounts Payable: ${accounts_payable:,.0f}")
         if short_term_debt:
             sections.append(f"  - Short-Term Debt: ${short_term_debt:,.0f}")
-        
-        sections.append(f"\n  Non-Current Liabilities:")
+
+        sections.append(f"  Non-Current Liabilities:")
         if non_current_liabilities:
             sections.append(f"  - Total Non-Current: ${non_current_liabilities:,.0f}")
         if long_term_debt:
             sections.append(f"  - Long-Term Debt: ${long_term_debt:,.0f}")
-        
+
         if total_debt:
-            sections.append(f"\n  Total Debt: ${total_debt:,.0f}")
+            sections.append(f"  Total Debt: ${total_debt:,.0f}")
         if net_debt:
             sections.append(f"  Net Debt: ${net_debt:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Equity
         # ═══════════════════════════════════════════════════════════
         total_equity = latest.get('total_equity', 0)
         retained_earnings = latest.get('retained_earnings', 0)
-        
+
         sections.append(f"\n**🏛️ SHAREHOLDERS' EQUITY:**")
         if total_equity:
             sections.append(f"- **Total Equity: ${total_equity:,.0f}**")
         if retained_earnings:
             sections.append(f"- Retained Earnings: ${retained_earnings:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Key Metrics
         # ═══════════════════════════════════════════════════════════
         working_capital = latest.get('working_capital', 0)
         debt_to_equity = latest.get('debt_to_equity_ratio', 0)
-        
+
         sections.append(f"\n**📊 Key Metrics:**")
         if working_capital:
             sections.append(f"- Working Capital: ${working_capital:,.0f}")
         if debt_to_equity:
             sections.append(f"- Debt/Equity Ratio: {debt_to_equity:.2f}")
-        
+
         # ═══════════════════════════════════════════════════════════
-        # Accounting Equation Check
+        # Balance Check
         # ═══════════════════════════════════════════════════════════
         if total_assets and total_liabilities and total_equity:
-            calculated_equity = total_assets - total_liabilities
             sections.append(f"\n**✅ Balance Check:**")
             sections.append(f"Assets = Liabilities + Equity")
             sections.append(f"${total_assets:,.0f} = ${total_liabilities:,.0f} + ${total_equity:,.0f}")
-            if abs(calculated_equity - total_equity) < 1000:  # Allow small rounding difference
-                sections.append("✓ Balance sheet is balanced")
-        
+
+        # ═══════════════════════════════════════════════════════════
+        # HISTORICAL COMPARISON (All periods)
+        # ═══════════════════════════════════════════════════════════
+        if len(periods) > 1:
+            sections.append(f"\n**📜 HISTORICAL TREND ({len(periods)} periods):**")
+            sections.append(f"{'Period':<16} {'Total Assets':>16} {'Total Liab.':>16} {'Total Equity':>16} {'Total Debt':>16}")
+            sections.append("─" * 84)
+
+            for p in periods:
+                date = p.get('date', 'N/A')[:10]
+                period_label = p.get('period', '')
+                ta = p.get('total_assets', 0) or 0
+                tl = p.get('total_liabilities', 0) or 0
+                te = p.get('total_equity', 0) or 0
+                td = p.get('total_debt', 0) or 0
+
+                sections.append(
+                    f"{date} {period_label:<4} "
+                    f"${ta:>14,.0f} "
+                    f"${tl:>14,.0f} "
+                    f"${te:>14,.0f} "
+                    f"${td:>14,.0f}"
+                )
+
         return "\n".join(sections)
     
     @staticmethod
     def format_cash_flow(data: Dict[str, Any]) -> str:
         """
-        Format cash flow statement data for LLM
-        
-        Args:
-            data: Cash flow data from GetCashFlowTool
-            
-        Returns:
-            Formatted text for LLM consumption
+        Format cash flow statement data for LLM - Comprehensive version
+        ✅ ENHANCED: Shows all periods + detailed breakdown
         """
         if not data:
             return "No cash flow data available"
-        
+
         sections = []
         symbol = data.get('symbol', 'N/A')
         period_type = data.get('period_type', 'annual')
-        
+
         sections.append(f"💵 CASH FLOW STATEMENT - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
-        
+
         latest = data.get('latest_period', {})
-        
-        if not latest:
+        periods = data.get('periods', [])
+
+        if not latest and not periods:
             return "No cash flow periods available"
-        
+
+        # If latest_period is empty but periods exist, use first period
+        if not latest and periods:
+            latest = periods[0]
+
         # ═══════════════════════════════════════════════════════════
         # Header Info
         # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
-        sections.append(f"**Fiscal Period:** {latest.get('period', 'N/A')} {latest.get('calendar_year', '')}")
-        
+        sections.append(f"\n📅 **Latest Period:** {latest.get('date', 'N/A')} ({latest.get('period', '')} {latest.get('calendar_year', '')})")
+
         # ═══════════════════════════════════════════════════════════
         # Operating Activities
         # ═══════════════════════════════════════════════════════════
@@ -1517,7 +1567,7 @@ class FinancialDataFormatter:
         depreciation = latest.get('depreciation_and_amortization', 0)
         stock_comp = latest.get('stock_based_compensation', 0)
         working_capital_change = latest.get('change_in_working_capital', 0)
-        
+
         sections.append(f"\n**🏭 Operating Activities:**")
         if operating_cf:
             cf_sign = "+" if operating_cf > 0 else "-"
@@ -1528,7 +1578,7 @@ class FinancialDataFormatter:
             sections.append(f"- Stock-Based Compensation: ${stock_comp:,.0f}")
         if working_capital_change:
             sections.append(f"- Change in Working Capital: ${working_capital_change:+,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Investing Activities
         # ═══════════════════════════════════════════════════════════
@@ -1537,7 +1587,7 @@ class FinancialDataFormatter:
         acquisitions = latest.get('acquisitions', 0)
         investments_purchased = latest.get('purchases_of_investments', 0)
         investments_sold = latest.get('sales_of_investments', 0)
-        
+
         sections.append(f"\n**💼 Investing Activities:**")
         if investing_cf:
             cf_sign = "+" if investing_cf > 0 else "-"
@@ -1550,7 +1600,7 @@ class FinancialDataFormatter:
             sections.append(f"- Investments Purchased: ${investments_purchased:,.0f}")
         if investments_sold:
             sections.append(f"- Investments Sold: ${investments_sold:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Financing Activities
         # ═══════════════════════════════════════════════════════════
@@ -1559,7 +1609,7 @@ class FinancialDataFormatter:
         stock_issued = latest.get('common_stock_issued', 0)
         stock_repurchased = latest.get('common_stock_repurchased', 0)
         dividends = latest.get('dividends_paid', 0)
-        
+
         sections.append(f"\n**🏦 Financing Activities:**")
         if financing_cf:
             cf_sign = "+" if financing_cf > 0 else "-"
@@ -1572,54 +1622,78 @@ class FinancialDataFormatter:
             sections.append(f"- Stock Repurchased: ${stock_repurchased:,.0f}")
         if dividends:
             sections.append(f"- Dividends Paid: ${dividends:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Free Cash Flow
         # ═══════════════════════════════════════════════════════════
         fcf = latest.get('free_cash_flow', 0)
         fcf_margin = latest.get('fcf_margin', 0)
-        
+
         sections.append(f"\n**🌟 Free Cash Flow:**")
         if fcf:
             fcf_sign = "+" if fcf > 0 else "-"
             sections.append(f"- **Free Cash Flow: {fcf_sign}${abs(fcf):,.0f}**")
         if fcf_margin:
-            sections.append(f"- FCF Margin: {fcf_margin:.1f}%")
-        
+            sections.append(f"- FCF/OCF Ratio: {fcf_margin:.1f}%")
+
         # ═══════════════════════════════════════════════════════════
         # Net Change in Cash
         # ═══════════════════════════════════════════════════════════
         net_change = latest.get('net_change_in_cash', 0)
         cash_beginning = latest.get('cash_at_beginning', 0)
         cash_end = latest.get('cash_at_end', 0)
-        
-        sections.append(f"\n**💰 Net Change in Cash:**")
-        if net_change:
-            sections.append(f"- Net Change: ${net_change:+,.0f}")
+
+        sections.append(f"\n**💰 Cash Position:**")
         if cash_beginning:
             sections.append(f"- Cash at Beginning: ${cash_beginning:,.0f}")
+        if net_change:
+            sections.append(f"- Net Change: ${net_change:+,.0f}")
         if cash_end:
             sections.append(f"- Cash at End: ${cash_end:,.0f}")
-        
+
         # ═══════════════════════════════════════════════════════════
         # Cash Flow Analysis
         # ═══════════════════════════════════════════════════════════
         sections.append(f"\n**📊 Cash Flow Analysis:**")
-        
+
         if operating_cf and operating_cf > 0:
             sections.append("✓ Positive operating cash flow - healthy core operations")
         elif operating_cf and operating_cf < 0:
             sections.append("⚠️ Negative operating cash flow - potential operational issues")
-        
+
         if fcf and fcf > 0:
-            sections.append("✓ Positive free cash flow - company can invest or return cash to shareholders")
+            sections.append("✓ Positive free cash flow - can invest or return cash to shareholders")
         elif fcf and fcf < 0:
-            sections.append("⚠️ Negative free cash flow - company may need external financing")
-        
-        if capex and operating_cf and abs(capex) > 0:
-            capex_ratio = (abs(capex) / operating_cf * 100) if operating_cf > 0 else 0
+            sections.append("⚠️ Negative free cash flow - may need external financing")
+
+        if capex and operating_cf and abs(capex) > 0 and operating_cf > 0:
+            capex_ratio = (abs(capex) / operating_cf * 100)
             sections.append(f"- CapEx is {capex_ratio:.1f}% of operating cash flow")
-        
+
+        # ═══════════════════════════════════════════════════════════
+        # HISTORICAL COMPARISON (All periods)
+        # ═══════════════════════════════════════════════════════════
+        if len(periods) > 1:
+            sections.append(f"\n**📜 HISTORICAL TREND ({len(periods)} periods):**")
+            sections.append(f"{'Period':<16} {'Operating CF':>16} {'Investing CF':>16} {'Financing CF':>16} {'Free CF':>16}")
+            sections.append("─" * 84)
+
+            for p in periods:
+                date = p.get('date', 'N/A')[:10]
+                period_label = p.get('period', '')
+                ocf = p.get('operating_cash_flow', 0) or 0
+                icf = p.get('investing_cash_flow', 0) or 0
+                fcf_p = p.get('financing_cash_flow', 0) or 0
+                free_cf = p.get('free_cash_flow', 0) or 0
+
+                sections.append(
+                    f"{date} {period_label:<4} "
+                    f"${ocf:>14,.0f} "
+                    f"${icf:>14,.0f} "
+                    f"${fcf_p:>14,.0f} "
+                    f"${free_cf:>14,.0f}"
+                )
+
         return "\n".join(sections)
     
     # @staticmethod
@@ -1916,187 +1990,183 @@ class FinancialDataFormatter:
     @staticmethod
     def format_growth_metrics(data: Dict[str, Any]) -> str:
         """
-        Format growth metrics data for LLM
-        
-        Args:
-            data: Growth metrics data from GetGrowthMetricsTool
-            
-        Returns:
-            Formatted text for LLM consumption
+        Format growth metrics data for LLM - Comprehensive version
+        ✅ ENHANCED: Compatible with new data structure (growth_summary + historical_periods)
         """
         if not data:
             return "No growth metrics data available"
-        
+
         sections = []
         symbol = data.get('symbol', 'N/A')
         period_type = data.get('period_type', 'annual')
-        
+
         sections.append(f"📈 GROWTH METRICS - {symbol} ({period_type.upper()})")
         sections.append("═" * 60)
-        
-        latest = data.get('latest_period', {})
-        
-        if not latest:
-            return "No growth metrics periods available"
-        
-        # ═══════════════════════════════════════════════════════════
-        # Header Info
-        # ═══════════════════════════════════════════════════════════
-        sections.append(f"\n**Period:** {latest.get('date', 'N/A')}")
-        sections.append(f"**Growth Period:** {period_type.title()} Year-over-Year")
-        
-        # ═══════════════════════════════════════════════════════════
-        # REVENUE & PROFIT GROWTH
-        # ═══════════════════════════════════════════════════════════
-        revenue_growth = latest.get('revenue_growth', 0)
-        gross_profit_growth = latest.get('gross_profit_growth', 0)
-        operating_income_growth = latest.get('operating_income_growth', 0)
-        ebitda_growth = latest.get('ebitda_growth', 0)
-        net_income_growth = latest.get('net_income_growth', 0)
-        
-        sections.append(f"\n**💰 Revenue & Profit Growth:**")
-        
-        if revenue_growth is not None:
-            emoji = "🚀" if revenue_growth > 0.20 else "📈" if revenue_growth > 0 else "📉"
-            sections.append(f"- Revenue Growth: {emoji} {revenue_growth*100:+.1f}%")
-        
-        if gross_profit_growth is not None:
-            emoji = "📈" if gross_profit_growth > 0 else "📉"
-            sections.append(f"- Gross Profit Growth: {emoji} {gross_profit_growth*100:+.1f}%")
-        
-        if operating_income_growth is not None:
-            emoji = "📈" if operating_income_growth > 0 else "📉"
-            sections.append(f"- Operating Income Growth: {emoji} {operating_income_growth*100:+.1f}%")
-        
-        if ebitda_growth is not None:
-            emoji = "📈" if ebitda_growth > 0 else "📉"
-            sections.append(f"- EBITDA Growth: {emoji} {ebitda_growth*100:+.1f}%")
-        
-        if net_income_growth is not None:
-            emoji = "🚀" if net_income_growth > 0.25 else "📈" if net_income_growth > 0 else "📉"
-            sections.append(f"- Net Income Growth: {emoji} {net_income_growth*100:+.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════
-        # EPS GROWTH
-        # ═══════════════════════════════════════════════════════════
-        eps_growth = latest.get('eps_growth', 0)
-        eps_diluted_growth = latest.get('eps_diluted_growth', 0)
-        
-        sections.append(f"\n**📊 Earnings Per Share Growth:**")
-        if eps_growth is not None:
-            emoji = "🚀" if eps_growth > 0.20 else "📈" if eps_growth > 0 else "📉"
-            sections.append(f"- EPS Growth: {emoji} {eps_growth*100:+.1f}%")
-        if eps_diluted_growth is not None:
-            emoji = "📈" if eps_diluted_growth > 0 else "📉"
-            sections.append(f"- EPS Diluted Growth: {emoji} {eps_diluted_growth*100:+.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════
-        # CASH FLOW GROWTH
-        # ═══════════════════════════════════════════════════════════
-        operating_cf_growth = latest.get('operating_cash_flow_growth', 0)
-        fcf_growth = latest.get('free_cash_flow_growth', 0)
-        
-        sections.append(f"\n**💵 Cash Flow Growth:**")
-        if operating_cf_growth is not None:
-            emoji = "📈" if operating_cf_growth > 0 else "📉"
-            sections.append(f"- Operating Cash Flow Growth: {emoji} {operating_cf_growth*100:+.1f}%")
-        if fcf_growth is not None:
-            emoji = "🚀" if fcf_growth > 0.25 else "📈" if fcf_growth > 0 else "📉"
-            sections.append(f"- Free Cash Flow Growth: {emoji} {fcf_growth*100:+.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════
-        # BALANCE SHEET GROWTH
-        # ═══════════════════════════════════════════════════════════
-        assets_growth = latest.get('assets_growth', 0)
-        equity_growth = latest.get('shareholders_equity_growth', 0)
-        debt_growth = latest.get('debt_growth', 0)
-        
-        sections.append(f"\n**🏦 Balance Sheet Growth:**")
-        if assets_growth is not None:
-            sections.append(f"- Total Assets Growth: {assets_growth*100:+.1f}%")
-        if equity_growth is not None:
-            sections.append(f"- Shareholders' Equity Growth: {equity_growth*100:+.1f}%")
-        if debt_growth is not None:
-            emoji = "⚠️" if debt_growth > 0.20 else "○"
-            sections.append(f"- Debt Growth: {emoji} {debt_growth*100:+.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════
-        # RETURN METRICS GROWTH
-        # ═══════════════════════════════════════════════════════════
-        roe_growth = latest.get('roe_growth', 0)
-        roa_growth = latest.get('roa_growth', 0)
-        
-        if roe_growth or roa_growth:
-            sections.append(f"\n**📈 Return Metrics Growth:**")
-            if roe_growth is not None:
-                sections.append(f"- ROE Growth: {roe_growth*100:+.1f}%")
-            if roa_growth is not None:
-                sections.append(f"- ROA Growth: {roa_growth*100:+.1f}%")
-        
-        # ═══════════════════════════════════════════════════════════
-        # AVERAGE GROWTH RATES (Multi-Period)
-        # ═══════════════════════════════════════════════════════════
-        avg_growth = data.get('average_growth_rates', {})
+
+        # New data structure uses growth_summary + historical_periods
+        summary = data.get('growth_summary', {})
+        historical = data.get('historical_periods', [])
         period_count = data.get('period_count', 0)
-        
-        if avg_growth and period_count > 1:
-            sections.append(f"\n**📊 Average Growth Rates (last {period_count} periods):**")
-            
-            if avg_growth.get('revenue_growth') is not None:
-                sections.append(f"- Avg Revenue Growth: {avg_growth['revenue_growth']*100:+.1f}%")
-            if avg_growth.get('net_income_growth') is not None:
-                sections.append(f"- Avg Net Income Growth: {avg_growth['net_income_growth']*100:+.1f}%")
-            if avg_growth.get('eps_growth') is not None:
-                sections.append(f"- Avg EPS Growth: {avg_growth['eps_growth']*100:+.1f}%")
-            if avg_growth.get('free_cash_flow_growth') is not None:
-                sections.append(f"- Avg FCF Growth: {avg_growth['free_cash_flow_growth']*100:+.1f}%")
-        
+        latest_date = data.get('latest_period_date', 'N/A')
+
+        # Fallback: old structure used latest_period
+        latest = data.get('latest_period', {})
+
+        if not summary and not latest and not historical:
+            return "No growth metrics periods available"
+
+        # ═══════════════════════════════════════════════════════════
+        # Header
+        # ═══════════════════════════════════════════════════════════
+        sections.append(f"\n📅 **Latest Period:** {latest_date or latest.get('date', 'N/A')}")
+        sections.append(f"**Growth Period:** {period_type.title()} Year-over-Year")
+        sections.append(f"**Periods Analyzed:** {period_count}")
+
+        # Helper to format growth percentage safely
+        def fmt_growth(value, label):
+            if value is None:
+                return None
+            try:
+                v = float(value)
+                emoji = "🚀" if v > 0.25 else "📈" if v > 0 else "📉"
+                return f"- {label}: {emoji} {v*100:+.1f}%"
+            except (ValueError, TypeError):
+                return None
+
+        # ═══════════════════════════════════════════════════════════
+        # GROWTH SUMMARY (from growth_summary dict)
+        # ═══════════════════════════════════════════════════════════
+        if summary:
+            sections.append(f"\n**💰 LATEST GROWTH RATES:**")
+            items = [
+                fmt_growth(summary.get('revenue_growth_latest'), "Revenue Growth"),
+                fmt_growth(summary.get('net_income_growth_latest'), "Net Income Growth"),
+                fmt_growth(summary.get('eps_growth_latest'), "EPS Growth"),
+                fmt_growth(summary.get('fcf_growth_latest'), "Free Cash Flow Growth"),
+            ]
+            for item in items:
+                if item:
+                    sections.append(item)
+
+            # Trends
+            rev_trend = summary.get('revenue_trend', '')
+            earn_trend = summary.get('earnings_trend', '')
+            consistency = summary.get('is_revenue_consistent', '')
+
+            if rev_trend or earn_trend:
+                sections.append(f"\n**📊 TREND ANALYSIS:**")
+                if rev_trend:
+                    sections.append(f"- Revenue Trend: {rev_trend}")
+                if earn_trend:
+                    sections.append(f"- Earnings Trend: {earn_trend}")
+                if consistency:
+                    sections.append(f"- Revenue Consistency: {consistency}")
+
+            # Averages
+            avg_items = [
+                fmt_growth(summary.get('revenue_growth_avg'), "Avg Revenue Growth"),
+                fmt_growth(summary.get('net_income_growth_avg'), "Avg Net Income Growth"),
+                fmt_growth(summary.get('eps_growth_avg'), "Avg EPS Growth"),
+                fmt_growth(summary.get('fcf_growth_avg'), "Avg FCF Growth"),
+            ]
+            has_avg = any(i for i in avg_items if i)
+            if has_avg:
+                sections.append(f"\n**📊 AVERAGE GROWTH ({period_count} periods):**")
+                for item in avg_items:
+                    if item:
+                        sections.append(item)
+
+        # ═══════════════════════════════════════════════════════════
+        # Fallback: old structure with latest_period
+        # ═══════════════════════════════════════════════════════════
+        elif latest:
+            sections.append(f"\n**💰 Revenue & Profit Growth:**")
+            items = [
+                fmt_growth(latest.get('revenue_growth'), "Revenue Growth"),
+                fmt_growth(latest.get('gross_profit_growth'), "Gross Profit Growth"),
+                fmt_growth(latest.get('operating_income_growth'), "Operating Income Growth"),
+                fmt_growth(latest.get('net_income_growth'), "Net Income Growth"),
+            ]
+            for item in items:
+                if item:
+                    sections.append(item)
+
+            sections.append(f"\n**📊 EPS & Cash Flow Growth:**")
+            items = [
+                fmt_growth(latest.get('eps_growth'), "EPS Growth"),
+                fmt_growth(latest.get('operating_cash_flow_growth'), "Operating CF Growth"),
+                fmt_growth(latest.get('free_cash_flow_growth'), "Free Cash Flow Growth"),
+            ]
+            for item in items:
+                if item:
+                    sections.append(item)
+
+            sections.append(f"\n**🏦 Balance Sheet Growth:**")
+            items = [
+                fmt_growth(latest.get('assets_growth') or latest.get('total_assets_growth'), "Assets Growth"),
+                fmt_growth(latest.get('debt_growth'), "Debt Growth"),
+            ]
+            for item in items:
+                if item:
+                    sections.append(item)
+
+        # ═══════════════════════════════════════════════════════════
+        # HISTORICAL PERIODS TABLE
+        # ═══════════════════════════════════════════════════════════
+        if historical and len(historical) > 1:
+            sections.append(f"\n**📜 HISTORICAL GROWTH ({len(historical)} periods):**")
+            sections.append(f"{'Period':<14} {'Rev Growth':>12} {'NI Growth':>12} {'EPS Growth':>12} {'FCF Growth':>12}")
+            sections.append("─" * 66)
+
+            for p in historical:
+                date = (p.get('date') or 'N/A')[:10]
+                rg = p.get('revenue_growth')
+                ng = p.get('net_income_growth')
+                eg = p.get('eps_growth')
+                fg = p.get('free_cash_flow_growth')
+
+                def fmt_val(v):
+                    if v is None: return "    N/A"
+                    try: return f"{float(v)*100:>+10.1f}%"
+                    except: return "    N/A"
+
+                sections.append(f"{date:<14} {fmt_val(rg)} {fmt_val(ng)} {fmt_val(eg)} {fmt_val(fg)}")
+
         # ═══════════════════════════════════════════════════════════
         # GROWTH QUALITY ASSESSMENT
         # ═══════════════════════════════════════════════════════════
         sections.append(f"\n**🏆 Growth Quality Assessment:**")
-        
+
         quality_signals = []
         warning_signals = []
-        
-        # Check revenue vs earnings growth alignment
-        if revenue_growth and net_income_growth:
-            if net_income_growth > revenue_growth:
+
+        rev_g = summary.get('revenue_growth_latest') if summary else (latest.get('revenue_growth') if latest else None)
+        ni_g = summary.get('net_income_growth_latest') if summary else (latest.get('net_income_growth') if latest else None)
+        fcf_g = summary.get('fcf_growth_latest') if summary else (latest.get('free_cash_flow_growth') if latest else None)
+
+        if rev_g is not None and ni_g is not None:
+            if ni_g > rev_g:
                 quality_signals.append("✓ Earnings growing faster than revenue (improving margins)")
-            elif revenue_growth > 0 and net_income_growth < 0:
+            elif rev_g > 0 and ni_g < 0:
                 warning_signals.append("⚠️ Revenue growing but earnings declining (margin compression)")
-        
-        # Check cash flow vs earnings
-        if net_income_growth and fcf_growth:
-            if fcf_growth > 0 and net_income_growth > 0:
+
+        if ni_g is not None and fcf_g is not None:
+            if fcf_g > 0 and ni_g > 0:
                 quality_signals.append("✓ Both earnings and cash flow growing (high-quality growth)")
-            elif net_income_growth > 0 and fcf_growth < 0:
+            elif ni_g > 0 and fcf_g < 0:
                 warning_signals.append("⚠️ Earnings growing but FCF declining (quality concern)")
-        
-        # Check debt growth
-        if debt_growth and revenue_growth:
-            if debt_growth > revenue_growth and debt_growth > 0.15:
-                warning_signals.append("⚠️ Debt growing faster than revenue")
-        
-        # Check R&D investment
-        rd_growth = latest.get('rd_expenses_growth', 0)
-        if rd_growth and rd_growth > 0:
-            quality_signals.append(f"✓ Investing in R&D (growth: {rd_growth*100:+.1f}%)")
-        
-        # Display signals
+
         if quality_signals:
-            sections.append("\n**Positive Signals:**")
             for signal in quality_signals:
                 sections.append(f"  {signal}")
-        
+
         if warning_signals:
-            sections.append("\n**Warning Signals:**")
             for signal in warning_signals:
                 sections.append(f"  {signal}")
-        
+
         if not quality_signals and not warning_signals:
-            sections.append("No significant quality signals detected in current period.")
-        
+            sections.append("  No significant quality signals detected.")
+
         return "\n".join(sections)
     
 

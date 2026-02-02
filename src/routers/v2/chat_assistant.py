@@ -1340,6 +1340,8 @@ async def stream_chat_v2(
             "final_content": "",
             # Compaction tracking
             "compaction_result": None,
+            # Financial data for chart sync (AI + FE use same data)
+            "financial_chart_data": {},
         }
 
         # =================================================================
@@ -1623,6 +1625,11 @@ async def stream_chat_v2(
                     results = event.get("results", [])
                     stats["tool_results"].extend(results)
 
+                    # Collect financial data for chart sync (AI + FE use same data)
+                    financial_data = event.get("financial_data")
+                    if financial_data:
+                        stats["financial_chart_data"].update(financial_data)
+
                     # Timeline: Consolidate tool results into ONE step (avoid UI noise)
                     # Only emit if multiple results or if there's a failure
                     success_count = sum(1 for r in results if r.get("success", False))
@@ -1810,6 +1817,16 @@ async def stream_chat_v2(
                     max_charts=3,
                 )
                 if charts:
+                    # Inject financial_data into STOCK_FINANCIALS chart metadata
+                    # This ensures FE renders charts using the SAME data AI analyzed
+                    financial_chart_data = stats.get("financial_chart_data", {})
+                    if financial_chart_data:
+                        for chart in charts:
+                            if chart.type == "showStockFinancials":
+                                if chart.metadata is None:
+                                    chart.metadata = {}
+                                chart.metadata["financial_data"] = financial_chart_data
+
                     stats["charts"] = charts_to_dict_list(charts)
                     _logger.info(
                         f"[CHAT] Charts resolved: {[c.type for c in charts]} "

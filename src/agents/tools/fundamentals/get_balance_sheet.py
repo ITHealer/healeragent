@@ -26,6 +26,7 @@ from src.agents.tools.base import (
 )
 
 from src.agents.tools.fundamentals._financial_base import FinancialDataFetcher
+from src.helpers.data_formatter import FinancialDataFormatter
 
 
 class GetBalanceSheetTool(BaseTool):
@@ -144,14 +145,10 @@ class GetBalanceSheetTool(BaseTool):
             ],
             returns={
                 "symbol": "string",
-                "period": "string",
-                "balance_sheets": "array",
-                "total_assets": "number",
-                "total_liabilities": "number",
-                "total_equity": "number",
-                "debt_to_equity": "number",
-                "current_ratio": "number",
-                "book_value_per_share": "number",
+                "period_type": "string",
+                "periods": "array - Balance sheet data per period",
+                "latest_period": "object - Most recent period data",
+                "period_count": "number",
                 "timestamp": "string"
             },
             typical_execution_time_ms=1500,
@@ -215,9 +212,17 @@ class GetBalanceSheetTool(BaseTool):
                 limit
             )
             
+            # Generate formatted_context for LLM consumption
+            try:
+                formatted_context = FinancialDataFormatter.format_balance_sheet(formatted_data)
+            except Exception as fmt_err:
+                self.logger.warning(f"[getBalanceSheet] Formatter error: {fmt_err}")
+                formatted_context = None
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=formatted_context,
                 metadata={
                     "source": "FMP /v3/balance-sheet-statement",
                     "symbol_queried": symbol_upper,

@@ -25,6 +25,7 @@ from src.agents.tools.base import (
 )
 
 from src.agents.tools.fundamentals._financial_base import FinancialDataFetcher
+from src.helpers.data_formatter import FinancialDataFormatter
 
 
 class GetIncomeStatementTool(BaseTool):
@@ -233,9 +234,17 @@ class GetIncomeStatementTool(BaseTool):
                 limit
             )
             
+            # Generate formatted_context for LLM consumption
+            try:
+                formatted_context = FinancialDataFormatter.format_income_statement(formatted_data)
+            except Exception as fmt_err:
+                self.logger.warning(f"[getIncomeStatement] Formatter error: {fmt_err}")
+                formatted_context = None
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=formatted_context,
                 metadata={
                     "source": "FMP /v3/income-statement",
                     "symbol_queried": symbol_upper,

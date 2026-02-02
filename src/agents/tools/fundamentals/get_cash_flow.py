@@ -27,6 +27,7 @@ from src.agents.tools.base import (
 )
 
 from src.agents.tools.fundamentals._financial_base import FinancialDataFetcher
+from src.helpers.data_formatter import FinancialDataFormatter
 
 
 class GetCashFlowTool(BaseTool):
@@ -141,13 +142,10 @@ class GetCashFlowTool(BaseTool):
     ],
     returns={
         "symbol": "string",
-        "period": "string",
-        "cash_flows": "array",
-        "operating_cash_flow": "number",
-        "investing_cash_flow": "number",
-        "financing_cash_flow": "number",
-        "free_cash_flow": "number",
-        "fcf_margin": "number",
+        "period_type": "string",
+        "periods": "array - Cash flow data per period",
+        "latest_period": "object - Most recent period data",
+        "period_count": "number",
         "timestamp": "string"
     },
     typical_execution_time_ms=1500,
@@ -210,9 +208,17 @@ class GetCashFlowTool(BaseTool):
                 limit
             )
             
+            # Generate formatted_context for LLM consumption
+            try:
+                formatted_context = FinancialDataFormatter.format_cash_flow(formatted_data)
+            except Exception as fmt_err:
+                self.logger.warning(f"[getCashFlow] Formatter error: {fmt_err}")
+                formatted_context = None
+
             return create_success_output(
                 tool_name=self.schema.name,
                 data=formatted_data,
+                formatted_context=formatted_context,
                 metadata={
                     "source": "FMP /v3/cash-flow-statement",
                     "symbol_queried": symbol_upper,
