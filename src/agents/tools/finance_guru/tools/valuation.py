@@ -94,6 +94,7 @@ def create_error_output(
 async def fetch_fundamental_data(
     symbol: str,
     fmp_api_key: Optional[str] = None,
+    fetch_historical_fcf: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch fundamental data from FMP API for valuation.
@@ -101,6 +102,7 @@ async def fetch_fundamental_data(
     Args:
         symbol: Stock symbol
         fmp_api_key: FMP API key
+        fetch_historical_fcf: If True, fetch 3-year historical FCF for normalization
 
     Returns:
         Dict with fundamental metrics
@@ -137,6 +139,37 @@ async def fetch_fundamental_data(
 
         shares_outstanding_m = shares_outstanding_raw / 1e6 if shares_outstanding_raw else 0
 
+        # Get current FCF
+        current_fcf = cash_flow.get("freeCashFlow", 0) / 1e6 if cash_flow else 0
+
+        # Historical FCF for normalization
+        historical_fcf = None
+        normalized_fcf = None
+        fcf_volatility = None
+
+        if fetch_historical_fcf:
+            try:
+                # Fetch 3 years of cash flow data
+                historical_cf = await fmp.get_cash_flow_statement(symbol, limit=3)
+                if isinstance(historical_cf, list) and len(historical_cf) >= 2:
+                    fcf_values = [
+                        cf.get("freeCashFlow", 0) / 1e6
+                        for cf in historical_cf
+                        if cf.get("freeCashFlow")
+                    ]
+                    if fcf_values:
+                        historical_fcf = fcf_values
+                        # Calculate normalized FCF (3-year average)
+                        normalized_fcf = sum(fcf_values) / len(fcf_values)
+                        # Calculate volatility (coefficient of variation)
+                        if len(fcf_values) >= 2:
+                            mean_fcf = normalized_fcf
+                            variance = sum((x - mean_fcf) ** 2 for x in fcf_values) / len(fcf_values)
+                            std_dev = variance ** 0.5
+                            fcf_volatility = (std_dev / abs(mean_fcf) * 100) if mean_fcf != 0 else None
+            except Exception as e:
+                logger.warning(f"Failed to fetch historical FCF: {e}")
+
         return {
             "symbol": symbol,
             "price": profile.get("price", 0),
@@ -145,9 +178,13 @@ async def fetch_fundamental_data(
             "revenue_per_share": key_metrics.get("revenuePerShare", 0) if key_metrics else 0,
             "dividend_per_share": key_metrics.get("dividendPerShare", 0) if key_metrics else 0,
             "shares_outstanding": shares_outstanding_m,
-            "free_cash_flow": cash_flow.get("freeCashFlow", 0) / 1e6 if cash_flow else 0,
+            "free_cash_flow": current_fcf,
             "cash": profile.get("cash", 0) / 1e6,
             "debt": profile.get("totalDebt", 0) / 1e6,
+            # Historical FCF data
+            "historical_fcf": historical_fcf,
+            "normalized_fcf": normalized_fcf,
+            "fcf_volatility": fcf_volatility,
         }
 
     except ImportError:
@@ -264,6 +301,16 @@ class CalculateDCFTool(BaseTool):
                     required=False,
                     default=0.025,
                 ),
+                ToolParameter(
+                    name="normalize_fcf",
+                    type="boolean",
+                    description=(
+                        "If true, use 3-year average FCF instead of current FCF. "
+                        "Recommended for companies with volatile cash flows."
+                    ),
+                    required=False,
+                    default=False,
+                ),
             ],
         )
 
@@ -275,15 +322,50 @@ class CalculateDCFTool(BaseTool):
             growth_rates = kwargs.get("growth_rates", [0.10, 0.08, 0.06, 0.05, 0.04])
             discount_rate = kwargs.get("discount_rate", 0.10)
             terminal_growth = kwargs.get("terminal_growth", 0.025)
+            normalize_fcf = kwargs.get("normalize_fcf", False)
 
             if not symbol:
                 return create_error_output(self.schema.name, "Symbol is required")
 
-            # Fetch fundamental data if not provided
-            fundamentals = await fetch_fundamental_data(symbol)
+            # Fetch fundamental data, including historical FCF if normalization requested
+            fundamentals = await fetch_fundamental_data(
+                symbol,
+                fetch_historical_fcf=normalize_fcf or current_fcf is None,
+            )
+
+            # Determine which FCF to use
+            fcf_source = "manual" if current_fcf is not None else "api"
+            fcf_note = None
 
             if current_fcf is None:
-                current_fcf = fundamentals.get("free_cash_flow", 0)
+                # Check if normalization is requested or recommended
+                historical_fcf = fundamentals.get("historical_fcf")
+                normalized_fcf = fundamentals.get("normalized_fcf")
+                fcf_volatility = fundamentals.get("fcf_volatility")
+                current_fcf_raw = fundamentals.get("free_cash_flow", 0)
+
+                if normalize_fcf and normalized_fcf:
+                    # Use normalized FCF
+                    current_fcf = normalized_fcf
+                    fcf_source = "normalized_3yr_avg"
+                    fcf_note = (
+                        f"Using 3-year average FCF (${normalized_fcf:,.0f}M) "
+                        f"instead of current (${current_fcf_raw:,.0f}M). "
+                        f"Historical: {[f'${f:,.0f}M' for f in (historical_fcf or [])]}"
+                    )
+                elif fcf_volatility and fcf_volatility > 30 and normalized_fcf:
+                    # Auto-suggest normalization for high volatility
+                    current_fcf = current_fcf_raw
+                    fcf_source = "api"
+                    fcf_note = (
+                        f"⚠️ FCF volatility is high ({fcf_volatility:.0f}%). "
+                        f"Consider using normalize_fcf=true for more stable valuation. "
+                        f"Normalized FCF would be ${normalized_fcf:,.0f}M."
+                    )
+                else:
+                    current_fcf = current_fcf_raw
+                    fcf_source = "api"
+
                 if current_fcf <= 0:
                     return create_error_output(
                         self.schema.name,
@@ -323,29 +405,21 @@ class CalculateDCFTool(BaseTool):
             )
 
             config = DCFConfig(margin_of_safety=0.25)
-            result = self.calculator.calculate(data, config)
+            result = self.calculator.calculate(data, config, fcf_source=fcf_source)
 
-            # Format projections
-            proj_text = "\n".join(
-                f"  Year {p.year}: FCF ${p.fcf:,.0f}M (growth: {p.growth_rate:.1%}) → PV ${p.present_value:,.0f}M"
-                for p in result.projections[:3]
-            )
-
-            formatted = (
-                f"DCF Valuation for {symbol}:\n\n"
-                f"Cash Flow Projections:\n{proj_text}\n  ...\n\n"
-                f"Valuation Summary:\n"
-                f"  Sum of PV (FCFs): ${result.sum_of_pv_fcf:,.0f}M\n"
-                f"  Terminal Value: ${result.terminal_value:,.0f}M\n"
-                f"  PV of Terminal: ${result.pv_terminal_value:,.0f}M\n"
-                f"  Enterprise Value: ${result.enterprise_value:,.0f}M\n"
-                f"  Equity Value: ${result.equity_value:,.0f}M\n\n"
-                f"Per Share:\n"
-                f"  Intrinsic Value: ${result.intrinsic_value_per_share:.2f}\n"
-                f"  Current Price: ${result.current_price:.2f}\n"
-                f"  Upside Potential: {result.upside_potential:.1f}%\n"
-                f"  Margin of Safety Price: ${result.margin_of_safety_price:.2f}\n\n"
-                f"Verdict: {result.verdict.upper()}"
+            # Build enhanced formatted_context
+            formatted = self._build_formatted_context(
+                symbol=symbol,
+                result=result,
+                current_fcf=current_fcf,
+                growth_rates=growth_rates,
+                discount_rate=discount_rate,
+                terminal_growth=terminal_growth,
+                shares_outstanding=shares_outstanding,
+                cash=cash,
+                debt=debt,
+                fcf_source=fcf_source,
+                fcf_note=fcf_note,
             )
 
             return create_success_output(
@@ -357,9 +431,16 @@ class CalculateDCFTool(BaseTool):
                     "upside_potential": result.upside_potential,
                     "margin_of_safety_price": result.margin_of_safety_price,
                     "enterprise_value": result.enterprise_value,
+                    "equity_value": result.equity_value,
                     "verdict": result.verdict,
                     "discount_rate": discount_rate,
                     "terminal_growth": terminal_growth,
+                    "fcf_source": fcf_source,
+                    "fcf_note": fcf_note,
+                    "tv_as_pct_of_ev": result.tv_as_pct_of_ev,
+                    "implied_growth_rate": result.implied_growth_rate,
+                    "sensitivity_2d": result.sensitivity_2d,
+                    "validation_warnings": result.validation_warnings,
                 },
                 formatted_context=formatted,
                 execution_time_ms=result.calculation_time_ms or 0,
@@ -368,6 +449,144 @@ class CalculateDCFTool(BaseTool):
         except Exception as e:
             logger.exception(f"DCF calculation failed: {e}")
             return create_error_output(self.schema.name, str(e))
+
+    def _build_formatted_context(
+        self,
+        symbol: str,
+        result,
+        current_fcf: float,
+        growth_rates: List[float],
+        discount_rate: float,
+        terminal_growth: float,
+        shares_outstanding: float,
+        cash: float,
+        debt: float,
+        fcf_source: str = "api",
+        fcf_note: Optional[str] = None,
+    ) -> str:
+        """Build enhanced formatted_context for DCF output."""
+        sections = []
+
+        # Title
+        sections.append(f"═══════════════════════════════════════════════════")
+        sections.append(f"DCF VALUATION ANALYSIS: {symbol}")
+        sections.append(f"═══════════════════════════════════════════════════")
+
+        # Section 1: Input Parameters
+        growth_str = ", ".join(f"{g:.1%}" for g in growth_rates[:5])
+        if len(growth_rates) > 5:
+            growth_str += "..."
+
+        # FCF source label
+        fcf_source_label = {
+            "api": "Current (API)",
+            "manual": "Manual Input",
+            "normalized_3yr_avg": "Normalized (3-Year Avg)",
+        }.get(fcf_source, fcf_source)
+
+        sections.append(f"\n📊 INPUT PARAMETERS:")
+        sections.append(f"  • FCF: ${current_fcf:,.0f}M ({fcf_source_label})")
+        if fcf_note:
+            sections.append(f"    └─ {fcf_note}")
+        sections.append(f"  • Growth Rates: [{growth_str}]")
+        sections.append(f"  • WACC (Discount Rate): {discount_rate:.1%}")
+        sections.append(f"  • Terminal Growth: {terminal_growth:.1%}")
+        sections.append(f"  • Shares Outstanding: {shares_outstanding:,.0f}M")
+        sections.append(f"  • Cash: ${cash:,.0f}M | Debt: ${debt:,.0f}M")
+
+        # Section 2: Cash Flow Projections
+        sections.append(f"\n📈 CASH FLOW PROJECTIONS:")
+        sections.append(f"  {'Year':<6} {'FCF ($M)':<12} {'Growth':<10} {'PV ($M)':<12}")
+        sections.append(f"  {'-'*40}")
+        for p in result.projections:
+            sections.append(
+                f"  {p.year:<6} {p.fcf:>10,.0f}  {p.growth_rate:>8.1%}  {p.present_value:>10,.0f}"
+            )
+
+        # Section 3: Valuation Summary
+        tv_pct = result.tv_as_pct_of_ev or 0
+        sections.append(f"\n💰 VALUATION SUMMARY:")
+        sections.append(f"  • Sum of PV (FCFs): ${result.sum_of_pv_fcf:,.0f}M")
+        sections.append(f"  • Terminal Value: ${result.terminal_value:,.0f}M")
+        sections.append(f"  • PV of Terminal: ${result.pv_terminal_value:,.0f}M ({tv_pct:.1f}% of EV)")
+        sections.append(f"  • Enterprise Value: ${result.enterprise_value:,.0f}M")
+        sections.append(f"  • Equity Value: ${result.equity_value:,.0f}M")
+
+        # Section 4: Per Share Analysis
+        sections.append(f"\n📍 PER SHARE ANALYSIS:")
+        sections.append(f"  ┌{'─'*40}┐")
+        sections.append(f"  │ Intrinsic Value:      ${result.intrinsic_value_per_share:>12.2f} │")
+        sections.append(f"  │ Current Price:        ${result.current_price:>12.2f} │")
+        if result.upside_potential is not None:
+            upside_sign = "+" if result.upside_potential > 0 else ""
+            sections.append(f"  │ Upside Potential:     {upside_sign}{result.upside_potential:>11.1f}% │")
+        sections.append(f"  │ Margin of Safety:     ${result.margin_of_safety_price:>12.2f} │")
+        sections.append(f"  └{'─'*40}┘")
+
+        # Section 5: Reverse DCF (Implied Growth)
+        if result.implied_growth_rate is not None:
+            sections.append(f"\n🔄 REVERSE DCF (Market Expectations):")
+            sections.append(f"  • Implied Perpetual Growth: {result.implied_growth_rate:.2%}")
+            sections.append(f"  • Your Assumption: {terminal_growth:.2%}")
+            diff = result.implied_growth_rate - terminal_growth
+            if diff > 0.005:
+                sections.append(f"  → Market expects HIGHER growth than your model")
+            elif diff < -0.005:
+                sections.append(f"  → Market expects LOWER growth than your model")
+            else:
+                sections.append(f"  → Market expectations align with your model")
+
+        # Section 6: 2D Sensitivity Matrix
+        if result.sensitivity_2d:
+            sens = result.sensitivity_2d
+            sections.append(f"\n📐 SENSITIVITY MATRIX (WACC × Terminal Growth):")
+            sections.append(f"  Intrinsic Value at different assumptions:")
+            sections.append(f"")
+
+            # Header row
+            header = "  WACC \\ TGR │"
+            for g in sens.get("growth_rates", []):
+                header += f" {g:>7} │"
+            sections.append(header)
+            sections.append(f"  {'─'*12}┼" + "─"*9*len(sens.get("growth_rates", [])))
+
+            # Data rows
+            wacc_rates = sens.get("wacc_rates", [])
+            values = sens.get("values", [])
+            for i, wacc in enumerate(wacc_rates):
+                row = f"  {wacc:>11} │"
+                if i < len(values):
+                    for v in values[i]:
+                        if v is not None:
+                            # Highlight current price range
+                            if result.current_price and abs(v - result.current_price) / result.current_price < 0.1:
+                                row += f" *{v:>5.0f}* │"
+                            else:
+                                row += f" ${v:>5.0f} │"
+                        else:
+                            row += f"    N/A │"
+                sections.append(row)
+            sections.append(f"  (* indicates values within 10% of current price)")
+
+        # Section 7: Validation Warnings
+        if result.validation_warnings:
+            sections.append(f"\n⚠️  VALIDATION WARNINGS:")
+            for warning in result.validation_warnings:
+                sections.append(f"  {warning}")
+
+        # Section 8: Verdict
+        verdict_emoji = {
+            "undervalued": "✅",
+            "overvalued": "❌",
+            "fairly_valued": "⚖️",
+            "unknown": "❓",
+        }
+        emoji = verdict_emoji.get(result.verdict, "❓")
+        sections.append(f"\n{'═'*53}")
+        sections.append(f"VERDICT: {emoji} {result.verdict.upper()}")
+        sections.append(f"{'═'*53}")
+
+        return "\n".join(sections)
 
 
 class CalculateGrahamTool(BaseTool):
@@ -867,7 +1086,8 @@ class CalculateComparablesTool(BaseTool):
     async def _fetch_ratios_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Fetch valuation ratios for a single symbol using FMP API directly.
 
-        Returns dict with pe_ratio, pb_ratio, ps_ratio, ev_ebitda, or None on failure.
+        Returns dict with pe_ratio (TTM), pe_forward, pb_ratio, ps_ratio, ev_ebitda,
+        along with pe_type indicator, or None on failure.
         """
         import os
         import httpx
@@ -882,40 +1102,71 @@ class CalculateComparablesTool(BaseTool):
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                # Primary: annual ratios (latest period)
-                url = f"{base_url}/v3/ratios/{sym}"
-                resp = await client.get(url, params={"apikey": api_key, "period": "annual", "limit": 1})
-                resp.raise_for_status()
-                raw_data = resp.json()
+                result = {
+                    "symbol": sym,
+                    "pe_ratio": None,
+                    "pe_type": None,  # "TTM" or "Forward"
+                    "pe_forward": None,
+                    "pb_ratio": None,
+                    "ps_ratio": None,
+                    "ev_ebitda": None,
+                    "price_to_cash_flow": None,
+                }
 
-                if raw_data and len(raw_data) > 0:
-                    item = raw_data[0]
-                    return {
-                        "symbol": sym,
-                        "pe_ratio": item.get("priceEarningsRatio"),
-                        "pb_ratio": item.get("priceToBookRatio"),
-                        "ps_ratio": item.get("priceToSalesRatio"),
-                        "ev_ebitda": item.get("enterpriseValueMultiple"),
-                        "price_to_cash_flow": item.get("priceCashFlowRatio"),
-                    }
-
-                # Fallback: TTM ratios
+                # Fetch TTM ratios (primary source for P/E TTM)
                 url_ttm = f"{base_url}/v3/ratios-ttm/{sym}"
                 resp_ttm = await client.get(url_ttm, params={"apikey": api_key})
-                resp_ttm.raise_for_status()
-                raw_ttm = resp_ttm.json()
+                if resp_ttm.status_code == 200:
+                    raw_ttm = resp_ttm.json()
+                    if raw_ttm and len(raw_ttm) > 0:
+                        item = raw_ttm[0]
+                        result["pe_ratio"] = item.get("peRatioTTM")
+                        result["pe_type"] = "TTM"
+                        result["pb_ratio"] = item.get("priceToBookRatioTTM")
+                        result["ps_ratio"] = item.get("priceToSalesRatioTTM")
+                        result["ev_ebitda"] = item.get("enterpriseValueMultipleTTM")
+                        result["price_to_cash_flow"] = item.get("priceCashFlowRatioTTM")
 
-                if raw_ttm and len(raw_ttm) > 0:
-                    item = raw_ttm[0]
-                    return {
-                        "symbol": sym,
-                        "pe_ratio": item.get("peRatioTTM"),
-                        "pb_ratio": item.get("priceToBookRatioTTM"),
-                        "ps_ratio": item.get("priceToSalesRatioTTM"),
-                        "ev_ebitda": item.get("enterpriseValueMultipleTTM"),
-                        "price_to_cash_flow": item.get("priceCashFlowRatioTTM"),
-                    }
+                # Try to get Forward P/E from key metrics or analyst estimates
+                url_profile = f"{base_url}/v3/profile/{sym}"
+                resp_profile = await client.get(url_profile, params={"apikey": api_key})
+                if resp_profile.status_code == 200:
+                    profile_data = resp_profile.json()
+                    if profile_data and len(profile_data) > 0:
+                        price = profile_data[0].get("price", 0)
+                        # Try to get forward EPS estimate
+                        url_estimates = f"{base_url}/v3/analyst-estimates/{sym}"
+                        resp_est = await client.get(
+                            url_estimates,
+                            params={"apikey": api_key, "limit": 1}
+                        )
+                        if resp_est.status_code == 200:
+                            est_data = resp_est.json()
+                            if est_data and len(est_data) > 0:
+                                fwd_eps = est_data[0].get("estimatedEpsAvg")
+                                if fwd_eps and fwd_eps > 0 and price > 0:
+                                    result["pe_forward"] = round(price / fwd_eps, 2)
 
+                # Fallback: annual ratios if TTM not available
+                if result["pe_ratio"] is None:
+                    url = f"{base_url}/v3/ratios/{sym}"
+                    resp = await client.get(url, params={"apikey": api_key, "period": "annual", "limit": 1})
+                    if resp.status_code == 200:
+                        raw_data = resp.json()
+                        if raw_data and len(raw_data) > 0:
+                            item = raw_data[0]
+                            result["pe_ratio"] = item.get("priceEarningsRatio")
+                            result["pe_type"] = "Annual"
+                            if not result["pb_ratio"]:
+                                result["pb_ratio"] = item.get("priceToBookRatio")
+                            if not result["ps_ratio"]:
+                                result["ps_ratio"] = item.get("priceToSalesRatio")
+                            if not result["ev_ebitda"]:
+                                result["ev_ebitda"] = item.get("enterpriseValueMultiple")
+
+                # Return result if we have at least some data
+                if any([result["pe_ratio"], result["pb_ratio"], result["ps_ratio"], result["ev_ebitda"]]):
+                    return result
                 return None
 
         except Exception as e:
@@ -966,6 +1217,8 @@ class CalculateComparablesTool(BaseTool):
             # Process peer ratios
             peer_companies = []
             peer_details = []  # For formatted output
+            pe_types_used = set()  # Track what P/E types we're using
+
             for i, peer_sym in enumerate(peer_symbols):
                 peer_result = results[i + 1]
                 if isinstance(peer_result, Exception) or peer_result is None:
@@ -973,6 +1226,8 @@ class CalculateComparablesTool(BaseTool):
                     peer_details.append({
                         "symbol": peer_sym,
                         "pe_ratio": None,
+                        "pe_type": None,
+                        "pe_forward": None,
                         "pb_ratio": None,
                         "ps_ratio": None,
                         "ev_ebitda": None,
@@ -981,6 +1236,8 @@ class CalculateComparablesTool(BaseTool):
                     continue
 
                 pe = peer_result.get("pe_ratio")
+                pe_type = peer_result.get("pe_type", "TTM")
+                pe_forward = peer_result.get("pe_forward")
                 pb = peer_result.get("pb_ratio")
                 ps = peer_result.get("ps_ratio")
                 ev = peer_result.get("ev_ebitda")
@@ -988,12 +1245,17 @@ class CalculateComparablesTool(BaseTool):
                 # Filter out negative or zero values (e.g., negative P/E means losses)
                 if pe is not None and pe <= 0:
                     pe = None
+                if pe_forward is not None and pe_forward <= 0:
+                    pe_forward = None
                 if pb is not None and pb <= 0:
                     pb = None
                 if ps is not None and ps <= 0:
                     ps = None
                 if ev is not None and ev <= 0:
                     ev = None
+
+                if pe_type:
+                    pe_types_used.add(pe_type)
 
                 peer_companies.append(ComparableCompany(
                     symbol=peer_sym,
@@ -1006,6 +1268,8 @@ class CalculateComparablesTool(BaseTool):
                 peer_details.append({
                     "symbol": peer_sym,
                     "pe_ratio": round(pe, 2) if pe else None,
+                    "pe_type": pe_type,
+                    "pe_forward": round(pe_forward, 2) if pe_forward else None,
                     "pb_ratio": round(pb, 2) if pb else None,
                     "ps_ratio": round(ps, 2) if ps else None,
                     "ev_ebitda": round(ev, 2) if ev else None,
@@ -1043,29 +1307,53 @@ class CalculateComparablesTool(BaseTool):
             result = self.calculator.calculate(comp_data)
 
             # Build formatted output with actual values
+            # Determine P/E type label
+            pe_type_label = "TTM"
+            if pe_types_used:
+                pe_type_label = list(pe_types_used)[0] if len(pe_types_used) == 1 else "Mixed"
+
             # Target ratios display
             t_pe = f"{target_ratios['pe_ratio']:.2f}x" if target_ratios and target_ratios.get('pe_ratio') else "N/A"
+            t_pe_fwd = f"{target_ratios['pe_forward']:.2f}x" if target_ratios and target_ratios.get('pe_forward') else "N/A"
             t_pb = f"{target_ratios['pb_ratio']:.2f}x" if target_ratios and target_ratios.get('pb_ratio') else "N/A"
             t_ps = f"{target_ratios['ps_ratio']:.2f}x" if target_ratios and target_ratios.get('ps_ratio') else "N/A"
             t_ev = f"{target_ratios['ev_ebitda']:.2f}x" if target_ratios and target_ratios.get('ev_ebitda') else "N/A"
 
+            # Check if we have any forward P/E data
+            has_forward_pe = any(
+                pd.get('pe_forward') is not None
+                for pd in peer_details
+            ) or (target_ratios and target_ratios.get('pe_forward'))
+
             # Build peer table rows
             table_rows = []
-            table_rows.append(
-                f"| **{symbol}** (Target) | ${current_price:.2f} | {t_pe} | {t_pb} | {t_ps} | {t_ev} | - |"
-            )
+            if has_forward_pe:
+                table_rows.append(
+                    f"| **{symbol}** (Target) | ${current_price:.2f} | {t_pe} | {t_pe_fwd} | {t_pb} | {t_ps} | {t_ev} |"
+                )
+            else:
+                table_rows.append(
+                    f"| **{symbol}** (Target) | ${current_price:.2f} | {t_pe} | {t_pb} | {t_ps} | {t_ev} | - |"
+                )
 
             for pd_item in peer_details:
                 s = pd_item["symbol"]
                 pe_str = f"{pd_item['pe_ratio']:.2f}x" if pd_item.get('pe_ratio') else "N/A"
+                pe_fwd_str = f"{pd_item['pe_forward']:.2f}x" if pd_item.get('pe_forward') else "N/A"
                 pb_str = f"{pd_item['pb_ratio']:.2f}x" if pd_item.get('pb_ratio') else "N/A"
                 ps_str = f"{pd_item['ps_ratio']:.2f}x" if pd_item.get('ps_ratio') else "N/A"
                 ev_str = f"{pd_item['ev_ebitda']:.2f}x" if pd_item.get('ev_ebitda') else "N/A"
                 status = pd_item.get("status", "")
-                note = "" if status == "ok" else " (no data)"
-                table_rows.append(
-                    f"| {s}{note} | - | {pe_str} | {pb_str} | {ps_str} | {ev_str} | - |"
-                )
+                note = " (no data)" if status == "no_data" else ""
+
+                if has_forward_pe:
+                    table_rows.append(
+                        f"| {s}{note} | - | {pe_str} | {pe_fwd_str} | {pb_str} | {ps_str} | {ev_str} |"
+                    )
+                else:
+                    table_rows.append(
+                        f"| {s}{note} | - | {pe_str} | {pb_str} | {ps_str} | {ev_str} | - |"
+                    )
 
             # Add peer average/median row
             stats = result.peer_stats
@@ -1073,38 +1361,67 @@ class CalculateComparablesTool(BaseTool):
             avg_pb = f"{stats['P/B']['avg']:.2f}x" if 'P/B' in stats else "N/A"
             avg_ps = f"{stats['P/S']['avg']:.2f}x" if 'P/S' in stats else "N/A"
             avg_ev = f"{stats['EV/EBITDA']['avg']:.2f}x" if 'EV/EBITDA' in stats else "N/A"
-            table_rows.append(
-                f"| **Peer Average** | - | {avg_pe} | {avg_pb} | {avg_ps} | {avg_ev} | - |"
-            )
 
-            table_header = (
-                "| Company | Price | P/E | P/B | P/S | EV/EBITDA | Note |\n"
-                "|---------|-------|-----|-----|-----|-----------|------|\n"
-            )
+            if has_forward_pe:
+                table_rows.append(
+                    f"| **Peer Average** | - | {avg_pe} | - | {avg_pb} | {avg_ps} | {avg_ev} |"
+                )
+                table_header = (
+                    f"| Company | Price | P/E ({pe_type_label}) | P/E (Fwd) | P/B | P/S | EV/EBITDA |\n"
+                    "|---------|-------|----------|-----------|-----|-----|----------|\n"
+                )
+            else:
+                table_rows.append(
+                    f"| **Peer Average** | - | {avg_pe} | {avg_pb} | {avg_ps} | {avg_ev} | - |"
+                )
+                table_header = (
+                    f"| Company | Price | P/E ({pe_type_label}) | P/B | P/S | EV/EBITDA | Note |\n"
+                    "|---------|-------|----------|-----|-----|-----------|------|\n"
+                )
+
             table_body = "\n".join(table_rows)
 
             # Implied values section
             implied_lines = []
             for v in result.valuations:
+                multiple_label = v.multiple_name
+                if v.multiple_name == "P/E":
+                    multiple_label = f"P/E ({pe_type_label})"
                 implied_lines.append(
-                    f"  {v.multiple_name}: Peer Avg={v.peer_average:.2f}x → "
+                    f"  {multiple_label}: Peer Avg={v.peer_average:.2f}x → "
                     f"Implied Price=${v.implied_value:.2f} "
                     f"(Median={v.peer_median:.2f}x → ${v.implied_value_median:.2f})"
                 )
             implied_text = "\n".join(implied_lines) if implied_lines else "  No valid multiples available"
 
+            # P/E type note
+            pe_note = ""
+            if pe_type_label == "TTM":
+                pe_note = "\n📝 Note: P/E ratios are Trailing Twelve Months (TTM) based on historical earnings."
+            elif pe_type_label == "Forward":
+                pe_note = "\n📝 Note: P/E ratios are Forward P/E based on analyst earnings estimates."
+            elif pe_type_label == "Mixed":
+                pe_note = "\n📝 Note: P/E ratios may be mixed (TTM/Forward). Check individual sources."
+
             formatted = (
-                f"Comparable Company Valuation for {symbol}:\n\n"
-                f"Peer Comparison Table:\n"
-                f"{table_header}{table_body}\n\n"
-                f"Implied Fair Values (using peer multiples × {symbol} metrics):\n"
+                f"═══════════════════════════════════════════════════════\n"
+                f"COMPARABLE COMPANY VALUATION: {symbol}\n"
+                f"═══════════════════════════════════════════════════════\n\n"
+                f"📊 Peer Comparison Table:\n"
+                f"{table_header}{table_body}\n"
+                f"{pe_note}\n\n"
+                f"💰 Implied Fair Values (peer multiples × {symbol} metrics):\n"
                 f"{implied_text}\n\n"
-                f"Summary:\n"
-                f"  Average Implied Fair Value: ${result.average_intrinsic_value:.2f}\n"
-                f"  Median Implied Fair Value: ${result.median_intrinsic_value:.2f}\n"
-                f"  Current Price: ${result.current_price:.2f}\n"
-                f"  Upside Potential: {result.upside_potential:.1f}%\n\n"
-                f"Verdict: {result.verdict.upper()}"
+                f"📍 Summary:\n"
+                f"  ┌{'─'*44}┐\n"
+                f"  │ Average Fair Value:     ${result.average_intrinsic_value:>14.2f} │\n"
+                f"  │ Median Fair Value:      ${result.median_intrinsic_value:>14.2f} │\n"
+                f"  │ Current Price:          ${result.current_price:>14.2f} │\n"
+                f"  │ Upside Potential:       {result.upside_potential:>13.1f}% │\n"
+                f"  └{'─'*44}┘\n\n"
+                f"{'═'*57}\n"
+                f"VERDICT: {result.verdict.upper()}\n"
+                f"{'═'*57}"
             )
 
             return create_success_output(
@@ -1112,8 +1429,11 @@ class CalculateComparablesTool(BaseTool):
                 data={
                     "symbol": symbol,
                     "current_price": current_price,
+                    "pe_type": pe_type_label,
                     "target_ratios": {
                         "pe_ratio": target_ratios.get("pe_ratio") if target_ratios else None,
+                        "pe_type": target_ratios.get("pe_type") if target_ratios else None,
+                        "pe_forward": target_ratios.get("pe_forward") if target_ratios else None,
                         "pb_ratio": target_ratios.get("pb_ratio") if target_ratios else None,
                         "ps_ratio": target_ratios.get("ps_ratio") if target_ratios else None,
                         "ev_ebitda": target_ratios.get("ev_ebitda") if target_ratios else None,

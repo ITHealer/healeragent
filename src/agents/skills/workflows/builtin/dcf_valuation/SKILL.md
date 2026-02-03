@@ -89,21 +89,47 @@ Use these defaults as starting points:
 
 ## Step 5: Calculate Present Value & Fair Value
 
-1. Discount each year's FCF to present: PV = FCF / (1 + WACC)^n
-2. Discount terminal value: PV_TV = TV / (1 + WACC)^5
+Use the `calculateDCF` tool which automatically computes:
+1. 5-year FCF projections with present values
+2. Terminal value and its present value
 3. Enterprise Value = Sum of PV(FCFs) + PV(Terminal Value)
 4. Equity Value = Enterprise Value - Total Debt + Cash
 5. **Fair Value per Share = Equity Value / Shares Outstanding**
 
-If `calculateDCF` tool is available, use it to compute steps 4-5 automatically.
+**New parameters available:**
+- `normalize_fcf=true`: Use 3-year average FCF for companies with volatile cash flows
+
+**The tool automatically provides:**
+- **TV as % of EV**: If >75%, the valuation is heavily dependent on long-term assumptions
+- **Implied Growth Rate (Reverse DCF)**: What perpetual growth the market is pricing in
+- **2D Sensitivity Matrix**: WACC × Terminal Growth matrix (5×5)
+- **Validation Warnings**: Alerts for potential issues with assumptions
+
+## Step 5.5: Interpret Reverse DCF (Market Expectations)
+
+The `calculateDCF` tool returns `implied_growth_rate` — the terminal growth rate the market is implicitly pricing in.
+
+**Interpretation:**
+- **Implied growth > Your assumption**: Market is more optimistic than your model → Stock may be fairly valued or overvalued
+- **Implied growth < Your assumption**: Market is more pessimistic → Potential undervaluation opportunity
+- **Implied growth > 4%**: Market expects exceptional long-term growth (verify if realistic)
+- **Implied growth < 0%**: Market prices in decline (investigate structural risks)
+
+Use this to cross-validate your assumptions against market expectations.
 
 ## Step 6: Sensitivity Analysis
 
-Create a 3×3 matrix varying:
-- **WACC:** base ±1% (e.g., 8%, 9%, 10%)
-- **Terminal growth:** 2.0%, 2.5%, 3.0%
+**The `calculateDCF` tool now provides a 5×5 sensitivity matrix automatically.**
 
-Present as a formatted table showing fair value per share at each combination.
+Review the matrix in `sensitivity_2d`:
+- **WACC (rows):** base ±2% in 1% increments
+- **Terminal growth (columns):** 1.5% to 3.5%
+
+**Key insights to highlight:**
+1. **Range of fair values**: Min to Max from the matrix
+2. **Current price position**: Where does current price fall in the matrix? (marked with *)
+3. **Most likely scenario**: Your base case (center of matrix)
+4. **Margin of safety**: What WACC/growth combination justifies current price?
 
 ## Step 7: Comparable Analysis (Peer Multiples)
 
@@ -114,51 +140,153 @@ calculateComparables(symbol="[TICKER]", peers=["PEER1", "PEER2", "PEER3"])
 ```
 
 This tool will:
-1. Fetch P/E, P/B, P/S, EV/EBITDA ratios for ALL peers automatically via FMP API
+1. Fetch P/E (TTM), P/E (Forward), P/B, P/S, EV/EBITDA ratios for ALL peers automatically
 2. Fetch the target company's EPS, Book Value/Share, Revenue/Share
 3. Calculate implied fair values: Target metric × Peer average multiple
 4. Return a complete comparison table with actual numerical values
 
 **DO NOT manually fetch `getFinancialRatios` for each peer** — the `calculateComparables` tool handles this in parallel.
 
+**P/E Type Clarification (NEW):**
+The tool now distinguishes between:
+- **P/E (TTM)**: Trailing Twelve Months — based on actual historical earnings
+- **P/E (Forward)**: Based on analyst earnings estimates for next fiscal year
+
+The output indicates which type is used. When comparing:
+- Use **TTM P/E** for stable, mature companies with predictable earnings
+- Use **Forward P/E** for growth companies where future earnings matter more
+- If peers have mixed types, note this limitation in your analysis
+
 The tool returns:
-- Peer comparison table with **actual P/E, P/B, P/S, EV/EBITDA values** for every company
+- Peer comparison table with **actual P/E, P/B, P/S, EV/EBITDA values** with type labels
 - Implied fair values for each multiple (using peer averages and medians)
 - Average and median intrinsic value estimates
 - Upside/downside potential and verdict
 
 **Present the results as a formatted table:**
 
-| Company | Price | P/E | P/B | P/S | EV/EBITDA | Implied Price (P/E) | Implied Price (EV/EBITDA) |
-|---------|-------|-----|-----|-----|-----------|---------------------|--------------------------|
-| Target  | $xxx | actual | actual | actual | actual | Current: $xxx | Current: $xxx |
-| Peer 1  | - | actual | actual | actual | actual | $calculated | $calculated |
-| Peer 2  | - | actual | actual | actual | actual | $calculated | $calculated |
-| Peer 3  | - | actual | actual | actual | actual | $calculated | $calculated |
-| **Avg** | - | avg | avg | avg | avg | **$avg_implied** | **$avg_implied** |
+| Company | Price | P/E (TTM) | P/E (Fwd) | P/B | P/S | EV/EBITDA |
+|---------|-------|-----------|-----------|-----|-----|-----------|
+| Target  | $xxx | actual | actual | actual | actual | actual |
+| Peer 1  | - | actual | actual | actual | actual | actual |
+| Peer 2  | - | actual | actual | actual | actual | actual |
+| **Avg** | - | avg | - | avg | avg | avg |
 
-**CRITICAL:** Every cell must show a real number from the API. No "-" or "N/A" for ratios that exist. The tool fetches real data for each peer.
+**CRITICAL:** Every cell must show a real number from the API. No "-" or "N/A" for ratios that exist.
 
 ## Step 8: Validation Checks
 
-Before presenting results, verify:
-1. **Terminal value ratio:** Should be 50-80% of total EV for mature companies
-   - If >90%: growth rate may be too aggressive
-   - If <40%: near-term projections may be too high
-2. **Implied P/E:** Fair value ÷ EPS should be reasonable (10-30x for most companies)
-3. **vs. Current Price:** If >100% upside/downside, double-check assumptions
-4. **DCF vs. Comparable:** Compare DCF fair value with peer-implied values for cross-validation
+**The `calculateDCF` tool now provides automatic validation warnings.** Review and address them.
+
+**Automatic warnings include:**
+- ⚠️ **TV > 75% of EV**: Valuation heavily depends on long-term assumptions
+- ⚠️ **Terminal growth > 3%**: Exceeds typical GDP growth; verify if realistic
+- ⚠️ **Extreme upside (>100%)** or **downside (<-50%)**: Double-check all inputs
+- ⚠️ **Implied growth > 4%**: Market expects exceptional growth
+- ⚠️ **Implied growth < 0%**: Market prices in structural decline
+- ⚠️ **WACC outside 6-15%**: May be too aggressive or conservative
+
+**Additional manual checks:**
+1. **Implied P/E Check:** Fair value ÷ EPS should be reasonable
+   - Value stocks: 8-15x
+   - Average companies: 15-25x
+   - Growth stocks: 25-40x
+   - If >50x, growth assumptions may be too aggressive
+2. **FCF Volatility:** If high volatility was flagged, consider using `normalize_fcf=true`
+3. **Cross-validation:** Compare DCF fair value vs. Comparable fair value (see Step 8.5)
+
+## Step 8.5: Valuation Reconciliation (DCF vs. Comparable)
+
+**CRITICAL STEP:** Reconcile different valuation methods to arrive at a final fair value range.
+
+**Reconciliation Framework:**
+
+| Scenario | DCF vs. Comparable | Interpretation | Recommendation |
+|----------|-------------------|----------------|----------------|
+| **Converging** | Within 15% | High confidence | Use average as fair value |
+| **DCF Higher** | >15% gap | DCF may be too optimistic OR peers are undervalued | Weight more toward Comparable |
+| **Comparable Higher** | >15% gap | Peers may be overvalued OR DCF assumptions too conservative | Weight more toward DCF |
+| **Large Divergence** | >50% gap | Significant uncertainty | Present as wide range; investigate differences |
+
+**Root Cause Analysis when diverging:**
+
+1. **If DCF >> Comparable:**
+   - Is growth rate assumption too aggressive vs. peers?
+   - Is WACC too low (less risk than peers)?
+   - Does company have unique competitive advantage justifying premium?
+
+2. **If Comparable >> DCF:**
+   - Are peers in a bubble (especially check forward P/E)?
+   - Is FCF depressed due to temporary factors?
+   - Did you use TTM metrics during a weak quarter?
+
+**Final Fair Value Calculation:**
+
+```
+Weighted Fair Value = (DCF × DCF_Weight) + (Comparable × Comp_Weight)
+
+Weights based on confidence:
+- High confidence in both: 50% / 50%
+- Better data quality on one: 60% / 40%
+- One method has major issues: 70% / 30%
+```
+
+**Triangulation with Market Expectations:**
+Use Reverse DCF implied growth to check if market agrees with your thesis:
+- Market implied growth ≈ Your growth assumption → Fair value likely accurate
+- Market implied growth << Your assumption → Potential upside (or you're too optimistic)
+- Market implied growth >> Your assumption → Market may know something you don't
 
 ## Step 9: Present Results
 
-Structure your response with:
-1. **Valuation Summary:** Current price vs. fair value (DCF + Comparable), upside/downside %
-2. **Key Assumptions Table:** Growth rate, WACC, terminal growth, with sources
-3. **5-Year FCF Projection Table:** Each year's projected FCF and present value
-4. **Sensitivity Matrix:** 3×3 table showing fair value range
-5. **Comparable Analysis Table:** Peer multiples with **implied dollar values** (not just ratios)
-6. **Valuation Range:** Combine DCF and Comparable to give a fair value range
-7. **Investment Thesis:** Buy/Hold/Sell recommendation with reasoning
-8. **Caveats:** DCF limitations + company-specific risks
+Structure your response with these sections:
+
+### 9.1 Executive Summary
+- Current price vs. Fair value range (DCF + Comparable weighted)
+- Upside/downside % and verdict (Undervalued/Fairly Valued/Overvalued)
+- Confidence level (High/Medium/Low based on DCF-Comparable convergence)
+
+### 9.2 Key Assumptions Table
+| Parameter | Value | Source/Rationale |
+|-----------|-------|------------------|
+| FCF Base Year | $X B | API (or Normalized 3-yr avg) |
+| Growth Rate (Y1-5) | X% declining | CAGR ± haircut |
+| WACC | X% | Sector default ± adjustments |
+| Terminal Growth | 2.5% | GDP proxy |
+
+### 9.3 DCF Valuation Output
+- Include the full DCF output from the tool
+- Highlight: TV as % of EV, Implied growth vs. your assumption
+- Address any validation warnings
+
+### 9.4 Sensitivity Matrix (5×5)
+Present the auto-generated matrix. Highlight:
+- Base case (center)
+- Where current price falls
+- "Margin of safety" scenarios
+
+### 9.5 Comparable Analysis Table
+Include P/E type labels (TTM/Forward). Show both peer table and implied values.
+
+### 9.6 Reconciliation Summary
+| Method | Fair Value | Weight | Contribution |
+|--------|-----------|--------|--------------|
+| DCF | $XXX | 50% | $XXX |
+| Comparable | $XXX | 50% | $XXX |
+| **Weighted** | **$XXX** | 100% | |
+
+Explain any divergence and your weighting rationale.
+
+### 9.7 Investment Thesis
+- **Verdict:** Buy / Hold / Sell
+- **Target Price Range:** $XX - $XX (from sensitivity + comparable range)
+- **Key drivers:** Why this stock is mispriced
+- **Catalysts:** What could unlock value
+- **Risks:** What could go wrong
+
+### 9.8 Caveats
+- DCF limitations (relies on projections, sensitive to terminal value)
+- Data recency (when was FCF/earnings data from?)
+- Company-specific risks
 
 **Language:** Match the user's language throughout.

@@ -348,6 +348,14 @@ class DCFOutput(BaseCalculationResult):
         upside_potential: Percentage upside/downside
         margin_of_safety_price: Price with margin of safety
         verdict: "undervalued", "overvalued", or "fairly_valued"
+
+        # Enhanced fields for comprehensive analysis
+        fcf_source: Source of FCF data (API, manual, normalized)
+        discount_rate: WACC/discount rate used
+        terminal_growth: Terminal growth rate used
+        implied_growth_rate: Reverse DCF implied growth (given current price)
+        sensitivity_2d: 2D sensitivity matrix (WACC × Terminal Growth)
+        validation_warnings: Any validation warnings
     """
     symbol: str = Field(..., description="Stock symbol")
     projections: List[DCFProjection] = Field(..., description="Cash flow projections")
@@ -362,10 +370,40 @@ class DCFOutput(BaseCalculationResult):
     margin_of_safety_price: float = Field(..., description="Price with safety margin")
     verdict: str = Field(..., description="Valuation verdict")
 
-    # Sensitivity analysis
+    # Input parameters (for transparency)
+    discount_rate: Optional[float] = Field(None, description="WACC/discount rate used")
+    terminal_growth: Optional[float] = Field(None, description="Terminal growth rate used")
+    fcf_source: Optional[str] = Field(None, description="Source of FCF data")
+    shares_outstanding: Optional[float] = Field(None, description="Shares outstanding (M)")
+    cash: Optional[float] = Field(None, description="Cash & equivalents (M)")
+    debt: Optional[float] = Field(None, description="Total debt (M)")
+
+    # Enhanced analysis
+    implied_growth_rate: Optional[float] = Field(
+        None,
+        description="Reverse DCF: implied perpetual growth rate given current price"
+    )
+    tv_as_pct_of_ev: Optional[float] = Field(
+        None,
+        description="Terminal value as % of enterprise value"
+    )
+
+    # Sensitivity analysis (1D)
     sensitivity: Optional[Dict[str, Dict[str, float]]] = Field(
         None,
         description="Sensitivity analysis results"
+    )
+
+    # 2D Sensitivity Matrix (WACC × Terminal Growth)
+    sensitivity_2d: Optional[Dict[str, Any]] = Field(
+        None,
+        description="2D sensitivity matrix: wacc_rates, growth_rates, and values grid"
+    )
+
+    # Validation
+    validation_warnings: Optional[List[str]] = Field(
+        None,
+        description="Validation warnings or flags"
     )
 
 

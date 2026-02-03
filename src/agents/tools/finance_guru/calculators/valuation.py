@@ -73,12 +73,14 @@ class DCFCalculator(BaseCalculator):
         self,
         data: DCFInputData,
         config: DCFConfig,
+        fcf_source: str = "api",
     ) -> DCFOutput:
         """Calculate DCF intrinsic value.
 
         Args:
             data: Input data with FCF, growth rates, discount rate
             config: Configuration with projection years, margin of safety
+            fcf_source: Source of FCF data (api, manual, normalized)
 
         Returns:
             DCFOutput with intrinsic value and projections
@@ -132,6 +134,9 @@ class DCFCalculator(BaseCalculator):
             # Margin of safety price
             margin_price = intrinsic_value * (1 - config.margin_of_safety)
 
+            # Calculate TV as % of EV (important for reliability assessment)
+            tv_as_pct_of_ev = (pv_terminal / enterprise_value * 100) if enterprise_value > 0 else None
+
             # Calculate upside and verdict
             upside = None
             verdict = "unknown"
@@ -144,8 +149,24 @@ class DCFCalculator(BaseCalculator):
                 else:
                     verdict = "fairly_valued"
 
-            # Sensitivity analysis
+            # Sensitivity analysis (1D)
             sensitivity = self._sensitivity_analysis(data, config)
+
+            # 2D Sensitivity Matrix (WACC × Terminal Growth)
+            sensitivity_2d = self._sensitivity_2d_matrix(data, config)
+
+            # Reverse DCF: Calculate implied perpetual growth rate given current price
+            implied_growth = None
+            if data.current_price and data.current_price > 0:
+                implied_growth = self._calculate_implied_growth(data, config)
+
+            # Validation warnings
+            validation_warnings = self._generate_validation_warnings(
+                data=data,
+                tv_pct=tv_as_pct_of_ev,
+                upside=upside,
+                implied_growth=implied_growth,
+            )
 
             self.context.complete()
 
@@ -162,7 +183,18 @@ class DCFCalculator(BaseCalculator):
                 upside_potential=upside,
                 margin_of_safety_price=margin_price,
                 verdict=verdict,
+                # Enhanced fields
+                discount_rate=data.discount_rate,
+                terminal_growth=data.terminal_growth,
+                fcf_source=fcf_source,
+                shares_outstanding=data.shares_outstanding,
+                cash=data.cash,
+                debt=data.debt,
+                tv_as_pct_of_ev=tv_as_pct_of_ev,
+                implied_growth_rate=implied_growth,
                 sensitivity=sensitivity,
+                sensitivity_2d=sensitivity_2d,
+                validation_warnings=validation_warnings if validation_warnings else None,
                 calculation_time_ms=self.context.elapsed_ms,
             )
 
@@ -261,6 +293,182 @@ class DCFCalculator(BaseCalculator):
         equity_value = enterprise_value + data.cash - data.debt
 
         return equity_value / data.shares_outstanding
+
+    def _sensitivity_2d_matrix(
+        self,
+        data: DCFInputData,
+        config: DCFConfig,
+    ) -> dict:
+        """Generate 2D sensitivity matrix (WACC × Terminal Growth).
+
+        Returns a dict with:
+        - wacc_rates: list of WACC values
+        - growth_rates: list of terminal growth values
+        - values: 2D grid of intrinsic values [wacc_idx][growth_idx]
+        """
+        # Define ranges
+        wacc_rates = [
+            data.discount_rate - 0.02,
+            data.discount_rate - 0.01,
+            data.discount_rate,
+            data.discount_rate + 0.01,
+            data.discount_rate + 0.02,
+        ]
+        growth_rates = [0.015, 0.020, 0.025, 0.030, 0.035]
+
+        # Filter out invalid combinations
+        wacc_rates = [w for w in wacc_rates if w > 0.04]  # Min WACC 4%
+        growth_rates = [g for g in growth_rates if g < max(wacc_rates)]
+
+        values = []
+        for wacc in wacc_rates:
+            row = []
+            for tg in growth_rates:
+                if tg >= wacc:
+                    row.append(None)  # Invalid combination
+                    continue
+                try:
+                    modified_data = DCFInputData(
+                        symbol=data.symbol,
+                        current_fcf=data.current_fcf,
+                        growth_rates=data.growth_rates,
+                        terminal_growth=tg,
+                        discount_rate=wacc,
+                        shares_outstanding=data.shares_outstanding,
+                        cash=data.cash,
+                        debt=data.debt,
+                    )
+                    iv = self._calculate_simple(modified_data, config)
+                    row.append(round(iv, 2))
+                except Exception:
+                    row.append(None)
+            values.append(row)
+
+        return {
+            "wacc_rates": [f"{w:.1%}" for w in wacc_rates],
+            "growth_rates": [f"{g:.1%}" for g in growth_rates],
+            "values": values,
+        }
+
+    def _calculate_implied_growth(
+        self,
+        data: DCFInputData,
+        config: DCFConfig,
+    ) -> Optional[float]:
+        """Reverse DCF: Calculate implied perpetual growth rate given current price.
+
+        This answers: "What growth rate is the market pricing in?"
+
+        Uses binary search to find the terminal growth rate that produces
+        an intrinsic value equal to the current price.
+        """
+        if not data.current_price or data.current_price <= 0:
+            return None
+
+        target_price = data.current_price
+        low, high = -0.02, data.discount_rate - 0.005  # Growth must be < WACC
+
+        # Binary search for implied growth
+        for _ in range(50):  # Max iterations
+            mid = (low + high) / 2
+            try:
+                modified_data = DCFInputData(
+                    symbol=data.symbol,
+                    current_fcf=data.current_fcf,
+                    growth_rates=data.growth_rates,
+                    terminal_growth=mid,
+                    discount_rate=data.discount_rate,
+                    shares_outstanding=data.shares_outstanding,
+                    cash=data.cash,
+                    debt=data.debt,
+                )
+                iv = self._calculate_simple(modified_data, config)
+
+                if abs(iv - target_price) < 0.01:
+                    return round(mid, 4)
+                elif iv > target_price:
+                    high = mid
+                else:
+                    low = mid
+            except Exception:
+                high = mid  # Reduce range on error
+
+        # Return best estimate
+        return round((low + high) / 2, 4)
+
+    def _generate_validation_warnings(
+        self,
+        data: DCFInputData,
+        tv_pct: Optional[float],
+        upside: Optional[float],
+        implied_growth: Optional[float],
+    ) -> list[str]:
+        """Generate validation warnings for DCF analysis.
+
+        Warnings indicate potential issues with the valuation that
+        should be considered when interpreting results.
+        """
+        warnings = []
+
+        # Terminal value as % of EV warning
+        if tv_pct is not None and tv_pct > 75:
+            warnings.append(
+                f"⚠️ Terminal Value = {tv_pct:.1f}% of EV (>75%). "
+                "Valuation heavily depends on long-term assumptions."
+            )
+
+        # Terminal growth vs typical GDP growth
+        if data.terminal_growth > 0.03:
+            warnings.append(
+                f"⚠️ Terminal growth ({data.terminal_growth:.1%}) exceeds typical GDP growth (2-3%). "
+                "Consider using more conservative assumption."
+            )
+
+        # Negative FCF warning (already blocked but check anyway)
+        if data.current_fcf <= 0:
+            warnings.append(
+                "⚠️ Negative or zero FCF. DCF not suitable for this company currently."
+            )
+
+        # Extreme upside/downside
+        if upside is not None:
+            if upside > 100:
+                warnings.append(
+                    f"⚠️ Extremely high upside ({upside:.0f}%). "
+                    "Verify inputs and consider if assumptions are realistic."
+                )
+            elif upside < -50:
+                warnings.append(
+                    f"⚠️ Extremely negative valuation ({upside:.0f}%). "
+                    "Stock may be priced for different growth expectations."
+                )
+
+        # Implied growth warning
+        if implied_growth is not None:
+            if implied_growth > 0.04:
+                warnings.append(
+                    f"⚠️ Market implies {implied_growth:.1%} perpetual growth, "
+                    "higher than typical mature company growth."
+                )
+            elif implied_growth < 0:
+                warnings.append(
+                    f"⚠️ Market implies negative perpetual growth ({implied_growth:.1%}). "
+                    "Stock may be distressed or facing structural decline."
+                )
+
+        # Discount rate sanity check
+        if data.discount_rate < 0.06:
+            warnings.append(
+                f"⚠️ Low discount rate ({data.discount_rate:.1%}). "
+                "May underestimate risk for equity investment."
+            )
+        elif data.discount_rate > 0.15:
+            warnings.append(
+                f"⚠️ High discount rate ({data.discount_rate:.1%}). "
+                "Typical range is 8-12% for mature companies."
+            )
+
+        return warnings
 
 
 class GrahamCalculator(BaseCalculator):
