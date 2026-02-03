@@ -20,7 +20,7 @@ tools_hint:
   - getStockPrice
   - getBalanceSheet
   - calculateDCF
-max_tokens: 2500
+max_tokens: 3500
 ---
 
 # DCF Valuation Workflow
@@ -31,10 +31,17 @@ Follow these steps IN ORDER. Use the tools available to gather data at each step
 
 Call these tools IN PARALLEL in your first data-gathering turn:
 - `getCashFlow(symbol="[TICKER]", period="annual", limit=5)` → Extract free_cash_flow history
-- `getFinancialRatios(symbol="[TICKER]")` → Extract P/E, ROE, ROIC, debt_to_equity
+- `getFinancialRatios(symbol="[TICKER]")` → Extract P/E, P/B, ROE, ROIC, EV/EBITDA, debt_to_equity
 - `getGrowthMetrics(symbol="[TICKER]")` → Extract revenue_growth, FCF growth rates
 - `getStockPrice(symbol="[TICKER]")` → Current market price
 - `getBalanceSheet(symbol="[TICKER]")` → Total debt, cash, shares outstanding
+
+**Also fetch peer comparable data** (3-4 industry peers) IN THE SAME PARALLEL call:
+- `getFinancialRatios(symbol="PEER1")` → P/E, P/B, EV/EBITDA for peer 1
+- `getFinancialRatios(symbol="PEER2")` → P/E, P/B, EV/EBITDA for peer 2
+- `getFinancialRatios(symbol="PEER3")` → P/E, P/B, EV/EBITDA for peer 3
+
+Select peers from the same sector/industry (e.g., for MSFT: AAPL, GOOGL, AMZN).
 
 **If FCF is missing:** Calculate as: Operating Cash Flow - Capital Expenditure
 
@@ -101,7 +108,30 @@ Create a 3×3 matrix varying:
 
 Present as a formatted table showing fair value per share at each combination.
 
-## Step 7: Validation Checks
+## Step 7: Comparable Analysis (Peer Multiples)
+
+Using the peer ratios from Step 1, calculate **implied fair values** for [TICKER]:
+
+1. **Extract actual EPS and EBITDA** of the target company from the financial data.
+2. For each peer, use their P/E, P/B, EV/EBITDA ratios to calculate what [TICKER]'s stock would be worth:
+   - Implied Price (P/E) = Target EPS × Peer P/E
+   - Implied Price (P/B) = Target Book Value per Share × Peer P/B
+   - Implied Price (EV/EBITDA) = (Peer EV/EBITDA × Target EBITDA + Target Cash - Target Debt) / Target Shares
+3. Calculate the **peer average** for each multiple and the **average implied fair value**.
+
+**Present as a table with ACTUAL CALCULATED VALUES (not just the raw ratios):**
+
+| Company | P/E | P/B | EV/EBITDA | Implied Price (P/E) | Implied Price (EV/EBITDA) |
+|---------|-----|-----|-----------|---------------------|--------------------------|
+| Target  | actual_value | actual_value | actual_value | Current: $xxx | Current: $xxx |
+| Peer 1  | actual_value | actual_value | actual_value | $calculated | $calculated |
+| Peer 2  | actual_value | actual_value | actual_value | $calculated | $calculated |
+| Peer 3  | actual_value | actual_value | actual_value | $calculated | $calculated |
+| **Avg** | avg_value | avg_value | avg_value | **$avg_implied** | **$avg_implied** |
+
+**CRITICAL:** Do NOT just list raw ratio numbers with "x" suffix. You MUST calculate the implied dollar values. For example: if MSFT EPS = $11.05 and GOOGL P/E = 23.29, then Implied Price = $11.05 × 23.29 = $257.35.
+
+## Step 8: Validation Checks
 
 Before presenting results, verify:
 1. **Terminal value ratio:** Should be 50-80% of total EV for mature companies
@@ -109,15 +139,18 @@ Before presenting results, verify:
    - If <40%: near-term projections may be too high
 2. **Implied P/E:** Fair value ÷ EPS should be reasonable (10-30x for most companies)
 3. **vs. Current Price:** If >100% upside/downside, double-check assumptions
+4. **DCF vs. Comparable:** Compare DCF fair value with peer-implied values for cross-validation
 
-## Step 8: Present Results
+## Step 9: Present Results
 
 Structure your response with:
-1. **Valuation Summary:** Current price vs. fair value, upside/downside %
+1. **Valuation Summary:** Current price vs. fair value (DCF + Comparable), upside/downside %
 2. **Key Assumptions Table:** Growth rate, WACC, terminal growth, with sources
 3. **5-Year FCF Projection Table:** Each year's projected FCF and present value
 4. **Sensitivity Matrix:** 3×3 table showing fair value range
-5. **Investment Thesis:** Buy/Hold/Sell recommendation with reasoning
-6. **Caveats:** DCF limitations + company-specific risks
+5. **Comparable Analysis Table:** Peer multiples with **implied dollar values** (not just ratios)
+6. **Valuation Range:** Combine DCF and Comparable to give a fair value range
+7. **Investment Thesis:** Buy/Hold/Sell recommendation with reasoning
+8. **Caveats:** DCF limitations + company-specific risks
 
 **Language:** Match the user's language throughout.

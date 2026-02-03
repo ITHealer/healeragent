@@ -61,6 +61,7 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
             Response dict with content and optional tool_calls
         """
         import time
+        import asyncio
 
         if not self.model:
             await self.initialize()
@@ -91,25 +92,53 @@ class GeminiModelProvider(ModelProvider, LoggerMixin):
                     )
 
             # Make the API call with timing
-            start_time = time.time()
-            if gemini_tools:
-                response = await self.model.generate_content_async(
-                    gemini_messages,
-                    generation_config=generation_config,
-                    tools=gemini_tools,
-                )
-            else:
-                response = await self.model.generate_content_async(
-                    gemini_messages,
-                    generation_config=generation_config,
-                )
-            elapsed = time.time() - start_time
+            # Retry up to 2 times for malformed_function_call errors
+            # Google recommends setting function_calling_mode=ANY to fix this
+            max_malformed_retries = 2
+            tool_config_override = None
 
-            self.logger.debug(
-                f"[GEMINI] Generate done | {elapsed:.2f}s | model={self.model_name}"
-            )
+            for attempt in range(1 + max_malformed_retries):
+                start_time = time.time()
+                if gemini_tools:
+                    call_kwargs = {
+                        "generation_config": generation_config,
+                        "tools": gemini_tools,
+                    }
+                    if tool_config_override:
+                        call_kwargs["tool_config"] = tool_config_override
+                    response = await self.model.generate_content_async(
+                        gemini_messages,
+                        **call_kwargs,
+                    )
+                else:
+                    response = await self.model.generate_content_async(
+                        gemini_messages,
+                        generation_config=generation_config,
+                    )
+                elapsed = time.time() - start_time
 
-            return self._format_response(response)
+                self.logger.debug(
+                    f"[GEMINI] Generate done | {elapsed:.2f}s | model={self.model_name}"
+                )
+
+                # Check for malformed_function_call and retry with ANY mode
+                result = self._format_response(response)
+                finish = result.get("finish_reason", "")
+                is_malformed = "malformed_function_call" in str(finish).lower()
+
+                if is_malformed and attempt < max_malformed_retries and gemini_tools:
+                    self.logger.warning(
+                        f"[GEMINI] malformed_function_call detected (attempt {attempt + 1}/"
+                        f"{1 + max_malformed_retries}). Retrying with function_calling_mode=ANY..."
+                    )
+                    tool_config_override = {"function_calling_config": {"mode": "ANY"}}
+                    await asyncio.sleep(0.5)
+                    continue
+
+                return result
+
+            # Should not reach here, but return last result as fallback
+            return result
 
         except Exception as e:
             error_type = type(e).__name__

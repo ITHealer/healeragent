@@ -119,6 +119,24 @@ async def fetch_fundamental_data(
         if not profile:
             raise ValueError(f"Could not fetch data for {symbol}")
 
+        # Resolve shares_outstanding with multiple fallback sources
+        shares_outstanding_raw = profile.get("sharesOutstanding") or 0
+        if not shares_outstanding_raw and income:
+            # Fallback 1: weighted average shares from income statement
+            shares_outstanding_raw = (
+                income.get("weightedAverageShsOut")
+                or income.get("weightedAverageShsOutDil")
+                or 0
+            )
+        if not shares_outstanding_raw:
+            # Fallback 2: calculate from market cap / price
+            mkt_cap = profile.get("mktCap") or profile.get("marketCap") or 0
+            price = profile.get("price") or 0
+            if mkt_cap > 0 and price > 0:
+                shares_outstanding_raw = mkt_cap / price
+
+        shares_outstanding_m = shares_outstanding_raw / 1e6 if shares_outstanding_raw else 0
+
         return {
             "symbol": symbol,
             "price": profile.get("price", 0),
@@ -126,7 +144,7 @@ async def fetch_fundamental_data(
             "book_value_per_share": key_metrics.get("bookValuePerShare", 0) if key_metrics else 0,
             "revenue_per_share": key_metrics.get("revenuePerShare", 0) if key_metrics else 0,
             "dividend_per_share": key_metrics.get("dividendPerShare", 0) if key_metrics else 0,
-            "shares_outstanding": profile.get("sharesOutstanding", 0) / 1e6,  # Convert to millions
+            "shares_outstanding": shares_outstanding_m,
             "free_cash_flow": cash_flow.get("freeCashFlow", 0) / 1e6 if cash_flow else 0,
             "cash": profile.get("cash", 0) / 1e6,
             "debt": profile.get("totalDebt", 0) / 1e6,
@@ -272,7 +290,21 @@ class CalculateDCFTool(BaseTool):
                         f"Cannot perform DCF: {symbol} has no positive free cash flow"
                     )
 
-            shares_outstanding = fundamentals.get("shares_outstanding", 1000)
+            shares_outstanding = fundamentals.get("shares_outstanding", 0)
+            if not shares_outstanding or shares_outstanding <= 0:
+                # Last-resort fallback: estimate from market cap / price
+                current_price_check = fundamentals.get("price", 0)
+                if current_price_check and current_price_check > 0:
+                    # Try to compute from market cap (note: market cap from FMP is in raw units)
+                    logger.warning(
+                        f"[calculateDCF] shares_outstanding is 0 for {symbol}, "
+                        f"cannot perform per-share valuation without share count"
+                    )
+                    return create_error_output(
+                        self.schema.name,
+                        f"Cannot perform DCF: shares outstanding data unavailable for {symbol}. "
+                        f"Please provide shares_outstanding parameter manually."
+                    )
             current_price = fundamentals.get("price")
             cash = fundamentals.get("cash", 0)
             debt = fundamentals.get("debt", 0)
