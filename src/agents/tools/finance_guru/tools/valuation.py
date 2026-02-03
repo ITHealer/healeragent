@@ -192,6 +192,39 @@ async def fetch_fundamental_data(
         return _create_mock_fundamental_data(symbol)
 
 
+def _normalize_growth_rates(growth_rates: List[Any]) -> List[float]:
+    """Normalize growth rates to floats.
+
+    Handles various input formats:
+    - Float: 0.10 → 0.10
+    - String decimal: "0.10" → 0.10
+    - String percentage: "10%" → 0.10
+    - Integer: 10 → 0.10 (assumes percentage if > 1)
+    """
+    normalized = []
+    for g in growth_rates:
+        if isinstance(g, (int, float)):
+            # If value > 1, assume it's a percentage (e.g., 10 means 10%)
+            val = float(g)
+            if val > 1:
+                val = val / 100
+            normalized.append(val)
+        elif isinstance(g, str):
+            # Remove whitespace and percentage sign
+            g_clean = g.strip().rstrip('%')
+            try:
+                val = float(g_clean)
+                # If original had % or value > 1, treat as percentage
+                if '%' in g or val > 1:
+                    val = val / 100
+                normalized.append(val)
+            except ValueError:
+                # Skip invalid values
+                continue
+        # Skip None or other types
+    return normalized if normalized else [0.10, 0.08, 0.06, 0.05, 0.04]
+
+
 def _create_mock_fundamental_data(symbol: str) -> Dict[str, Any]:
     """Create mock fundamental data for testing."""
     mock_data = {
@@ -319,7 +352,8 @@ class CalculateDCFTool(BaseTool):
         try:
             symbol = kwargs.get("symbol", "").upper()
             current_fcf = kwargs.get("current_fcf")
-            growth_rates = kwargs.get("growth_rates", [0.10, 0.08, 0.06, 0.05, 0.04])
+            growth_rates_raw = kwargs.get("growth_rates", [0.10, 0.08, 0.06, 0.05, 0.04])
+            growth_rates = _normalize_growth_rates(growth_rates_raw)
             discount_rate = kwargs.get("discount_rate", 0.10)
             terminal_growth = kwargs.get("terminal_growth", 0.025)
             normalize_fcf = kwargs.get("normalize_fcf", False)
