@@ -813,3 +813,332 @@ class GetValuationSummaryTool(BaseTool):
         except Exception as e:
             logger.exception(f"Valuation summary failed: {e}")
             return create_error_output(self.schema.name, str(e))
+
+
+class CalculateComparablesTool(BaseTool):
+    """Tool for Comparable Company (Peer Multiples) valuation.
+
+    Automatically fetches financial ratios for the target and all peer symbols,
+    then calculates implied fair values using P/E, P/B, P/S, and EV/EBITDA multiples.
+
+    This solves the problem of missing peer data ("-" values) by making actual
+    API calls for each peer symbol instead of relying on the agent to manually
+    extract and pass the data.
+
+    Usage by agent:
+        calculateComparables(
+            symbol="NVDA",
+            peers=["AMD", "INTC", "AVGO"]
+        )
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.calculator = ComparableCalculator()
+
+        self.schema = ToolSchema(
+            name="calculateComparables",
+            category="valuation",
+            description=(
+                "Calculate comparable company (peer multiples) valuation. "
+                "Automatically fetches P/E, P/B, P/S, EV/EBITDA ratios for the target "
+                "and all peer companies, then computes implied fair values. "
+                "Use for relative valuation and peer comparison analysis."
+            ),
+            parameters=[
+                ToolParameter(
+                    name="symbol",
+                    type="string",
+                    description="Target stock symbol (e.g., 'NVDA')",
+                    required=True,
+                ),
+                ToolParameter(
+                    name="peers",
+                    type="array",
+                    description=(
+                        "List of 2-5 peer company symbols from the same sector/industry "
+                        "(e.g., ['AMD', 'INTC', 'AVGO'] for NVDA)"
+                    ),
+                    required=True,
+                ),
+            ],
+        )
+
+    async def _fetch_ratios_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Fetch valuation ratios for a single symbol using FMP API directly.
+
+        Returns dict with pe_ratio, pb_ratio, ps_ratio, ev_ebitda, or None on failure.
+        """
+        import os
+        import httpx
+
+        api_key = os.environ.get("FMP_API_KEY")
+        if not api_key:
+            logger.warning("[calculateComparables] FMP_API_KEY not set")
+            return None
+
+        base_url = "https://financialmodelingprep.com/api"
+        sym = symbol.upper()
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                # Primary: annual ratios (latest period)
+                url = f"{base_url}/v3/ratios/{sym}"
+                resp = await client.get(url, params={"apikey": api_key, "period": "annual", "limit": 1})
+                resp.raise_for_status()
+                raw_data = resp.json()
+
+                if raw_data and len(raw_data) > 0:
+                    item = raw_data[0]
+                    return {
+                        "symbol": sym,
+                        "pe_ratio": item.get("priceEarningsRatio"),
+                        "pb_ratio": item.get("priceToBookRatio"),
+                        "ps_ratio": item.get("priceToSalesRatio"),
+                        "ev_ebitda": item.get("enterpriseValueMultiple"),
+                        "price_to_cash_flow": item.get("priceCashFlowRatio"),
+                    }
+
+                # Fallback: TTM ratios
+                url_ttm = f"{base_url}/v3/ratios-ttm/{sym}"
+                resp_ttm = await client.get(url_ttm, params={"apikey": api_key})
+                resp_ttm.raise_for_status()
+                raw_ttm = resp_ttm.json()
+
+                if raw_ttm and len(raw_ttm) > 0:
+                    item = raw_ttm[0]
+                    return {
+                        "symbol": sym,
+                        "pe_ratio": item.get("peRatioTTM"),
+                        "pb_ratio": item.get("priceToBookRatioTTM"),
+                        "ps_ratio": item.get("priceToSalesRatioTTM"),
+                        "ev_ebitda": item.get("enterpriseValueMultipleTTM"),
+                        "price_to_cash_flow": item.get("priceCashFlowRatioTTM"),
+                    }
+
+                return None
+
+        except Exception as e:
+            logger.warning(f"[calculateComparables] Failed to fetch ratios for {sym}: {e}")
+            return None
+
+    async def execute(self, **kwargs) -> ToolOutput:
+        """Execute comparable company valuation."""
+        import asyncio
+
+        try:
+            symbol = kwargs.get("symbol", "").upper()
+            peers_raw = kwargs.get("peers", [])
+
+            if not symbol:
+                return create_error_output(self.schema.name, "Symbol is required")
+            if not peers_raw or len(peers_raw) < 2:
+                return create_error_output(
+                    self.schema.name,
+                    "At least 2 peer symbols are required (e.g., peers=['AMD', 'INTC', 'AVGO'])"
+                )
+
+            peer_symbols = [p.upper() for p in peers_raw[:5]]  # Cap at 5 peers
+
+            # Fetch fundamental data for target company
+            fundamentals = await fetch_fundamental_data(symbol)
+            current_price = fundamentals.get("price", 0)
+            eps = fundamentals.get("eps", 0)
+            book_value_ps = fundamentals.get("book_value_per_share", 0)
+            revenue_ps = fundamentals.get("revenue_per_share", 0)
+
+            if current_price <= 0:
+                return create_error_output(
+                    self.schema.name,
+                    f"Could not fetch price data for {symbol}"
+                )
+
+            # Fetch ratios for target + all peers in parallel
+            fetch_tasks = [self._fetch_ratios_for_symbol(symbol)]
+            for peer in peer_symbols:
+                fetch_tasks.append(self._fetch_ratios_for_symbol(peer))
+
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+
+            # Process target ratios
+            target_ratios = results[0] if not isinstance(results[0], Exception) else None
+
+            # Process peer ratios
+            peer_companies = []
+            peer_details = []  # For formatted output
+            for i, peer_sym in enumerate(peer_symbols):
+                peer_result = results[i + 1]
+                if isinstance(peer_result, Exception) or peer_result is None:
+                    logger.warning(f"[calculateComparables] No data for peer {peer_sym}")
+                    peer_details.append({
+                        "symbol": peer_sym,
+                        "pe_ratio": None,
+                        "pb_ratio": None,
+                        "ps_ratio": None,
+                        "ev_ebitda": None,
+                        "status": "no_data",
+                    })
+                    continue
+
+                pe = peer_result.get("pe_ratio")
+                pb = peer_result.get("pb_ratio")
+                ps = peer_result.get("ps_ratio")
+                ev = peer_result.get("ev_ebitda")
+
+                # Filter out negative or zero values (e.g., negative P/E means losses)
+                if pe is not None and pe <= 0:
+                    pe = None
+                if pb is not None and pb <= 0:
+                    pb = None
+                if ps is not None and ps <= 0:
+                    ps = None
+                if ev is not None and ev <= 0:
+                    ev = None
+
+                peer_companies.append(ComparableCompany(
+                    symbol=peer_sym,
+                    pe_ratio=pe,
+                    pb_ratio=pb,
+                    ps_ratio=ps,
+                    ev_ebitda=ev,
+                ))
+
+                peer_details.append({
+                    "symbol": peer_sym,
+                    "pe_ratio": round(pe, 2) if pe else None,
+                    "pb_ratio": round(pb, 2) if pb else None,
+                    "ps_ratio": round(ps, 2) if ps else None,
+                    "ev_ebitda": round(ev, 2) if ev else None,
+                    "status": "ok",
+                })
+
+            if len(peer_companies) < 2:
+                return create_error_output(
+                    self.schema.name,
+                    f"Could not fetch sufficient peer data. Only {len(peer_companies)} peers had valid data. "
+                    f"Need at least 2. Check if peer symbols are valid."
+                )
+
+            # Build ComparableInputData
+            # Estimate EBITDA per share from target ratios if available
+            ebitda_per_share = None
+            if target_ratios and target_ratios.get("ev_ebitda"):
+                # Reverse-calculate: if we have EV/EBITDA and price, approximate EBITDA/share
+                # This is simplified; proper calc would use enterprise value
+                ev_multiple = target_ratios["ev_ebitda"]
+                if ev_multiple > 0:
+                    ebitda_per_share = current_price / ev_multiple
+
+            comp_data = ComparableInputData(
+                symbol=symbol,
+                eps=eps if eps > 0 else 0.01,  # Avoid zero
+                book_value_per_share=book_value_ps if book_value_ps > 0 else 0.01,
+                revenue_per_share=revenue_ps if revenue_ps > 0 else 0.01,
+                ebitda_per_share=ebitda_per_share,
+                current_price=current_price,
+                peers=peer_companies,
+            )
+
+            # Run calculation
+            result = self.calculator.calculate(comp_data)
+
+            # Build formatted output with actual values
+            # Target ratios display
+            t_pe = f"{target_ratios['pe_ratio']:.2f}x" if target_ratios and target_ratios.get('pe_ratio') else "N/A"
+            t_pb = f"{target_ratios['pb_ratio']:.2f}x" if target_ratios and target_ratios.get('pb_ratio') else "N/A"
+            t_ps = f"{target_ratios['ps_ratio']:.2f}x" if target_ratios and target_ratios.get('ps_ratio') else "N/A"
+            t_ev = f"{target_ratios['ev_ebitda']:.2f}x" if target_ratios and target_ratios.get('ev_ebitda') else "N/A"
+
+            # Build peer table rows
+            table_rows = []
+            table_rows.append(
+                f"| **{symbol}** (Target) | ${current_price:.2f} | {t_pe} | {t_pb} | {t_ps} | {t_ev} | - |"
+            )
+
+            for pd_item in peer_details:
+                s = pd_item["symbol"]
+                pe_str = f"{pd_item['pe_ratio']:.2f}x" if pd_item.get('pe_ratio') else "N/A"
+                pb_str = f"{pd_item['pb_ratio']:.2f}x" if pd_item.get('pb_ratio') else "N/A"
+                ps_str = f"{pd_item['ps_ratio']:.2f}x" if pd_item.get('ps_ratio') else "N/A"
+                ev_str = f"{pd_item['ev_ebitda']:.2f}x" if pd_item.get('ev_ebitda') else "N/A"
+                status = pd_item.get("status", "")
+                note = "" if status == "ok" else " (no data)"
+                table_rows.append(
+                    f"| {s}{note} | - | {pe_str} | {pb_str} | {ps_str} | {ev_str} | - |"
+                )
+
+            # Add peer average/median row
+            stats = result.peer_stats
+            avg_pe = f"{stats['P/E']['avg']:.2f}x" if 'P/E' in stats else "N/A"
+            avg_pb = f"{stats['P/B']['avg']:.2f}x" if 'P/B' in stats else "N/A"
+            avg_ps = f"{stats['P/S']['avg']:.2f}x" if 'P/S' in stats else "N/A"
+            avg_ev = f"{stats['EV/EBITDA']['avg']:.2f}x" if 'EV/EBITDA' in stats else "N/A"
+            table_rows.append(
+                f"| **Peer Average** | - | {avg_pe} | {avg_pb} | {avg_ps} | {avg_ev} | - |"
+            )
+
+            table_header = (
+                "| Company | Price | P/E | P/B | P/S | EV/EBITDA | Note |\n"
+                "|---------|-------|-----|-----|-----|-----------|------|\n"
+            )
+            table_body = "\n".join(table_rows)
+
+            # Implied values section
+            implied_lines = []
+            for v in result.valuations:
+                implied_lines.append(
+                    f"  {v.multiple_name}: Peer Avg={v.peer_average:.2f}x → "
+                    f"Implied Price=${v.implied_value:.2f} "
+                    f"(Median={v.peer_median:.2f}x → ${v.implied_value_median:.2f})"
+                )
+            implied_text = "\n".join(implied_lines) if implied_lines else "  No valid multiples available"
+
+            formatted = (
+                f"Comparable Company Valuation for {symbol}:\n\n"
+                f"Peer Comparison Table:\n"
+                f"{table_header}{table_body}\n\n"
+                f"Implied Fair Values (using peer multiples × {symbol} metrics):\n"
+                f"{implied_text}\n\n"
+                f"Summary:\n"
+                f"  Average Implied Fair Value: ${result.average_intrinsic_value:.2f}\n"
+                f"  Median Implied Fair Value: ${result.median_intrinsic_value:.2f}\n"
+                f"  Current Price: ${result.current_price:.2f}\n"
+                f"  Upside Potential: {result.upside_potential:.1f}%\n\n"
+                f"Verdict: {result.verdict.upper()}"
+            )
+
+            return create_success_output(
+                self.schema.name,
+                data={
+                    "symbol": symbol,
+                    "current_price": current_price,
+                    "target_ratios": {
+                        "pe_ratio": target_ratios.get("pe_ratio") if target_ratios else None,
+                        "pb_ratio": target_ratios.get("pb_ratio") if target_ratios else None,
+                        "ps_ratio": target_ratios.get("ps_ratio") if target_ratios else None,
+                        "ev_ebitda": target_ratios.get("ev_ebitda") if target_ratios else None,
+                    },
+                    "peers": peer_details,
+                    "peer_stats": result.peer_stats,
+                    "valuations": [
+                        {
+                            "multiple": v.multiple_name,
+                            "peer_average": v.peer_average,
+                            "peer_median": v.peer_median,
+                            "implied_value_avg": v.implied_value,
+                            "implied_value_median": v.implied_value_median,
+                        }
+                        for v in result.valuations
+                    ],
+                    "average_intrinsic_value": result.average_intrinsic_value,
+                    "median_intrinsic_value": result.median_intrinsic_value,
+                    "upside_potential": result.upside_potential,
+                    "verdict": result.verdict,
+                },
+                formatted_context=formatted,
+                execution_time_ms=result.calculation_time_ms or 0,
+            )
+
+        except Exception as e:
+            logger.exception(f"Comparable calculation failed: {e}")
+            return create_error_output(self.schema.name, str(e))

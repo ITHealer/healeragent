@@ -20,6 +20,7 @@ tools_hint:
   - getStockPrice
   - getBalanceSheet
   - calculateDCF
+  - calculateComparables
 max_tokens: 3500
 ---
 
@@ -36,12 +37,8 @@ Call these tools IN PARALLEL in your first data-gathering turn:
 - `getStockPrice(symbol="[TICKER]")` → Current market price
 - `getBalanceSheet(symbol="[TICKER]")` → Total debt, cash, shares outstanding
 
-**Also fetch peer comparable data** (3-4 industry peers) IN THE SAME PARALLEL call:
-- `getFinancialRatios(symbol="PEER1")` → P/E, P/B, EV/EBITDA for peer 1
-- `getFinancialRatios(symbol="PEER2")` → P/E, P/B, EV/EBITDA for peer 2
-- `getFinancialRatios(symbol="PEER3")` → P/E, P/B, EV/EBITDA for peer 3
-
-Select peers from the same sector/industry (e.g., for MSFT: AAPL, GOOGL, AMZN).
+Select 3-4 industry peers for comparable analysis (e.g., for MSFT: AAPL, GOOGL, AMZN).
+Peer data will be fetched automatically in Step 7 using `calculateComparables`.
 
 **If FCF is missing:** Calculate as: Operating Cash Flow - Capital Expenditure
 
@@ -110,26 +107,37 @@ Present as a formatted table showing fair value per share at each combination.
 
 ## Step 7: Comparable Analysis (Peer Multiples)
 
-Using the peer ratios from Step 1, calculate **implied fair values** for [TICKER]:
+**USE THE `calculateComparables` TOOL** to automatically fetch peer ratios and compute implied fair values:
 
-1. **Extract actual EPS and EBITDA** of the target company from the financial data.
-2. For each peer, use their P/E, P/B, EV/EBITDA ratios to calculate what [TICKER]'s stock would be worth:
-   - Implied Price (P/E) = Target EPS × Peer P/E
-   - Implied Price (P/B) = Target Book Value per Share × Peer P/B
-   - Implied Price (EV/EBITDA) = (Peer EV/EBITDA × Target EBITDA + Target Cash - Target Debt) / Target Shares
-3. Calculate the **peer average** for each multiple and the **average implied fair value**.
+```
+calculateComparables(symbol="[TICKER]", peers=["PEER1", "PEER2", "PEER3"])
+```
 
-**Present as a table with ACTUAL CALCULATED VALUES (not just the raw ratios):**
+This tool will:
+1. Fetch P/E, P/B, P/S, EV/EBITDA ratios for ALL peers automatically via FMP API
+2. Fetch the target company's EPS, Book Value/Share, Revenue/Share
+3. Calculate implied fair values: Target metric × Peer average multiple
+4. Return a complete comparison table with actual numerical values
 
-| Company | P/E | P/B | EV/EBITDA | Implied Price (P/E) | Implied Price (EV/EBITDA) |
-|---------|-----|-----|-----------|---------------------|--------------------------|
-| Target  | actual_value | actual_value | actual_value | Current: $xxx | Current: $xxx |
-| Peer 1  | actual_value | actual_value | actual_value | $calculated | $calculated |
-| Peer 2  | actual_value | actual_value | actual_value | $calculated | $calculated |
-| Peer 3  | actual_value | actual_value | actual_value | $calculated | $calculated |
-| **Avg** | avg_value | avg_value | avg_value | **$avg_implied** | **$avg_implied** |
+**DO NOT manually fetch `getFinancialRatios` for each peer** — the `calculateComparables` tool handles this in parallel.
 
-**CRITICAL:** Do NOT just list raw ratio numbers with "x" suffix. You MUST calculate the implied dollar values. For example: if MSFT EPS = $11.05 and GOOGL P/E = 23.29, then Implied Price = $11.05 × 23.29 = $257.35.
+The tool returns:
+- Peer comparison table with **actual P/E, P/B, P/S, EV/EBITDA values** for every company
+- Implied fair values for each multiple (using peer averages and medians)
+- Average and median intrinsic value estimates
+- Upside/downside potential and verdict
+
+**Present the results as a formatted table:**
+
+| Company | Price | P/E | P/B | P/S | EV/EBITDA | Implied Price (P/E) | Implied Price (EV/EBITDA) |
+|---------|-------|-----|-----|-----|-----------|---------------------|--------------------------|
+| Target  | $xxx | actual | actual | actual | actual | Current: $xxx | Current: $xxx |
+| Peer 1  | - | actual | actual | actual | actual | $calculated | $calculated |
+| Peer 2  | - | actual | actual | actual | actual | $calculated | $calculated |
+| Peer 3  | - | actual | actual | actual | actual | $calculated | $calculated |
+| **Avg** | - | avg | avg | avg | avg | **$avg_implied** | **$avg_implied** |
+
+**CRITICAL:** Every cell must show a real number from the API. No "-" or "N/A" for ratios that exist. The tool fetches real data for each peer.
 
 ## Step 8: Validation Checks
 

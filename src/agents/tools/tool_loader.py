@@ -137,6 +137,7 @@ TOOL_DEFINITIONS = {
         ("src.agents.tools.finance_guru.tools.valuation", "CalculateGrahamTool", None),
         ("src.agents.tools.finance_guru.tools.valuation", "CalculateDDMTool", None),
         ("src.agents.tools.finance_guru.tools.valuation", "GetValuationSummaryTool", None),
+        ("src.agents.tools.finance_guru.tools.valuation", "CalculateComparablesTool", None),
         # Phase 2: Enhanced Technical Indicators
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetIchimokuCloudTool", None),
         ("src.agents.tools.finance_guru.tools.technical_enhanced", "GetFibonacciLevelsTool", None),

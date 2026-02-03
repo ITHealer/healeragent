@@ -57,6 +57,7 @@ from src.agents.tools.finance_guru.tools.valuation import (
     CalculateGrahamTool,
     CalculateDDMTool,
     GetValuationSummaryTool,
+    CalculateComparablesTool,
 )
 
 from src.agents.tools.finance_guru.tools.backtest import (
@@ -89,6 +90,7 @@ __all__ = [
     "CalculateGrahamTool",
     "CalculateDDMTool",
     "GetValuationSummaryTool",
+    "CalculateComparablesTool",
     # Backtest Tools (Phase 5)
     "RunBacktestTool",
     "CompareStrategiesTool",
