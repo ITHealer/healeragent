@@ -5,7 +5,8 @@ Provides dynamic tool discovery using semantic embeddings, enabling the agent
 to find relevant tools on-demand instead of loading all tools upfront.
 
 Key Features:
-- Semantic search using all-MiniLM-L6-v2 embeddings (384 dimensions)
+- Semantic search using multilingual embeddings (384 dimensions)
+- Supports Vietnamese and 50+ languages via paraphrase-multilingual-MiniLM-L12-v2
 - Pre-computed embeddings with TTL-based caching
 - `tool_search` meta-tool for GPT to call during conversation
 - Tool reference pattern for efficient token usage
@@ -42,14 +43,15 @@ from src.utils.logger.custom_logging import LoggerMixin
 # CONFIGURATION
 # ============================================================================
 
-# Embedding model
-EMBEDDING_MODEL = "all-MiniLM-L6-v2"  # 384 dimensions, fast, local
+# Embedding model - MUST be multilingual to support Vietnamese queries
+# paraphrase-multilingual-MiniLM-L12-v2 supports 50+ languages including Vietnamese
+EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"  # 384 dimensions, multilingual
 EMBEDDING_DIMENSIONS = 384
 
 # Search parameters
 DEFAULT_TOP_K = 10
 MAX_TOP_K = 20
-MIN_SIMILARITY_THRESHOLD = 0.15  # Minimum cosine similarity to include
+MIN_SIMILARITY_THRESHOLD = 0.25  # Minimum cosine similarity to include (raised from 0.15 to filter weak matches)
 
 # Cache settings
 EMBEDDING_CACHE_TTL_SECONDS = 3600  # 1 hour
