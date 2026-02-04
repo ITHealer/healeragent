@@ -42,6 +42,43 @@ Peer data will be fetched automatically in Step 7 using `calculateComparables`.
 
 **If FCF is missing:** Calculate as: Operating Cash Flow - Capital Expenditure
 
+## Step 1.5: Document FCF Source (CRITICAL)
+
+**CRITICAL:** Always cite the FCF source explicitly in your output. Users must be able to verify every number.
+
+### If using API data directly:
+
+```
+📊 FCF BASE CALCULATION:
+
+Source: FMP API, Cash Flow Statement FY2024
+Operating Cash Flow: $XX,XXX M
+Capital Expenditure: $(XX,XXX) M
+Free Cash Flow = OCF - CapEx = $XX,XXX M
+
+FCF Base for DCF: $XX,XXX M
+```
+
+### If using normalized FCF:
+
+```
+📊 FCF BASE CALCULATION (Normalized):
+
+FCF History:
+- FY2024: $XX,XXX M
+- FY2023: $XX,XXX M
+- FY2022: $XX,XXX M
+
+3-Year Average: $XX,XXX M
+Coefficient of Variation: XX.X%
+Decision: Using normalized FCF due to [reason: AI capex cycle / one-time items / etc.]
+```
+
+**MANDATORY REQUIREMENTS:**
+1. **NEVER** state growth rates (e.g., "FCF grows 14%") without the base amount ("14% of $59,000M")
+2. **ALWAYS** show the source (FMP API, which fiscal year)
+3. **ALWAYS** show OCF and CapEx components, not just the final FCF number
+
 ## Step 2: Calculate FCF Growth Rate
 
 From the 5-year cash flow history, calculate the Compound Annual Growth Rate (CAGR).
@@ -56,26 +93,128 @@ From the 5-year cash flow history, calculate the Compound Annual Growth Rate (CA
 - Volatile FCF → Weight recent years more heavily
 - **Cap at 15%** for projection (sustained higher growth is rare)
 
+## Step 2.5: FCF Normalization Decision (CRITICAL for Tech/High-Growth Companies)
+
+**For companies in heavy investment cycles (AI/Cloud: MSFT, GOOGL, AMZN, META, NVDA):**
+
+### 2.5.1 Check FCF Volatility:
+1. Get 3-year FCF history from getCashFlow
+2. Calculate coefficient of variation (CV):
+   ```
+   CV = (Standard Deviation / Mean) × 100%
+   ```
+3. If CV > 30%, FCF is volatile → Consider normalization
+
+### 2.5.2 Normalization Decision Table:
+
+| Scenario | FCF Trend | Recommendation |
+|----------|-----------|----------------|
+| Heavy AI/Cloud capex (current cycle) | FCF declining | Use normalized (3yr avg) OR add capex-back analysis |
+| Capex cycle ending | FCF recovering | Use current FCF |
+| Stable operations | Consistent FCF | Use current FCF |
+| One-time events affecting FCF | Distorted | Use normalized (3yr avg) |
+
+### 2.5.3 Output Format (MANDATORY):
+
+```
+📊 FCF NORMALIZATION ANALYSIS:
+
+FY2024 FCF: $XX,XXX M (YoY change: XX%)
+FY2023 FCF: $XX,XXX M
+FY2022 FCF: $XX,XXX M
+3-Year Average: $XX,XXX M
+Volatility (CV): XX.X%
+
+Decision: [Using current FCF / Using normalized FCF]
+Rationale: [Explain why - e.g., "Despite AI datacenter investment, FCF
+remains stable with CV < 30%. Capex increase is growth investment,
+not operational weakness."]
+```
+
+**ALWAYS** explain your FCF choice in the output. Never silently choose a method.
+
 ## Step 3: Estimate Discount Rate (WACC)
 
-Use these defaults as starting points:
+### 3.1 WACC Formula (MANDATORY to show derivation)
 
-| Sector | WACC Range |
-|--------|-----------|
-| Technology | 8-12% |
-| Consumer Staples | 7-8% |
-| Financials | 8-10% |
-| Healthcare | 8-10% |
-| Utilities | 6-7% |
-| Energy | 9-11% |
+```
+WACC = (E/V × Re) + (D/V × Rd × (1-T))
 
-**Adjust for company-specific factors:**
+Where:
+- Re = Cost of Equity = Rf + β × ERP
+- Rd = Cost of Debt = Interest Expense / Total Debt
+- E/V = Equity weight = Market Cap / (Market Cap + Total Debt)
+- D/V = Debt weight = Total Debt / (Market Cap + Total Debt)
+- T = Corporate tax rate (typically 21% for US companies)
+```
+
+### 3.2 Component Sources
+
+| Component | Symbol | Source | How to Get |
+|-----------|--------|--------|------------|
+| Risk-free Rate | Rf | 10-year Treasury | getEconomicIndicator("TREASURY10Y") or default 4.0-4.5% |
+| Beta | β | Company profile | getCompanyProfile() → beta field |
+| Equity Risk Premium | ERP | Market consensus | Default 5.0-6.0% for US market |
+| Total Debt | D | Balance sheet | getBalanceSheet() → totalDebt |
+| Market Cap | E | Stock price | getStockPrice() × shares_outstanding |
+| Interest Expense | Int | Income statement | From financial ratios or ~4-6% for investment grade |
+| Tax Rate | T | Income statement | Effective tax rate or default 21% |
+
+### 3.3 WACC Calculation Output Format (MANDATORY)
+
+**CRITICAL: Always show this calculation in your output, not just the final WACC number.**
+
+```
+📊 WACC DERIVATION:
+
+COMPONENT VALUES:
+- Risk-free Rate (Rf): X.XX% (Source: 10Y Treasury / FMP API)
+- Beta (β): X.XX (Source: FMP Company Profile)
+- Equity Risk Premium (ERP): X.X% (Market consensus)
+- Total Debt: $XX,XXX M (Source: FMP Balance Sheet FY2024)
+- Market Cap: $XXX,XXX M (Source: FMP, current price × shares)
+- Cost of Debt (Rd): X.XX% (Interest expense / Total debt)
+- Tax Rate (T): XX% (Effective rate from financials)
+
+CALCULATION:
+Cost of Equity (Re) = Rf + β × ERP
+                    = X.XX% + X.XX × X.X%
+                    = X.XX%
+
+Equity Weight (E/V) = Market Cap / (Market Cap + Debt)
+                    = $XXX,XXX / ($XXX,XXX + $XX,XXX)
+                    = XX.X%
+
+Debt Weight (D/V)   = 100% - E/V = XX.X%
+
+WACC = (E/V × Re) + (D/V × Rd × (1-T))
+     = (XX.X% × X.XX%) + (XX.X% × X.XX% × 0.79)
+     = X.XX%
+
+WACC USED: X.X% (rounded)
+```
+
+### 3.4 Sector Defaults (Use when data unavailable)
+
+| Sector | WACC Range | Typical Beta |
+|--------|-----------|--------------|
+| Technology | 8-12% | 1.0-1.3 |
+| Consumer Staples | 7-8% | 0.6-0.8 |
+| Financials | 8-10% | 1.0-1.2 |
+| Healthcare | 8-10% | 0.8-1.0 |
+| Utilities | 6-7% | 0.4-0.6 |
+| Energy | 9-11% | 1.1-1.4 |
+
+### 3.5 Company-Specific Adjustments
+
+**Adjust from calculated/sector WACC for:**
 - High debt (D/E > 1.5): +1-2%
-- Small cap (< $2B): +1-2%
+- Small cap (< $2B market cap): +1-2%
 - Market leader with moat: -0.5-1%
-- Recurring revenue: -0.5-1%
+- Recurring revenue model: -0.5-1%
+- Emerging market exposure: +1-2%
 
-**Sanity check:** WACC should be 2-4% below ROIC for value-creating companies.
+**Sanity check:** WACC should be 2-4% below ROIC for value-creating companies. If WACC > ROIC, company is destroying value.
 
 ## Step 4: Project Future Cash Flows (5 Years + Terminal)
 
@@ -254,19 +393,167 @@ Structure your response with these sections:
 | WACC | X% | Sector default ± adjustments |
 | Terminal Growth | 2.5% | GDP proxy |
 
-### 9.3 DCF Valuation Output
-- Include the full DCF output from the tool
-- Highlight: TV as % of EV, Implied growth vs. your assumption
-- Address any validation warnings
+### 9.3 DCF Valuation Output (MUST INCLUDE ALL COMPONENTS)
 
-### 9.4 Sensitivity Matrix (5×5)
-Present the auto-generated matrix. Highlight:
-- Base case (center)
-- Where current price falls
-- "Margin of safety" scenarios
+**MANDATORY: Include the following from calculateDCF output:**
 
-### 9.5 Comparable Analysis Table
-Include P/E type labels (TTM/Forward). Show both peer table and implied values.
+#### 9.3.1 FCF Projection Table:
+```
+📈 FCF PROJECTIONS:
+
+| Year | FCF ($M) | Growth Rate | Discount Factor | Present Value ($M) |
+|------|----------|-------------|-----------------|-------------------|
+| Base | $XX,XXX | - | - | - |
+| Y1 | $XX,XXX | XX.X% | 0.XXX | $XX,XXX |
+| Y2 | $XX,XXX | XX.X% | 0.XXX | $XX,XXX |
+| Y3 | $XX,XXX | XX.X% | 0.XXX | $XX,XXX |
+| Y4 | $XX,XXX | XX.X% | 0.XXX | $XX,XXX |
+| Y5 | $XX,XXX | XX.X% | 0.XXX | $XX,XXX |
+
+Sum of PV (FCF Years 1-5): $XXX,XXX M
+```
+
+#### 9.3.2 Terminal Value Breakdown:
+```
+📊 TERMINAL VALUE:
+
+Terminal FCF (Y5 × (1 + TGR)): $XX,XXX M
+Terminal Growth Rate (TGR): X.X%
+WACC: X.X%
+Terminal Value = FCF × (1 + TGR) / (WACC - TGR) = $XXX,XXX M
+PV of Terminal Value: $XXX,XXX M
+TV as % of Enterprise Value: XX.X%  [Flag if >75%]
+```
+
+#### 9.3.3 Reverse DCF Analysis (MANDATORY):
+```
+🔄 REVERSE DCF (What Market is Pricing In):
+
+Current Market Price: $XXX.XX
+Implied Terminal Growth Rate: X.XX%
+Your Model Assumption: X.XX%
+
+INTERPRETATION:
+- [If Implied < Assumed]: Market expects LOWER growth than your model
+  → Potential UNDERVALUATION if your assumptions are correct
+
+- [If Implied > Assumed]: Market expects HIGHER growth than your model
+  → Stock may be FAIRLY VALUED or OVERVALUED
+
+- [If Implied > 4%]: Market pricing in exceptional perpetual growth
+  → Verify if this is realistic for the company
+
+- [If Implied < 0%]: Market pricing in structural decline
+  → Investigate fundamental risks
+
+Market Expectation vs. Your View: [Aligned / Divergent - explain]
+```
+
+**This Reverse DCF section is MANDATORY. It helps users understand if market agrees with your assumptions.**
+
+#### 9.3.4 Validation Warnings:
+Address all warnings from the tool output (TV %, extreme upside/downside, WACC range, etc.)
+
+### 9.4 Sensitivity Matrix (MANDATORY - Full 5×5 Display)
+
+**YOU MUST include the complete 5×5 matrix from calculateDCF output.**
+
+```
+📊 SENSITIVITY ANALYSIS: Fair Value per Share
+
+| WACC ↓ \ TGR → | 1.5% | 2.0% | 2.5% | 3.0% | 3.5% |
+|----------------|------|------|------|------|------|
+| X.0% (Base-2%) | $XXX | $XXX | $XXX | $XXX | $XXX |
+| X.0% (Base-1%) | $XXX | $XXX | $XXX | $XXX | $XXX |
+| X.0% (Base)    | $XXX | $XXX | [$XXX]* | $XXX | $XXX |
+| X.0% (Base+1%) | $XXX | $XXX | $XXX | $XXX | $XXX |
+| X.0% (Base+2%) | $XXX | $XXX | $XXX | $XXX | $XXX |
+
+* = Base case (your assumptions)
+Current Market Price: $XXX.XX
+```
+
+**MANDATORY Interpretation:**
+
+1. **Value Range:**
+   - Minimum fair value: $XXX (highest WACC, lowest TGR)
+   - Maximum fair value: $XXX (lowest WACC, highest TGR)
+   - Spread: $XXX to $XXX (XX% range)
+
+2. **Current Price Position:**
+   - At $XXX current price, market is pricing ~X.X% WACC and ~X.X% TGR
+   - Compared to your base case: [above/below/at fair value]
+
+3. **Margin of Safety Scenarios:**
+   - Conservative (High WACC + Low TGR): $XXX → XX% [upside/downside]
+   - Optimistic (Low WACC + High TGR): $XXX → XX% upside
+   - Your base case: $XXX → XX% [upside/downside]
+
+4. **Key Insight:**
+   "Even under conservative assumptions (X% WACC, X% TGR), fair value of $XXX
+   still implies XX% [upside/downside] from current price."
+
+**DO NOT summarize this matrix. Present it in full so users can explore scenarios.**
+
+### 9.5 Comparable Analysis Table (MANDATORY DETAIL)
+
+**YOU MUST show implied price from EACH multiple, not just the average.**
+
+#### 9.5.1 Peer Comparison Table:
+```
+📊 PEER MULTIPLES COMPARISON:
+
+| Company | Price | P/E (TTM) | P/E (Fwd) | P/B | P/S | EV/EBITDA |
+|---------|-------|-----------|-----------|-----|-----|-----------|
+| [TARGET] | $XXX | XX.Xx | XX.Xx | X.Xx | X.Xx | XX.Xx |
+| Peer 1 | $XXX | XX.Xx | XX.Xx | X.Xx | X.Xx | XX.Xx |
+| Peer 2 | $XXX | XX.Xx | XX.Xx | X.Xx | X.Xx | XX.Xx |
+| Peer 3 | $XXX | XX.Xx | XX.Xx | X.Xx | X.Xx | XX.Xx |
+| **Median** | - | XX.Xx | - | X.Xx | X.Xx | XX.Xx |
+| **Average** | - | XX.Xx | - | X.Xx | X.Xx | XX.Xx |
+
+Source: FMP API (TTM basis as of [date])
+```
+
+#### 9.5.2 Implied Fair Value from Each Multiple (CRITICAL):
+```
+📈 IMPLIED FAIR VALUES BY MULTIPLE:
+
+| Multiple | Target Value | Peer Median | Peer Avg | Implied Price (Median) | Implied Price (Avg) |
+|----------|--------------|-------------|----------|------------------------|---------------------|
+| P/E (TTM) | XX.Xx | XX.Xx | XX.Xx | $XXX (EPS $XX × 33.0) | $XXX |
+| P/B | X.Xx | X.Xx | XX.Xx | $XXX (BV $XX × X.X) | $XXX* |
+| P/S | X.Xx | X.Xx | X.Xx | $XXX (Rev/Sh $XX × X.X) | $XXX |
+| EV/EBITDA | XX.Xx | XX.Xx | XX.Xx | $XXX | $XXX |
+
+* Outlier detected: [Peer X] has extreme P/B of XXx → Using median instead of average
+```
+
+#### 9.5.3 Weighted Comparable Fair Value:
+```
+📊 WEIGHTED COMPARABLE VALUATION:
+
+Method: Exclude outliers, weight by reliability
+
+| Multiple | Implied Price | Weight | Contribution | Rationale |
+|----------|---------------|--------|--------------|-----------|
+| P/E (TTM) | $XXX | 40% | $XXX | Most reliable for profitable companies |
+| P/S | $XXX | 30% | $XXX | Good for growth comparison |
+| EV/EBITDA | $XXX | 30% | $XXX | Accounts for capital structure |
+| P/B | EXCLUDED | 0% | - | Outlier bias from [Peer X] |
+| **TOTAL** | - | **100%** | **$XXX** | |
+
+Comparable Fair Value: $XXX
+```
+
+**CRITICAL: Calculation must be VISIBLE. Never just output a single average number without showing how each multiple contributes.**
+
+#### 9.5.4 Outlier Handling:
+If any peer has extreme multiples (>2x median or <0.5x median):
+- Flag the outlier explicitly
+- Explain the cause (e.g., "AAPL P/B of 45x due to capital return program")
+- Use MEDIAN instead of AVERAGE for that multiple
+- Or exclude from weighted calculation with explanation
 
 ### 9.6 Reconciliation Summary
 | Method | Fair Value | Weight | Contribution |
@@ -289,4 +576,62 @@ Explain any divergence and your weighting rationale.
 - Data recency (when was FCF/earnings data from?)
 - Company-specific risks
 
+### 9.9 Data Sources Section (MANDATORY)
+
+**At the end of every valuation, include a Data Sources section:**
+
+```
+📋 DATA SOURCES:
+
+| Data Type | Source | Date/Period |
+|-----------|--------|-------------|
+| Financial Statements | FMP API | FY2024 (filed [date]) |
+| Current Stock Price | FMP Real-time | [today's date] |
+| Beta | FMP Company Profile | As of [date] |
+| Peer Multiples | FMP Key Metrics | TTM basis |
+| Treasury Rate | FMP Economic Indicators | [date] |
+
+Notes:
+- All figures in USD millions unless otherwise stated
+- TTM = Trailing Twelve Months
+- Forward estimates based on analyst consensus where applicable
+```
+
 **Language:** Match the user's language throughout.
+
+---
+
+## Data Citation Requirements (APPLIES TO ENTIRE ANALYSIS)
+
+**CRITICAL: Every number in your output MUST have a source citation.**
+
+### Citation Format by Data Type:
+
+| Data Type | Citation Example |
+|-----------|------------------|
+| Financial metrics | "P/E = 25.6x (Source: FMP API, TTM as of Feb 2026)" |
+| FCF | "FCF = $59,000M (Source: FMP Cash Flow Statement, FY2024)" |
+| WACC components | "Beta = 0.9 (Source: FMP Company Profile)" |
+| Growth rates | "5Y Revenue CAGR = 12% (Source: FMP Growth Metrics)" |
+| Peer multiples | "AAPL P/E = 33.7x (Source: FMP Key Metrics, TTM basis)" |
+| Stock price | "Current price = $411 (Source: FMP Quote, Feb 4, 2026)" |
+
+### Inline Citation Examples:
+
+**GOOD (with source):**
+> FCF của MSFT năm 2024 là **$59,000M** (Source: FMP Cash Flow Statement, FY2024),
+> giảm 8% so với năm trước do tăng đầu tư AI datacenter.
+
+**BAD (no source):**
+> FCF của MSFT là khoảng $59B, giảm nhẹ so với năm trước.
+
+### Numbers That MUST Be Cited:
+1. ✅ FCF (current and historical)
+2. ✅ Growth rates (revenue, FCF, earnings)
+3. ✅ WACC components (Rf, Beta, ERP)
+4. ✅ All multiples (P/E, P/B, P/S, EV/EBITDA)
+5. ✅ Debt and cash positions
+6. ✅ Shares outstanding
+7. ✅ Current stock price
+
+**NEVER output a number without indicating where it came from. A professional valuation is reproducible.**
