@@ -49,6 +49,12 @@ from src.agents.tools.finance_guru.models.valuation import (
     # Comparable
     ComparableCompany,
     ComparableInputData,
+    # NEW: Data transparency models
+    DataSourceAttribution,
+    ValuationBridge,
+    # Risk framework
+    RiskFramework,
+    ScenarioCase,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,30 +105,59 @@ async def fetch_fundamental_data(
     """
     Fetch fundamental data from FMP API for valuation.
 
+    Enhanced with data attribution for institutional-grade transparency.
+
     Args:
         symbol: Stock symbol
         fmp_api_key: FMP API key
         fetch_historical_fcf: If True, fetch 3-year historical FCF for normalization
 
     Returns:
-        Dict with fundamental metrics
+        Dict with fundamental metrics AND data_sources attribution
     """
+    from datetime import datetime
+    import uuid
+
     try:
         from src.agents.tools.finance_guru.services.fmp_service import FMPService
 
         fmp = FMPService(api_key=fmp_api_key)
 
+        # Track API endpoints called for attribution
+        api_endpoints_called = []
+        data_sources = {}
+        fetch_timestamp = datetime.utcnow().isoformat() + "Z"
+        snapshot_id = str(uuid.uuid4())[:8]
+
         # Fetch key metrics and profile
         profile = await fmp.get_company_profile(symbol)
+        api_endpoints_called.append(f"/v3/profile/{symbol}")
+
         key_metrics = await fmp.get_key_metrics(symbol)
+        api_endpoints_called.append(f"/v3/key-metrics/{symbol}")
+
         income = await fmp.get_income_statement(symbol)
+        api_endpoints_called.append(f"/v3/income-statement/{symbol}")
+
         cash_flow = await fmp.get_cash_flow_statement(symbol)
+        api_endpoints_called.append(f"/v3/cash-flow-statement/{symbol}")
 
         if not profile:
             raise ValueError(f"Could not fetch data for {symbol}")
 
+        # Extract fiscal year from cash flow statement
+        fiscal_year = None
+        fiscal_period = None
+        if cash_flow:
+            fiscal_year = cash_flow.get("calendarYear") or cash_flow.get("date", "")[:4]
+            fiscal_period = cash_flow.get("period", "FY")
+
+        # Track price date from profile
+        price_date = profile.get("date") or fetch_timestamp[:10]
+
         # Resolve shares_outstanding with multiple fallback sources
         shares_outstanding_raw = profile.get("sharesOutstanding") or 0
+        shares_source = "FMP Company Profile"
         if not shares_outstanding_raw and income:
             # Fallback 1: weighted average shares from income statement
             shares_outstanding_raw = (
@@ -130,33 +165,50 @@ async def fetch_fundamental_data(
                 or income.get("weightedAverageShsOutDil")
                 or 0
             )
+            shares_source = "FMP Income Statement (weighted avg)"
         if not shares_outstanding_raw:
             # Fallback 2: calculate from market cap / price
             mkt_cap = profile.get("mktCap") or profile.get("marketCap") or 0
             price = profile.get("price") or 0
             if mkt_cap > 0 and price > 0:
                 shares_outstanding_raw = mkt_cap / price
+                shares_source = "Calculated (Market Cap / Price)"
 
         shares_outstanding_m = shares_outstanding_raw / 1e6 if shares_outstanding_raw else 0
 
         # Get current FCF
         current_fcf = cash_flow.get("freeCashFlow", 0) / 1e6 if cash_flow else 0
 
+        # Build data sources attribution
+        data_sources["price"] = f"FMP Company Profile, as of {price_date}"
+        data_sources["shares_outstanding"] = shares_source
+        data_sources["eps"] = f"FMP Key Metrics, {fiscal_period} {fiscal_year}" if key_metrics else "N/A"
+        data_sources["book_value_per_share"] = f"FMP Key Metrics, {fiscal_period} {fiscal_year}" if key_metrics else "N/A"
+        data_sources["fcf"] = f"FMP Cash Flow Statement, {fiscal_period} {fiscal_year}" if cash_flow else "N/A"
+        data_sources["cash"] = f"FMP Company Profile, as of {price_date}"
+        data_sources["debt"] = f"FMP Company Profile, as of {price_date}"
+
         # Historical FCF for normalization
         historical_fcf = None
         normalized_fcf = None
         fcf_volatility = None
+        historical_fcf_years = []
 
         if fetch_historical_fcf:
             try:
                 # Fetch 3 years of cash flow data
                 historical_cf = await fmp.get_cash_flow_statement(symbol, limit=3)
+                api_endpoints_called.append(f"/v3/cash-flow-statement/{symbol}?limit=3")
+
                 if isinstance(historical_cf, list) and len(historical_cf) >= 2:
-                    fcf_values = [
-                        cf.get("freeCashFlow", 0) / 1e6
-                        for cf in historical_cf
-                        if cf.get("freeCashFlow")
-                    ]
+                    fcf_values = []
+                    for cf in historical_cf:
+                        fcf_val = cf.get("freeCashFlow", 0)
+                        if fcf_val:
+                            fcf_values.append(fcf_val / 1e6)
+                            year = cf.get("calendarYear") or cf.get("date", "")[:4]
+                            historical_fcf_years.append(year)
+
                     if fcf_values:
                         historical_fcf = fcf_values
                         # Calculate normalized FCF (3-year average)
@@ -167,6 +219,9 @@ async def fetch_fundamental_data(
                             variance = sum((x - mean_fcf) ** 2 for x in fcf_values) / len(fcf_values)
                             std_dev = variance ** 0.5
                             fcf_volatility = (std_dev / abs(mean_fcf) * 100) if mean_fcf != 0 else None
+
+                        # Update FCF source with historical years
+                        data_sources["fcf_historical"] = f"FMP Cash Flow Statement, FY{historical_fcf_years[-1]}-FY{historical_fcf_years[0]}"
             except Exception as e:
                 logger.warning(f"Failed to fetch historical FCF: {e}")
 
@@ -185,6 +240,15 @@ async def fetch_fundamental_data(
             "historical_fcf": historical_fcf,
             "normalized_fcf": normalized_fcf,
             "fcf_volatility": fcf_volatility,
+            # NEW: Data attribution for transparency
+            "data_attribution": {
+                "data_as_of_date": fetch_timestamp,
+                "price_date": price_date,
+                "fiscal_year": f"FY{fiscal_year}" if fiscal_year else None,
+                "api_endpoints": api_endpoints_called,
+                "data_sources": data_sources,
+                "snapshot_id": snapshot_id,
+            },
         }
 
     except ImportError:
@@ -441,6 +505,31 @@ class CalculateDCFTool(BaseTool):
             config = DCFConfig(margin_of_safety=0.25)
             result = self.calculator.calculate(data, config, fcf_source=fcf_source)
 
+            # Build data attribution for institutional-grade transparency
+            raw_attribution = fundamentals.get("data_attribution", {})
+            data_attribution = None
+            if raw_attribution:
+                data_attribution = DataSourceAttribution(
+                    data_as_of_date=raw_attribution.get("data_as_of_date", ""),
+                    price_date=raw_attribution.get("price_date"),
+                    fiscal_year=raw_attribution.get("fiscal_year"),
+                    api_endpoints=raw_attribution.get("api_endpoints", []),
+                    data_sources=raw_attribution.get("data_sources", {}),
+                    snapshot_id=raw_attribution.get("snapshot_id"),
+                )
+
+            # Build valuation bridge for calculation transparency
+            valuation_bridge = ValuationBridge(
+                sum_of_pv_fcf=result.sum_of_pv_fcf,
+                pv_terminal_value=result.pv_terminal_value,
+                enterprise_value=result.enterprise_value,
+                plus_cash=cash,
+                minus_debt=debt,
+                equity_value=result.equity_value,
+                shares_outstanding=shares_outstanding,
+                intrinsic_value_per_share=result.intrinsic_value_per_share,
+            )
+
             # Build enhanced formatted_context
             formatted = self._build_formatted_context(
                 symbol=symbol,
@@ -454,6 +543,9 @@ class CalculateDCFTool(BaseTool):
                 debt=debt,
                 fcf_source=fcf_source,
                 fcf_note=fcf_note,
+                data_attribution=data_attribution,
+                valuation_bridge=valuation_bridge,
+                risk_framework=result.risk_framework,
             )
 
             return create_success_output(
@@ -475,6 +567,11 @@ class CalculateDCFTool(BaseTool):
                     "implied_growth_rate": result.implied_growth_rate,
                     "sensitivity_2d": result.sensitivity_2d,
                     "validation_warnings": result.validation_warnings,
+                    # NEW: Data transparency fields
+                    "data_attribution": data_attribution.model_dump() if data_attribution else None,
+                    "valuation_bridge": valuation_bridge.model_dump(),
+                    # Risk framework
+                    "risk_framework": result.risk_framework.model_dump() if result.risk_framework else None,
                 },
                 formatted_context=formatted,
                 execution_time_ms=result.calculation_time_ms or 0,
@@ -497,14 +594,29 @@ class CalculateDCFTool(BaseTool):
         debt: float,
         fcf_source: str = "api",
         fcf_note: Optional[str] = None,
+        data_attribution: Optional[DataSourceAttribution] = None,
+        valuation_bridge: Optional[ValuationBridge] = None,
+        risk_framework: Optional[RiskFramework] = None,
     ) -> str:
-        """Build enhanced formatted_context for DCF output."""
+        """Build enhanced formatted_context for DCF output with full transparency."""
         sections = []
 
         # Title
         sections.append(f"═══════════════════════════════════════════════════")
         sections.append(f"DCF VALUATION ANALYSIS: {symbol}")
         sections.append(f"═══════════════════════════════════════════════════")
+
+        # NEW Section 0: Data Attribution (for transparency)
+        if data_attribution:
+            sections.append(f"\n📋 DATA SOURCES & ATTRIBUTION:")
+            sections.append(f"  • Data As Of: {data_attribution.data_as_of_date[:10]}")
+            sections.append(f"  • Price Date: {data_attribution.price_date or 'N/A'}")
+            sections.append(f"  • Fiscal Year: {data_attribution.fiscal_year or 'N/A'}")
+            sections.append(f"  • Snapshot ID: {data_attribution.snapshot_id or 'N/A'}")
+            if data_attribution.data_sources:
+                sections.append(f"  • Sources:")
+                for metric, source in data_attribution.data_sources.items():
+                    sections.append(f"    - {metric}: {source}")
 
         # Section 1: Input Parameters
         growth_str = ", ".join(f"{g:.1%}" for g in growth_rates[:5])
@@ -523,8 +635,8 @@ class CalculateDCFTool(BaseTool):
         if fcf_note:
             sections.append(f"    └─ {fcf_note}")
         sections.append(f"  • Growth Rates: [{growth_str}]")
-        sections.append(f"  • WACC (Discount Rate): {discount_rate:.1%}")
-        sections.append(f"  • Terminal Growth: {terminal_growth:.1%}")
+        sections.append(f"  • WACC (Discount Rate): {discount_rate:.2%}")  # Changed to .2% for precision
+        sections.append(f"  • Terminal Growth: {terminal_growth:.2%}")  # Changed to .2% for precision
         sections.append(f"  • Shares Outstanding: {shares_outstanding:,.0f}M")
         sections.append(f"  • Cash: ${cash:,.0f}M | Debt: ${debt:,.0f}M")
 
@@ -545,6 +657,25 @@ class CalculateDCFTool(BaseTool):
         sections.append(f"  • PV of Terminal: ${result.pv_terminal_value:,.0f}M ({tv_pct:.1f}% of EV)")
         sections.append(f"  • Enterprise Value: ${result.enterprise_value:,.0f}M")
         sections.append(f"  • Equity Value: ${result.equity_value:,.0f}M")
+
+        # NEW Section 3.5: Valuation Bridge (EV → Equity → Per Share)
+        if valuation_bridge:
+            sections.append(f"\n📐 VALUATION BRIDGE (EV → Equity → Per Share):")
+            sections.append(f"  ┌{'─'*52}┐")
+            sections.append(f"  │ {'Step':<30} {'Amount ($M)':>18} │")
+            sections.append(f"  ├{'─'*52}┤")
+            sections.append(f"  │ {'Sum of PV (FCFs)':<30} {valuation_bridge.sum_of_pv_fcf:>15,.0f}   │")
+            sections.append(f"  │ {'+ PV of Terminal Value':<30} {valuation_bridge.pv_terminal_value:>15,.0f}   │")
+            sections.append(f"  ├{'─'*52}┤")
+            sections.append(f"  │ {'= Enterprise Value':<30} {valuation_bridge.enterprise_value:>15,.0f}   │")
+            sections.append(f"  │ {'+ Cash & Equivalents':<30} {valuation_bridge.plus_cash:>15,.0f}   │")
+            sections.append(f"  │ {'- Total Debt':<30} {valuation_bridge.minus_debt:>15,.0f}   │")
+            sections.append(f"  ├{'─'*52}┤")
+            sections.append(f"  │ {'= Equity Value':<30} {valuation_bridge.equity_value:>15,.0f}   │")
+            sections.append(f"  │ {'÷ Shares Outstanding (M)':<30} {valuation_bridge.shares_outstanding:>15,.0f}   │")
+            sections.append(f"  ├{'─'*52}┤")
+            sections.append(f"  │ {'= INTRINSIC VALUE/SHARE':<30} ${valuation_bridge.intrinsic_value_per_share:>14.2f}   │")
+            sections.append(f"  └{'─'*52}┘")
 
         # Section 4: Per Share Analysis
         sections.append(f"\n📍 PER SHARE ANALYSIS:")
@@ -573,14 +704,24 @@ class CalculateDCFTool(BaseTool):
         # Section 6: 2D Sensitivity Matrix
         if result.sensitivity_2d:
             sens = result.sensitivity_2d
+            base_wacc_idx = sens.get("base_wacc_idx")
+            base_tgr_idx = sens.get("base_tgr_idx")
+            consistency = sens.get("consistency_check", True)
+
             sections.append(f"\n📐 SENSITIVITY MATRIX (WACC × Terminal Growth):")
             sections.append(f"  Intrinsic Value at different assumptions:")
+            if not consistency:
+                sections.append(f"  ⚠️ Warning: Matrix base case may not match calculated value")
             sections.append(f"")
 
             # Header row
             header = "  WACC \\ TGR │"
-            for g in sens.get("growth_rates", []):
-                header += f" {g:>7} │"
+            for j, g in enumerate(sens.get("growth_rates", [])):
+                # Mark base TGR column
+                if j == base_tgr_idx:
+                    header += f" [{g:>5}] │"
+                else:
+                    header += f" {g:>7} │"
             sections.append(header)
             sections.append(f"  {'─'*12}┼" + "─"*9*len(sens.get("growth_rates", [])))
 
@@ -588,19 +729,31 @@ class CalculateDCFTool(BaseTool):
             wacc_rates = sens.get("wacc_rates", [])
             values = sens.get("values", [])
             for i, wacc in enumerate(wacc_rates):
-                row = f"  {wacc:>11} │"
+                # Mark base WACC row
+                if i == base_wacc_idx:
+                    row = f" [{wacc:>9}] │"
+                else:
+                    row = f"  {wacc:>11} │"
+
                 if i < len(values):
-                    for v in values[i]:
+                    for j, v in enumerate(values[i]):
                         if v is not None:
-                            # Highlight current price range
-                            if result.current_price and abs(v - result.current_price) / result.current_price < 0.1:
+                            # Highlight base case cell with [brackets]
+                            if i == base_wacc_idx and j == base_tgr_idx:
+                                row += f" [${v:>4.0f}] │"  # BASE CASE
+                            # Highlight current price range with *
+                            elif result.current_price and abs(v - result.current_price) / result.current_price < 0.1:
                                 row += f" *{v:>5.0f}* │"
                             else:
                                 row += f" ${v:>5.0f} │"
                         else:
                             row += f"    N/A │"
                 sections.append(row)
-            sections.append(f"  (* indicates values within 10% of current price)")
+
+            sections.append(f"")
+            sections.append(f"  Legend:")
+            sections.append(f"    [brackets] = Base case (your input assumptions)")
+            sections.append(f"    *asterisk* = Values within 10% of current price (${result.current_price:.2f})")
 
         # Section 7: Validation Warnings
         if result.validation_warnings:
@@ -608,7 +761,55 @@ class CalculateDCFTool(BaseTool):
             for warning in result.validation_warnings:
                 sections.append(f"  {warning}")
 
-        # Section 8: Verdict
+        # NEW Section 8: Risk Framework & Scenario Analysis
+        if risk_framework:
+            sections.append(f"\n🎯 RISK FRAMEWORK & SCENARIO ANALYSIS:")
+
+            # Scenarios table
+            sections.append(f"")
+            sections.append(f"  {'Scenario':<10} {'Prob':<8} {'Value':<12} {'Upside':<12} {'Key Assumption':<25}")
+            sections.append(f"  {'-'*70}")
+            for scenario in risk_framework.scenarios:
+                prob_str = f"{scenario.probability:.0%}" if scenario.probability else "N/A"
+                upside_str = f"{scenario.upside_potential:+.1f}%" if scenario.upside_potential is not None else "N/A"
+                key_assump = ""
+                if scenario.key_assumptions:
+                    if "fcf_growth" in scenario.key_assumptions:
+                        key_assump = scenario.key_assumptions["fcf_growth"]
+                sections.append(
+                    f"  {scenario.name:<10} {prob_str:<8} ${scenario.intrinsic_value:>9,.2f}  {upside_str:<12} {key_assump:<25}"
+                )
+
+            # Summary metrics
+            sections.append(f"")
+            if risk_framework.probability_weighted_value:
+                sections.append(f"  📊 Probability-Weighted Value: ${risk_framework.probability_weighted_value:,.2f}")
+            if risk_framework.risk_reward_ratio:
+                rr = risk_framework.risk_reward_ratio
+                rr_str = f"{rr:.2f}:1" if rr < 100 else "Very High"
+                sections.append(f"  📈 Risk/Reward Ratio: {rr_str}")
+            if risk_framework.invalidation_price:
+                sections.append(f"  🛑 Invalidation Price: ${risk_framework.invalidation_price:,.2f}")
+            if risk_framework.position_size_suggestion:
+                sections.append(f"  💼 Position Sizing: {risk_framework.position_size_suggestion}")
+
+            # Quantitative triggers for each scenario
+            sections.append(f"")
+            sections.append(f"  📋 QUANTITATIVE TRIGGERS:")
+            for scenario in risk_framework.scenarios:
+                if scenario.quantitative_triggers:
+                    sections.append(f"    {scenario.name}:")
+                    for trigger in scenario.quantitative_triggers[:2]:  # Limit to 2 triggers
+                        sections.append(f"      • {trigger}")
+
+            # Key risks
+            if risk_framework.key_risks:
+                sections.append(f"")
+                sections.append(f"  ⚠️ KEY RISKS TO MONITOR:")
+                for risk in risk_framework.key_risks[:4]:
+                    sections.append(f"    • {risk}")
+
+        # Section 9: Final Verdict
         verdict_emoji = {
             "undervalued": "✅",
             "overvalued": "❌",
@@ -618,6 +819,8 @@ class CalculateDCFTool(BaseTool):
         emoji = verdict_emoji.get(result.verdict, "❓")
         sections.append(f"\n{'═'*53}")
         sections.append(f"VERDICT: {emoji} {result.verdict.upper()}")
+        if risk_framework and risk_framework.probability_weighted_value:
+            sections.append(f"Probability-Weighted Fair Value: ${risk_framework.probability_weighted_value:,.2f}")
         sections.append(f"{'═'*53}")
 
         return "\n".join(sections)

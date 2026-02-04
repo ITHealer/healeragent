@@ -332,6 +332,126 @@ class DCFProjection(BaseFinanceModel):
     present_value: float = Field(..., description="Present value (millions)")
 
 
+class DataSourceAttribution(BaseFinanceModel):
+    """Data source attribution for institutional-grade transparency.
+
+    Every metric must be traceable to its source for reproducibility.
+
+    Attributes:
+        data_as_of_date: Date when data was fetched (ISO format)
+        price_date: Specific date for price data
+        fiscal_year: Fiscal year for financial metrics
+        api_endpoints: List of API endpoints called
+        data_sources: Dict mapping metric to source description
+        snapshot_id: Unique identifier for this data fetch
+    """
+    data_as_of_date: str = Field(..., description="Date data was fetched (ISO format)")
+    price_date: Optional[str] = Field(None, description="Specific date for price data")
+    fiscal_year: Optional[str] = Field(None, description="Fiscal year (e.g., FY2024)")
+    api_endpoints: Optional[List[str]] = Field(
+        default_factory=list,
+        description="API endpoints called"
+    )
+    data_sources: Optional[Dict[str, str]] = Field(
+        default_factory=dict,
+        description="Metric-to-source mapping (e.g., {'FCF': 'FMP Cash Flow Statement, FY2024'})"
+    )
+    snapshot_id: Optional[str] = Field(None, description="Unique snapshot identifier")
+
+
+class ValuationBridge(BaseFinanceModel):
+    """Bridge table from Enterprise Value to Per Share Value.
+
+    Shows the complete calculation path for full transparency.
+
+    Attributes:
+        sum_of_pv_fcf: Sum of present value of projected FCFs
+        pv_terminal_value: Present value of terminal value
+        enterprise_value: EV = Sum PV FCF + PV Terminal
+        plus_cash: Cash & equivalents added
+        minus_debt: Total debt subtracted
+        equity_value: Equity Value = EV + Cash - Debt
+        shares_outstanding: Shares outstanding (millions)
+        intrinsic_value_per_share: Equity Value / Shares
+    """
+    sum_of_pv_fcf: float = Field(..., description="Sum of PV FCFs ($M)")
+    pv_terminal_value: float = Field(..., description="PV of Terminal Value ($M)")
+    enterprise_value: float = Field(..., description="Enterprise Value ($M)")
+    plus_cash: float = Field(..., description="+ Cash & Equivalents ($M)")
+    minus_debt: float = Field(..., description="- Total Debt ($M)")
+    equity_value: float = Field(..., description="Equity Value ($M)")
+    shares_outstanding: float = Field(..., description="Shares Outstanding (M)")
+    intrinsic_value_per_share: float = Field(..., description="Intrinsic Value/Share ($)")
+
+
+class ScenarioCase(BaseFinanceModel):
+    """Single scenario case for risk analysis.
+
+    Attributes:
+        name: Scenario name (bull, base, bear)
+        probability: Probability weight (0-1)
+        intrinsic_value: Intrinsic value in this scenario
+        key_assumptions: Key assumptions for this scenario
+        quantitative_triggers: Specific metrics that define this scenario
+    """
+    name: str = Field(..., description="Scenario name (bull/base/bear)")
+    probability: Optional[float] = Field(None, ge=0, le=1, description="Probability (0-1)")
+    intrinsic_value: float = Field(..., description="Intrinsic value in this scenario")
+    upside_potential: Optional[float] = Field(None, description="Upside vs current price (%)")
+    key_assumptions: Optional[Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="Key assumptions (growth_rate, wacc, terminal_growth)"
+    )
+    quantitative_triggers: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Specific metrics that define entry into this scenario"
+    )
+
+
+class RiskFramework(BaseFinanceModel):
+    """Risk framework for institutional-grade analysis.
+
+    Includes scenario analysis, invalidation levels, and position sizing guidance.
+
+    Attributes:
+        scenarios: List of scenario cases (bull, base, bear)
+        probability_weighted_value: Expected value across scenarios
+        invalidation_price: Price level that invalidates the thesis
+        downside_risk: Maximum expected loss percentage
+        risk_reward_ratio: Upside / Downside ratio
+        position_size_suggestion: Suggested position sizing guidance
+        key_risks: List of key risk factors
+    """
+    scenarios: List[ScenarioCase] = Field(
+        default_factory=list,
+        description="Scenario cases (bull, base, bear)"
+    )
+    probability_weighted_value: Optional[float] = Field(
+        None,
+        description="Expected value = Σ(probability × value)"
+    )
+    invalidation_price: Optional[float] = Field(
+        None,
+        description="Price that would invalidate bullish thesis"
+    )
+    downside_risk: Optional[float] = Field(
+        None,
+        description="Maximum expected downside (%)"
+    )
+    risk_reward_ratio: Optional[float] = Field(
+        None,
+        description="Upside potential / Downside risk"
+    )
+    position_size_suggestion: Optional[str] = Field(
+        None,
+        description="Position sizing guidance based on conviction"
+    )
+    key_risks: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Key risk factors to monitor"
+    )
+
+
 class DCFOutput(BaseCalculationResult):
     """DCF valuation result.
 
@@ -356,6 +476,10 @@ class DCFOutput(BaseCalculationResult):
         implied_growth_rate: Reverse DCF implied growth (given current price)
         sensitivity_2d: 2D sensitivity matrix (WACC × Terminal Growth)
         validation_warnings: Any validation warnings
+
+        # NEW: Data transparency fields
+        data_attribution: Full data source attribution
+        valuation_bridge: EV to per-share bridge table
     """
     symbol: str = Field(..., description="Stock symbol")
     projections: List[DCFProjection] = Field(..., description="Cash flow projections")
@@ -404,6 +528,20 @@ class DCFOutput(BaseCalculationResult):
     validation_warnings: Optional[List[str]] = Field(
         None,
         description="Validation warnings or flags"
+    )
+
+    # NEW: Data transparency fields for institutional-grade reporting
+    data_attribution: Optional[DataSourceAttribution] = Field(
+        None,
+        description="Full data source attribution for reproducibility"
+    )
+    valuation_bridge: Optional[ValuationBridge] = Field(
+        None,
+        description="Complete EV-to-per-share calculation bridge"
+    )
+    risk_framework: Optional["RiskFramework"] = Field(
+        None,
+        description="Risk analysis with scenarios, invalidation levels, and position sizing"
     )
 
 

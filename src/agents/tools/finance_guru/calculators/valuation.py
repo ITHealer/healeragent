@@ -47,6 +47,9 @@ from src.agents.tools.finance_guru.models.valuation import (
     ComparableOutput,
     # Summary
     ValuationSummary,
+    # Risk Framework
+    ScenarioCase,
+    RiskFramework,
 )
 
 
@@ -153,7 +156,10 @@ class DCFCalculator(BaseCalculator):
             sensitivity = self._sensitivity_analysis(data, config)
 
             # 2D Sensitivity Matrix (WACC × Terminal Growth)
-            sensitivity_2d = self._sensitivity_2d_matrix(data, config)
+            # Pass intrinsic_value to ensure consistency between base case and matrix
+            sensitivity_2d = self._sensitivity_2d_matrix(
+                data, config, base_intrinsic_value=intrinsic_value
+            )
 
             # Reverse DCF: Calculate implied perpetual growth rate given current price
             implied_growth = None
@@ -166,6 +172,13 @@ class DCFCalculator(BaseCalculator):
                 tv_pct=tv_as_pct_of_ev,
                 upside=upside,
                 implied_growth=implied_growth,
+            )
+
+            # Risk framework with scenario analysis
+            risk_framework = self._generate_risk_framework(
+                data=data,
+                config=config,
+                base_intrinsic_value=intrinsic_value,
             )
 
             self.context.complete()
@@ -195,6 +208,8 @@ class DCFCalculator(BaseCalculator):
                 sensitivity=sensitivity,
                 sensitivity_2d=sensitivity_2d,
                 validation_warnings=validation_warnings if validation_warnings else None,
+                # Risk framework
+                risk_framework=risk_framework,
                 calculation_time_ms=self.context.elapsed_ms,
             )
 
@@ -298,56 +313,98 @@ class DCFCalculator(BaseCalculator):
         self,
         data: DCFInputData,
         config: DCFConfig,
+        base_intrinsic_value: Optional[float] = None,
     ) -> dict:
         """Generate 2D sensitivity matrix (WACC × Terminal Growth).
 
+        IMPORTANT: Ensures consistency between base case result and matrix[base_wacc][base_tgr].
+
         Returns a dict with:
-        - wacc_rates: list of WACC values
-        - growth_rates: list of terminal growth values
+        - wacc_rates: list of WACC values (formatted strings)
+        - growth_rates: list of terminal growth values (formatted strings)
         - values: 2D grid of intrinsic values [wacc_idx][growth_idx]
+        - base_wacc_idx: index of base WACC in the matrix
+        - base_tgr_idx: index of base terminal growth in the matrix
+        - consistency_check: True if matrix[base][base] matches base_intrinsic_value
         """
-        # Define ranges
+        # Define ranges centered on actual inputs (NO ARBITRARY ROUNDING)
+        base_wacc = data.discount_rate
+        base_tgr = data.terminal_growth
+
         wacc_rates = [
-            data.discount_rate - 0.02,
-            data.discount_rate - 0.01,
-            data.discount_rate,
-            data.discount_rate + 0.01,
-            data.discount_rate + 0.02,
+            base_wacc - 0.02,
+            base_wacc - 0.01,
+            base_wacc,  # Base case - MUST use actual input value
+            base_wacc + 0.01,
+            base_wacc + 0.02,
         ]
-        growth_rates = [0.015, 0.020, 0.025, 0.030, 0.035]
+
+        # Include the actual terminal growth in the matrix
+        growth_rates = sorted(set([0.015, 0.020, base_tgr, 0.030, 0.035]))
+        if len(growth_rates) > 5:
+            # Keep base_tgr and closest values
+            growth_rates = [g for g in growth_rates if abs(g - base_tgr) <= 0.015]
+            if len(growth_rates) < 5:
+                growth_rates = [0.015, 0.020, base_tgr, 0.030, 0.035][:5]
 
         # Filter out invalid combinations
         wacc_rates = [w for w in wacc_rates if w > 0.04]  # Min WACC 4%
         growth_rates = [g for g in growth_rates if g < max(wacc_rates)]
 
+        # Find indices of base case in matrix
+        base_wacc_idx = None
+        base_tgr_idx = None
+        for i, w in enumerate(wacc_rates):
+            if abs(w - base_wacc) < 0.0001:
+                base_wacc_idx = i
+        for j, g in enumerate(growth_rates):
+            if abs(g - base_tgr) < 0.0001:
+                base_tgr_idx = j
+
         values = []
-        for wacc in wacc_rates:
+        for i, wacc in enumerate(wacc_rates):
             row = []
-            for tg in growth_rates:
+            for j, tg in enumerate(growth_rates):
                 if tg >= wacc:
                     row.append(None)  # Invalid combination
                     continue
                 try:
-                    modified_data = DCFInputData(
-                        symbol=data.symbol,
-                        current_fcf=data.current_fcf,
-                        growth_rates=data.growth_rates,
-                        terminal_growth=tg,
-                        discount_rate=wacc,
-                        shares_outstanding=data.shares_outstanding,
-                        cash=data.cash,
-                        debt=data.debt,
-                    )
-                    iv = self._calculate_simple(modified_data, config)
-                    row.append(round(iv, 2))
+                    # For base case, use the pre-calculated value for CONSISTENCY
+                    if (i == base_wacc_idx and j == base_tgr_idx
+                            and base_intrinsic_value is not None):
+                        row.append(round(base_intrinsic_value, 2))
+                    else:
+                        modified_data = DCFInputData(
+                            symbol=data.symbol,
+                            current_fcf=data.current_fcf,
+                            growth_rates=data.growth_rates,
+                            terminal_growth=tg,
+                            discount_rate=wacc,
+                            shares_outstanding=data.shares_outstanding,
+                            cash=data.cash,
+                            debt=data.debt,
+                        )
+                        iv = self._calculate_simple(modified_data, config)
+                        row.append(round(iv, 2))
                 except Exception:
                     row.append(None)
             values.append(row)
 
+        # Consistency check
+        consistency_check = True
+        if (base_wacc_idx is not None and base_tgr_idx is not None
+                and base_intrinsic_value is not None):
+            matrix_base_value = values[base_wacc_idx][base_tgr_idx]
+            if matrix_base_value is not None:
+                consistency_check = abs(matrix_base_value - base_intrinsic_value) < 0.01
+
         return {
-            "wacc_rates": [f"{w:.1%}" for w in wacc_rates],
-            "growth_rates": [f"{g:.1%}" for g in growth_rates],
+            "wacc_rates": [f"{w:.2%}" for w in wacc_rates],  # Use .2% for precision
+            "growth_rates": [f"{g:.2%}" for g in growth_rates],  # Use .2% for precision
             "values": values,
+            "base_wacc_idx": base_wacc_idx,
+            "base_tgr_idx": base_tgr_idx,
+            "consistency_check": consistency_check,
         }
 
     def _calculate_implied_growth(
@@ -469,6 +526,150 @@ class DCFCalculator(BaseCalculator):
             )
 
         return warnings
+
+    def _generate_risk_framework(
+        self,
+        data: DCFInputData,
+        config: DCFConfig,
+        base_intrinsic_value: float,
+    ) -> RiskFramework:
+        """Generate risk framework with scenario analysis.
+
+        Creates bull, base, and bear cases with quantitative triggers
+        and calculates probability-weighted expected value.
+        """
+        current_price = data.current_price or base_intrinsic_value
+
+        # Bull Case: Lower WACC (-1%), Higher Growth (+2% each year)
+        try:
+            bull_growth = [min(g + 0.02, 0.25) for g in data.growth_rates]
+            bull_data = DCFInputData(
+                symbol=data.symbol,
+                current_fcf=data.current_fcf,
+                growth_rates=bull_growth,
+                terminal_growth=min(data.terminal_growth + 0.005, 0.035),
+                discount_rate=max(data.discount_rate - 0.01, 0.06),
+                shares_outstanding=data.shares_outstanding,
+                cash=data.cash,
+                debt=data.debt,
+            )
+            bull_value = self._calculate_simple(bull_data, config)
+            bull_upside = (bull_value - current_price) / current_price * 100
+        except Exception:
+            bull_value = base_intrinsic_value * 1.3
+            bull_upside = 30.0
+
+        # Bear Case: Higher WACC (+1%), Lower Growth (-3% each year)
+        try:
+            bear_growth = [max(g - 0.03, 0.0) for g in data.growth_rates]
+            bear_data = DCFInputData(
+                symbol=data.symbol,
+                current_fcf=data.current_fcf,
+                growth_rates=bear_growth,
+                terminal_growth=max(data.terminal_growth - 0.005, 0.015),
+                discount_rate=min(data.discount_rate + 0.01, 0.15),
+                shares_outstanding=data.shares_outstanding,
+                cash=data.cash,
+                debt=data.debt,
+            )
+            bear_value = self._calculate_simple(bear_data, config)
+            bear_upside = (bear_value - current_price) / current_price * 100
+        except Exception:
+            bear_value = base_intrinsic_value * 0.7
+            bear_upside = -30.0
+
+        base_upside = (base_intrinsic_value - current_price) / current_price * 100
+
+        # Scenarios with probabilities
+        scenarios = [
+            ScenarioCase(
+                name="Bull",
+                probability=0.25,
+                intrinsic_value=bull_value,
+                upside_potential=bull_upside,
+                key_assumptions={
+                    "wacc": data.discount_rate - 0.01,
+                    "terminal_growth": data.terminal_growth + 0.005,
+                    "fcf_growth": "+2% annually",
+                },
+                quantitative_triggers=[
+                    "Revenue growth exceeds analyst estimates by >5%",
+                    "Operating margin expansion >100bps YoY",
+                    "FCF conversion rate >25%",
+                ],
+            ),
+            ScenarioCase(
+                name="Base",
+                probability=0.50,
+                intrinsic_value=base_intrinsic_value,
+                upside_potential=base_upside,
+                key_assumptions={
+                    "wacc": data.discount_rate,
+                    "terminal_growth": data.terminal_growth,
+                    "fcf_growth": "As projected",
+                },
+                quantitative_triggers=[
+                    "Revenue growth in line with consensus",
+                    "Margins stable within historical range",
+                    "No major business model disruption",
+                ],
+            ),
+            ScenarioCase(
+                name="Bear",
+                probability=0.25,
+                intrinsic_value=bear_value,
+                upside_potential=bear_upside,
+                key_assumptions={
+                    "wacc": data.discount_rate + 0.01,
+                    "terminal_growth": data.terminal_growth - 0.005,
+                    "fcf_growth": "-3% annually",
+                },
+                quantitative_triggers=[
+                    "Revenue growth misses estimates by >5%",
+                    "Operating margin compression >100bps",
+                    "Competitive pressure from new entrants",
+                ],
+            ),
+        ]
+
+        # Probability-weighted expected value
+        prob_weighted_value = sum(s.probability * s.intrinsic_value for s in scenarios)
+
+        # Invalidation price (20% below bear case)
+        invalidation_price = bear_value * 0.8
+
+        # Downside risk (current price to bear case)
+        downside_risk = abs(bear_upside) if bear_upside < 0 else 0
+
+        # Risk-reward ratio
+        upside = max(bull_upside, 0)
+        risk_reward = upside / downside_risk if downside_risk > 0 else float('inf')
+
+        # Position sizing suggestion based on conviction
+        if risk_reward > 3:
+            position_suggestion = "High conviction: Standard position size (2-5% of portfolio)"
+        elif risk_reward > 1.5:
+            position_suggestion = "Moderate conviction: Reduced position (1-2% of portfolio)"
+        else:
+            position_suggestion = "Low conviction: Small starter position (<1%) or pass"
+
+        # Key risks
+        key_risks = [
+            "Macro environment: Interest rate changes affect WACC",
+            "Competitive dynamics: Market share erosion risk",
+            "Execution risk: Growth assumptions may not materialize",
+            "Valuation risk: Multiple compression in risk-off environment",
+        ]
+
+        return RiskFramework(
+            scenarios=scenarios,
+            probability_weighted_value=prob_weighted_value,
+            invalidation_price=invalidation_price,
+            downside_risk=downside_risk,
+            risk_reward_ratio=risk_reward,
+            position_size_suggestion=position_suggestion,
+            key_risks=key_risks,
+        )
 
 
 class GrahamCalculator(BaseCalculator):
