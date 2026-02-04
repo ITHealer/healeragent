@@ -240,6 +240,62 @@ class CircuitBreaker:
             time_since_open = time.time() - circuit.last_state_change
             remaining = self.reset_timeout - time_since_open
             return max(0.0, remaining)
+
+    def check_request(self, service_name: str) -> tuple[bool, float]:
+        """
+        Atomically check if request is allowed and get retry_after time.
+
+        This method prevents race conditions by doing both checks in a single
+        lock acquisition. Use this instead of separate allow_request() and
+        get_retry_after() calls.
+
+        Args:
+            service_name: Name of the service/tool
+
+        Returns:
+            Tuple of (allowed: bool, retry_after: float)
+            - If allowed=True, retry_after is always 0.0
+            - If allowed=False, retry_after is seconds until circuit might allow
+        """
+        with self._lock:
+            circuit = self._get_circuit(service_name)
+            current_time = time.time()
+
+            if circuit.state == CircuitState.CLOSED:
+                circuit.total_requests += 1
+                return (True, 0.0)
+
+            elif circuit.state == CircuitState.OPEN:
+                time_since_open = current_time - circuit.last_state_change
+
+                if time_since_open >= self.reset_timeout:
+                    # Timeout expired - transition to HALF_OPEN and allow
+                    self._transition_to(service_name, CircuitState.HALF_OPEN)
+                    circuit.total_requests += 1
+                    self._half_open_requests[service_name] = 1
+                    self.logger.info(
+                        f"[CIRCUIT_BREAKER] {service_name}: OPEN -> HALF_OPEN "
+                        f"(testing recovery after {time_since_open:.1f}s)"
+                    )
+                    return (True, 0.0)
+                else:
+                    # Still in timeout - reject and return remaining time
+                    circuit.total_rejections += 1
+                    remaining = self.reset_timeout - time_since_open
+                    return (False, remaining)
+
+            elif circuit.state == CircuitState.HALF_OPEN:
+                current_requests = self._half_open_requests.get(service_name, 0)
+                if current_requests < self.half_open_max_requests:
+                    self._half_open_requests[service_name] = current_requests + 1
+                    circuit.total_requests += 1
+                    return (True, 0.0)
+                else:
+                    circuit.total_rejections += 1
+                    # HALF_OPEN but max requests reached - retry soon
+                    return (False, 1.0)
+
+            return (False, self.reset_timeout)
     
     def reset(self, service_name: Optional[str] = None) -> None:
         """
@@ -340,8 +396,9 @@ def with_circuit_breaker(
         async def wrapper(*args, **kwargs):
             circuit = get_circuit_breaker()
 
-            if not circuit.allow_request(service_name):
-                retry_after = circuit.get_retry_after(service_name)
+            # Use atomic check_request to avoid race condition
+            allowed, retry_after = circuit.check_request(service_name)
+            if not allowed:
                 if raise_on_open:
                     raise CircuitBreakerOpenError(service_name, retry_after)
                 return fallback_result

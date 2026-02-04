@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 from src.utils.logger.custom_logging import LoggerMixin
 from src.utils.config import settings
+from src.utils.circuit_breaker import CircuitBreakerOpenError, get_circuit_breaker
 from src.helpers.llm_helper import LLMGeneratorProvider
 from src.providers.provider_factory import ModelProviderFactory, ProviderType
 
@@ -2082,28 +2083,56 @@ IMPORTANT:
         flow_id: str,
         model_name: Optional[str] = None,
         provider_type: Optional[str] = None,
+        max_retries: int = 2,
     ) -> Dict[str, Any]:
-        """Call LLM with tool definitions."""
+        """
+        Call LLM with tool definitions.
+
+        Includes retry logic for CircuitBreakerOpenError when retry_after is small.
+        """
         effective_model = model_name or self.model_name
         effective_provider = provider_type or self.provider_type
 
-        try:
-            response = await self.llm_provider.generate_response(
-                model_name=effective_model,
-                messages=messages,
-                provider_type=effective_provider,
-                api_key=self.api_key,
-                tools=tools,
-                tool_choice="auto",
-                max_tokens=16000,  # High limit for tool calls with thinking models
-                temperature=0.1,
-            )
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self.llm_provider.generate_response(
+                    model_name=effective_model,
+                    messages=messages,
+                    provider_type=effective_provider,
+                    api_key=self.api_key,
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=16000,  # High limit for tool calls with thinking models
+                    temperature=0.1,
+                )
 
-            return response if isinstance(response, dict) else {"content": str(response)}
+                return response if isinstance(response, dict) else {"content": str(response)}
 
-        except Exception as e:
-            self.logger.error(f"[{flow_id}] LLM call failed: {e}")
-            raise
+            except CircuitBreakerOpenError as e:
+                last_error = e
+                # If retry_after is small (< 5s) and we have retries left, wait and retry
+                if e.retry_after <= 5.0 and attempt < max_retries:
+                    wait_time = max(0.5, e.retry_after)
+                    self.logger.info(
+                        f"[{flow_id}] Circuit breaker open, waiting {wait_time:.1f}s "
+                        f"before retry (attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(wait_time)
+                    continue
+                else:
+                    self.logger.error(
+                        f"[{flow_id}] LLM call failed (circuit breaker): {e}"
+                    )
+                    raise
+
+            except Exception as e:
+                self.logger.error(f"[{flow_id}] LLM call failed: {e}")
+                raise
+
+        # Should not reach here, but just in case
+        if last_error:
+            raise last_error
 
     def _parse_tool_calls(self, response: Dict[str, Any]) -> List[ToolCall]:
         """
@@ -3640,6 +3669,19 @@ IMPORTANT:
                 "total_tool_calls": total_tool_calls,
             }
 
+        except CircuitBreakerOpenError as e:
+            # Circuit breaker is open - LLM service is temporarily unavailable
+            self.logger.warning(
+                f"[{flow_id}] Circuit breaker open for {e.service_name}, "
+                f"retry after {e.retry_after:.1f}s"
+            )
+            yield {
+                "type": "error",
+                "error": f"Service temporarily unavailable. Please try again in {int(e.retry_after)} seconds.",
+                "error_type": "circuit_breaker",
+                "retry_after": e.retry_after,
+                "service": e.service_name,
+            }
         except Exception as e:
             self.logger.error(f"[{flow_id}] Error: {e}", exc_info=True)
             yield {"type": "error", "error": str(e)}

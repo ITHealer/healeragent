@@ -646,14 +646,34 @@ class LLMGeneratorProvider(LoggerMixin):
         circuit = get_circuit_breaker()
         circuit_name = self._get_circuit_name(provider_type)
 
-        # Check if circuit allows request
-        if not circuit.allow_request(circuit_name):
-            retry_after = circuit.get_retry_after(circuit_name)
-            self.logger.warning(
-                f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name}, "
-                f"retry after {retry_after:.1f}s"
-            )
-            raise CircuitBreakerOpenError(circuit_name, retry_after)
+        # Use atomic check to avoid race condition between allow_request and get_retry_after
+        allowed, retry_after = circuit.check_request(circuit_name)
+
+        if not allowed:
+            # If retry_after is very small (< 1s), wait and retry once
+            # This handles the edge case where circuit is about to transition to HALF_OPEN
+            if retry_after <= 1.0:
+                import asyncio
+                wait_time = max(0.1, retry_after)
+                self.logger.info(
+                    f"[LLM_HELPER] Circuit breaker for {circuit_name} nearly ready, "
+                    f"waiting {wait_time:.1f}s before retry"
+                )
+                await asyncio.sleep(wait_time)
+
+                # Retry the check
+                allowed, retry_after = circuit.check_request(circuit_name)
+                if allowed:
+                    self.logger.info(
+                        f"[LLM_HELPER] Circuit breaker for {circuit_name} now HALF_OPEN, proceeding"
+                    )
+
+            if not allowed:
+                self.logger.warning(
+                    f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name}, "
+                    f"retry after {retry_after:.1f}s"
+                )
+                raise CircuitBreakerOpenError(circuit_name, retry_after)
 
         try:
             provider = await self.get_llm(model_name, provider_type, api_key)
@@ -705,14 +725,34 @@ class LLMGeneratorProvider(LoggerMixin):
         circuit = get_circuit_breaker()
         circuit_name = self._get_circuit_name(provider_type)
 
-        # Check if circuit allows request
-        if not circuit.allow_request(circuit_name):
-            retry_after = circuit.get_retry_after(circuit_name)
-            self.logger.warning(
-                f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name} (stream), "
-                f"retry after {retry_after:.1f}s"
-            )
-            raise CircuitBreakerOpenError(circuit_name, retry_after)
+        # Use atomic check to avoid race condition between allow_request and get_retry_after
+        allowed, retry_after = circuit.check_request(circuit_name)
+
+        if not allowed:
+            # If retry_after is very small (< 1s), wait and retry once
+            # This handles the edge case where circuit is about to transition to HALF_OPEN
+            if retry_after <= 1.0:
+                import asyncio
+                wait_time = max(0.1, retry_after)
+                self.logger.info(
+                    f"[LLM_HELPER] Circuit breaker for {circuit_name} (stream) nearly ready, "
+                    f"waiting {wait_time:.1f}s before retry"
+                )
+                await asyncio.sleep(wait_time)
+
+                # Retry the check
+                allowed, retry_after = circuit.check_request(circuit_name)
+                if allowed:
+                    self.logger.info(
+                        f"[LLM_HELPER] Circuit breaker for {circuit_name} now HALF_OPEN, proceeding"
+                    )
+
+            if not allowed:
+                self.logger.warning(
+                    f"[LLM_HELPER] Circuit breaker OPEN for {circuit_name} (stream), "
+                    f"retry after {retry_after:.1f}s"
+                )
+                raise CircuitBreakerOpenError(circuit_name, retry_after)
 
         try:
             provider = await self.get_llm(model_name, provider_type, api_key)

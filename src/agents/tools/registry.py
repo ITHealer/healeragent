@@ -164,10 +164,10 @@ class ToolRegistry:
                 formatted_context=f"Error: {error_msg}. This tool does not exist in the system."
             )
 
-        # Check circuit breaker
+        # Check circuit breaker using atomic check_request to avoid race condition
         if self._circuit_breaker_enabled and self._circuit_breaker and not bypass_circuit_breaker:
-            if not self._circuit_breaker.allow_request(tool_name):
-                retry_after = self._circuit_breaker.get_retry_after(tool_name)
+            allowed, retry_after = self._circuit_breaker.check_request(tool_name)
+            if not allowed:
                 self.logger.warning(
                     f"[CIRCUIT_BREAKER] Tool '{tool_name}' is unavailable. "
                     f"Circuit open, retry after {retry_after:.1f}s"
