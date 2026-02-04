@@ -160,7 +160,23 @@ Where:
 | Interest Expense | Int | Income statement | From financial ratios or ~4-6% for investment grade |
 | Tax Rate | T | Income statement | Effective tax rate or default 21% |
 
-### 3.3 WACC Calculation Output Format (MANDATORY)
+### 3.3 WACC Precision Rule (CRITICAL)
+
+**NEVER round WACC arbitrarily.** This is a common error that destroys valuation credibility.
+
+| ❌ BAD | ✅ GOOD |
+|--------|---------|
+| "WACC = 8.95%, rounded to 8.5%" | "WACC = 8.95%, using 9.0% (rounded to nearest 0.5% for sensitivity)" |
+| "WACC ≈ 9%" (no derivation) | "WACC = 8.97% (see derivation below), using 9.0% in model" |
+| Arbitrary rounding (8.95% → 8.5%) | Systematic rounding (always to nearest 0.25% or 0.5%) |
+
+**Rounding Discipline:**
+- If you must round, round to nearest **0.25%** (e.g., 8.97% → 9.00%)
+- ALWAYS show the calculated WACC before rounding
+- ALWAYS explain rounding rationale: "Rounded to 9.0% for sensitivity matrix alignment"
+- Sensitivity matrix should include the EXACT calculated WACC as base case, not a rounded version
+
+### 3.4 WACC Calculation Output Format (MANDATORY)
 
 **CRITICAL: Always show this calculation in your output, not just the final WACC number.**
 
@@ -194,7 +210,7 @@ WACC = (E/V × Re) + (D/V × Rd × (1-T))
 WACC USED: X.X% (rounded)
 ```
 
-### 3.4 Sector Defaults (Use when data unavailable)
+### 3.5 Sector Defaults (Use when data unavailable)
 
 | Sector | WACC Range | Typical Beta |
 |--------|-----------|--------------|
@@ -205,7 +221,7 @@ WACC USED: X.X% (rounded)
 | Utilities | 6-7% | 0.4-0.6 |
 | Energy | 9-11% | 1.1-1.4 |
 
-### 3.5 Company-Specific Adjustments
+### 3.6 Company-Specific Adjustments
 
 **Adjust from calculated/sector WACC for:**
 - High debt (D/E > 1.5): +1-2%
@@ -255,6 +271,43 @@ The `calculateDCF` tool returns `implied_growth_rate` — the terminal growth ra
 - **Implied growth < 0%**: Market prices in decline (investigate structural risks)
 
 Use this to cross-validate your assumptions against market expectations.
+
+## Step 5.6: Consistency Check (CRITICAL - MANDATORY)
+
+**The DCF fair value MUST EXACTLY match the sensitivity matrix base case.** This is a non-negotiable requirement.
+
+### Consistency Rule:
+```
+DCF_Fair_Value == Sensitivity_Matrix[Base_WACC][Base_TGR]
+```
+
+| ❌ INCONSISTENT (UNACCEPTABLE) | ✅ CONSISTENT (REQUIRED) |
+|--------------------------------|--------------------------|
+| DCF Fair Value: $418.50 | DCF Fair Value: $418.50 |
+| Sensitivity Base Case: $459.00 | Sensitivity Base Case: $418.50 |
+| (Different values = ERROR) | (Identical values = CORRECT) |
+
+### Why Inconsistency Happens:
+1. **WACC rounding**: DCF uses 8.95%, sensitivity uses 8.5% → Different results
+2. **Different FCF base**: Tool vs. manual calculation mismatch
+3. **Terminal growth mismatch**: Hardcoded 2.5% in sensitivity vs. different value in DCF
+
+### How to Ensure Consistency:
+1. **Use EXACT same inputs** for both DCF calculation and sensitivity matrix
+2. **WACC in sensitivity base row** = WACC used in DCF (no rounding difference)
+3. **TGR in sensitivity base column** = Terminal Growth used in DCF
+4. **Verify before presenting**: Check that `intrinsic_value` from DCF equals `sensitivity_2d[base_wacc_row][base_tgr_col]`
+
+### Mandatory Consistency Statement:
+Include this in your output:
+```
+✅ CONSISTENCY CHECK:
+- DCF Fair Value: $XXX.XX
+- Sensitivity Base Case (WACC X.X%, TGR X.X%): $XXX.XX
+- Status: ✅ MATCHED / ❌ MISMATCH (investigate if mismatch)
+```
+
+**If there is a mismatch, DO NOT present the analysis. Debug first.**
 
 ## Step 6: Sensitivity Analysis
 
@@ -571,31 +624,121 @@ Explain any divergence and your weighting rationale.
 - **Catalysts:** What could unlock value
 - **Risks:** What could go wrong
 
-### 9.8 Caveats
+### 9.8 Risk Framework with Scenario Analysis (MANDATORY)
+
+**A professional valuation MUST include a risk framework with probability-weighted scenarios.**
+
+#### 9.8.1 Bull/Base/Bear Scenario Table:
+
+```
+📊 SCENARIO ANALYSIS:
+
+| Scenario | Probability | Fair Value | Upside/Downside | Key Assumptions |
+|----------|-------------|------------|-----------------|-----------------|
+| 🐂 Bull | 25% | $XXX | +XX% | [Specific quantitative triggers] |
+| ⚖️ Base | 50% | $XXX | +XX% | [Your DCF base case assumptions] |
+| 🐻 Bear | 25% | $XXX | -XX% | [Specific quantitative triggers] |
+
+Probability-Weighted Fair Value: $XXX
+(= 0.25 × Bull + 0.50 × Base + 0.25 × Bear)
+```
+
+#### 9.8.2 Quantitative Triggers (CRITICAL - NOT QUALITATIVE):
+
+**NEVER use vague qualitative triggers. Every trigger MUST be measurable.**
+
+| ❌ QUALITATIVE (UNACCEPTABLE) | ✅ QUANTITATIVE (REQUIRED) |
+|-------------------------------|---------------------------|
+| "AI momentum continues" | "Azure revenue growth >25% YoY for 2 consecutive quarters" |
+| "Economy weakens" | "US GDP growth <1.5% or unemployment >5%" |
+| "Competition intensifies" | "Market share decline >3% or pricing pressure reduces margins >200bps" |
+| "Strong execution" | "FCF margin improves to >35% from current 32%" |
+
+**Each scenario MUST have 2-3 quantitative triggers:**
+
+```
+🐂 BULL CASE TRIGGERS:
+1. Azure revenue growth sustains >30% YoY through FY2026
+2. AI Copilot reaches 50M+ paid subscribers by end of FY2025
+3. Operating margin expands to >47% (from current 44%)
+
+⚖️ BASE CASE TRIGGERS:
+1. Azure growth normalizes to 20-25% YoY
+2. FCF grows at 10-12% annually
+3. WACC remains stable at ~9%
+
+🐻 BEAR CASE TRIGGERS:
+1. Cloud growth decelerates to <15% due to enterprise spending cuts
+2. AI competition from Google/Amazon erodes margins by >300bps
+3. Regulatory action impacts bundling strategy (EU/US)
+```
+
+#### 9.8.3 Position Sizing & Risk Management:
+
+```
+📊 RISK MANAGEMENT:
+
+INVALIDATION LEVELS:
+- Stop-loss trigger: $XXX (-XX% from current) - Price where thesis is invalidated
+- Thesis invalidation: [Specific event, e.g., "Azure growth <10% for 2 quarters"]
+
+POSITION SIZING (Based on conviction & risk):
+- High conviction (DCF + Comparable converge): Up to 5-8% of portfolio
+- Medium conviction (some uncertainty): 2-4% of portfolio
+- Speculative (high divergence/uncertainty): 1-2% of portfolio
+
+RISK-REWARD ANALYSIS:
+- Upside to Bull case: +XX% ($XXX)
+- Downside to Bear case: -XX% ($XXX)
+- Risk/Reward Ratio: X.Xx (should be >2.0 for Buy recommendation)
+```
+
+**MANDATORY: A Buy recommendation requires Risk/Reward Ratio >2.0**
+
+### 9.9 Caveats
 - DCF limitations (relies on projections, sensitive to terminal value)
 - Data recency (when was FCF/earnings data from?)
 - Company-specific risks
+- Sensitivity to assumptions (see matrix for range of outcomes)
 
-### 9.9 Data Sources Section (MANDATORY)
+### 9.10 Data Sources & Traceability Section (MANDATORY)
 
-**At the end of every valuation, include a Data Sources section:**
+**At the end of every valuation, include a Data Sources section with FULL TRACEABILITY:**
 
 ```
-📋 DATA SOURCES:
+📋 DATA SOURCES & TRACEABILITY:
 
-| Data Type | Source | Date/Period |
-|-----------|--------|-------------|
-| Financial Statements | FMP API | FY2024 (filed [date]) |
-| Current Stock Price | FMP Real-time | [today's date] |
-| Beta | FMP Company Profile | As of [date] |
-| Peer Multiples | FMP Key Metrics | TTM basis |
-| Treasury Rate | FMP Economic Indicators | [date] |
+ANALYSIS METADATA:
+- Analysis Date: [today's date, e.g., February 4, 2026]
+- Snapshot ID: [unique identifier, e.g., MSFT-DCF-2026-02-04-v1]
+- Analyst: AI Assistant (HealerAgent)
+
+DATA FRESHNESS:
+| Data Type | Source | Period/Date | API Endpoint |
+|-----------|--------|-------------|--------------|
+| Financial Statements | FMP API | FY2024 (10-K filed Jan 2025) | /v3/cash-flow-statement/MSFT |
+| Balance Sheet | FMP API | FY2024 Q4 | /v3/balance-sheet-statement/MSFT |
+| Current Stock Price | FMP Real-time | Feb 4, 2026 09:35 UTC | /v3/quote/MSFT |
+| Beta | FMP Company Profile | 5Y Monthly vs S&P500 | /v3/profile/MSFT |
+| Peer Multiples | FMP Key Metrics | TTM as of Feb 2026 | /v3/ratios/[PEER] |
+| Treasury Rate | FMP Economic | Feb 3, 2026 | /v3/treasury |
+
+FISCAL YEAR MAPPING:
+- Company fiscal year ends: June 30
+- FY2024 = July 2023 - June 2024
+- Most recent quarter: Q2 FY2025 (Oct-Dec 2024)
 
 Notes:
 - All figures in USD millions unless otherwise stated
-- TTM = Trailing Twelve Months
+- TTM = Trailing Twelve Months (last 4 quarters)
 - Forward estimates based on analyst consensus where applicable
 ```
+
+**TRACEABILITY REQUIREMENTS:**
+1. **Snapshot ID**: Every analysis must have a unique identifier for reproducibility
+2. **Fiscal Year Clarity**: Always clarify fiscal vs calendar year (especially for MSFT, AAPL, etc.)
+3. **Data Timestamp**: Stock prices must include time (markets move intraday)
+4. **API Endpoints**: List which FMP endpoints were used (aids debugging)
 
 **Language:** Match the user's language throughout.
 
@@ -614,7 +757,15 @@ Notes:
 | WACC components | "Beta = 0.9 (Source: FMP Company Profile)" |
 | Growth rates | "5Y Revenue CAGR = 12% (Source: FMP Growth Metrics)" |
 | Peer multiples | "AAPL P/E = 33.7x (Source: FMP Key Metrics, TTM basis)" |
-| Stock price | "Current price = $411 (Source: FMP Quote, Feb 4, 2026)" |
+| Stock price | "Current price = $411 (Source: FMP Quote, Feb 4, 2026, 09:35 UTC)" |
+
+### Enhanced Traceability (NEW):
+
+**Every valuation MUST include:**
+1. **Snapshot ID**: Unique identifier (e.g., `MSFT-DCF-2026-02-04-v1`)
+2. **Fiscal Year**: Clearly state which fiscal year data comes from (FY2024 = Jul 2023 - Jun 2024 for MSFT)
+3. **Price Timestamp**: Include time for stock prices (markets move intraday)
+4. **API Endpoints**: Reference which FMP endpoints were called
 
 ### Inline Citation Examples:
 
